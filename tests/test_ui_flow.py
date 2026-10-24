@@ -121,6 +121,29 @@ def test_full_date_flow_and_undo(qtbot, make_window, photos, make_jpeg, errors,
     assert errors == []
 
 
+def test_done_open_folder_button(qtbot, make_window, photos, make_jpeg, errors,
+                                 monkeypatch):
+    opened = []
+    monkeypatch.setattr(main_window.QDesktopServices, "openUrl",
+                        lambda url: opened.append(url.toLocalFile()) or True)
+    make_jpeg(photos / "a.jpg", EXIF)
+    w = make_window()
+    w.folder_edit.setText(str(photos))
+    w.start_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    w.go_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.done_page)
+
+    assert w.open_folder_button.text() == "Open folder"
+    w.open_folder_button.click()
+    assert [Path(p) for p in opened] == [photos.resolve()]
+    assert errors == []
+
+    monkeypatch.setattr(main_window.QDesktopServices, "openUrl", lambda url: False)
+    w.open_folder_button.click()
+    assert errors == ["Couldn't open the folder."]
+
+
 def test_nothing_to_move(qtbot, make_window, photos, errors):
     w = make_window()
     w.folder_edit.setText(str(photos))

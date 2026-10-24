@@ -13,8 +13,8 @@ using it, and closing the window cancels it and waits for the pool to finish.
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QThreadPool
-from PySide6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent, QFont
+from PySide6.QtCore import QThreadPool, QUrl
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QFileDialog, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressBar,
@@ -230,9 +230,11 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         self.undo_button = QPushButton("Undo")
         self.undo_button.clicked.connect(self._undo)
+        self.open_folder_button = QPushButton("Open folder")
+        self.open_folder_button.clicked.connect(self._open_folder)
         self.home_button = QPushButton("Home")
         self.home_button.clicked.connect(lambda: self._show(self.home))
-        _buttons(layout, self.undo_button, self.home_button)
+        _buttons(layout, self.undo_button, self.open_folder_button, self.home_button)
         return page
 
     # ----- helpers ---------------------------------------------------------
@@ -494,6 +496,12 @@ class MainWindow(QMainWindow):
         self.undo_button.setEnabled(can_undo)
         self.home_button.setEnabled(True)
         self._show(self.done_page)
+
+    def _open_folder(self) -> None:
+        """Show the sorted folder in the system's file manager."""
+        url = QUrl.fromLocalFile(str(self._root)) if self._root is not None else None
+        if url is None or not QDesktopServices.openUrl(url):
+            self.show_error("Couldn't open the folder.")
 
     def _on_executed(self, result: ExecResult) -> None:
         lines = [f"Moved {result.moved} files."]
