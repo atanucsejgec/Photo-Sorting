@@ -2,9 +2,8 @@
 
 Photos are decoded on pool threads (a HEIC at 2400 px takes long enough to
 freeze the window); the photo after the ones on screen is loaded ahead. The
-CACHE_IMAGES most recently seen are kept; one let go is decoded again if it
-comes back. Results that arrive after the dialog
-closed are ignored.
+CACHE_IMAGES most recently wanted are kept; one let go is decoded again if it
+comes back. Results that arrive after the dialog closed are ignored.
 
 None of the dialog's children takes the keyboard focus, so every key press
 reaches FullscreenViewer.keyPressEvent whatever was clicked last.
