@@ -57,7 +57,7 @@ Success means the owner can pick a folder, choose a mode, look over what will ha
 2. **"Include subfolders" on/off option**, shown on the home screen next to the mode list.
    - **Off:** only files directly inside the picked folder are sorted. Subfolders, including ones made by earlier runs, are left alone. To sort inside an earlier result, for example faces in February, the owner picks `Camera/2025/02-February/` itself.
    - **On:** every photo or video in every subfolder is sorted, including files placed there by earlier runs. For example, running Face with this on, after Date, pulls the matched photos out of the date folders. The summary screen makes this visible before Go.
-   - **Off by default (my call)**, because it's the safer choice. The setting is remembered between runs.
+   - **Off by default** (owner confirmed). The setting is remembered between runs **(my call)**.
    - Even with it on, the app's hidden data folder and the "removed" folders (`Duplicates/`, `Repeated Shots/`, `Bad Photos/`) are always skipped, so set-aside files don't come back **(my call)**.
    - Subfolders left empty after a run are removed, and Undo recreates them **(my call)**.
 3. The app analyses the files, with a progress bar and a **Cancel** button.
