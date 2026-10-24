@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QLabel, QMessageBox, QVBoxLayout,
 )
 
+from photosort.ai.runtime import runtime_status
 from photosort.settings import Settings, save_settings
 
 
@@ -25,6 +26,10 @@ class SettingsDialog(QDialog):
         self.gpu_check = QCheckBox("Use GPU")
         self.gpu_check.setChecked(settings.use_gpu)
         layout.addWidget(self.gpu_check)
+        self.runtime_label = QLabel()
+        layout.addWidget(self.runtime_label)
+        self.gpu_check.toggled.connect(self._show_runtime)
+        self._show_runtime(self.gpu_check.isChecked())
         self.note_label = QLabel(
             "GPU is used by the face and content modes (coming in later stages)."
         )
@@ -38,6 +43,9 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _show_runtime(self, use_gpu: bool) -> None:
+        self.runtime_label.setText(f"Running on: {runtime_status(use_gpu)}")
 
     def show_error(self, text: str) -> None:
         QMessageBox.warning(self, "Settings", text)

@@ -1,16 +1,23 @@
+import dataclasses
+import hashlib
 import os
+import shutil
 import subprocess
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import onnxruntime
 from PySide6.QtCore import QThreadPool
+from PySide6.QtWidgets import QMessageBox, QPushButton
 
+from photosort.ai import models, runtime
 from photosort.executor import execute
 from photosort.journal import RunJournal, load_runs
 from photosort.plan import Move, Plan
 from photosort.settings import Settings, load_settings
-from photosort.ui import history_dialog
+from photosort.ui import history_dialog, model_download
 from photosort.ui.history_dialog import HistoryDialog, undo_summary
 from photosort.ui.main_window import MainWindow
 from photosort.ui.settings_dialog import SettingsDialog
@@ -224,6 +231,100 @@ def test_settings_dialog_cancel_changes_nothing(qtbot, tmp_path):
     assert not path.exists()
 
 
+def test_settings_shows_runtime_status(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime, "_gpu_failed", False)
+    monkeypatch.setattr(onnxruntime, "get_available_providers",
+                        lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    d = SettingsDialog(Settings(use_gpu=True), tmp_path / "settings.json")
+    qtbot.addWidget(d)
+    assert d.runtime_label.text() == "Running on: GPU (CUDA)"
+    d.gpu_check.setChecked(False)
+    assert d.runtime_label.text() == "Running on: CPU (GPU switched off)"
+
+    monkeypatch.setattr(onnxruntime, "get_available_providers",
+                        lambda: ["CPUExecutionProvider"])
+    d.gpu_check.setChecked(True)
+    assert d.runtime_label.text() == "Running on: CPU (no usable GPU found)"
+
+
+@pytest.fixture
+def model_store(tmp_path, monkeypatch):
+    """Two small models served from file:// URLs; the real files are never touched.
+
+    The download question is answered with store.answer; errors are collected
+    in store.errors instead of being shown.
+    """
+    table = {}
+    for key, data in (("a", os.urandom(3 << 20)), ("b", b"small model")):
+        src = _write(tmp_path / "src" / f"{key}.onnx", data)
+        table[key] = models.Model(key, f"{key}/model.onnx", src.as_uri(), len(data),
+                                  hashlib.sha256(data).hexdigest())
+    monkeypatch.setattr(models, "MODELS", table)
+    monkeypatch.setattr(models, "models_dir", lambda: tmp_path / "models")
+    store = SimpleNamespace(answer=QMessageBox.StandardButton.Yes, asked=[], errors=[],
+                            sources={k: tmp_path / "src" / f"{k}.onnx" for k in table})
+
+    def question(parent, title, text, *args, **kwargs):
+        store.asked.append(text)
+        return store.answer
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+    monkeypatch.setattr(model_download, "show_error",
+                        lambda parent, text: store.errors.append(text))
+    yield store
+    QThreadPool.globalInstance().waitForDone()
+
+
+def test_ensure_models_present_asks_nothing(qtbot, model_store):
+    for key, m in models.MODELS.items():
+        _write(models.model_path(key), model_store.sources[key].read_bytes())
+    assert model_download.ensure_models(None, ["a", "b"]) is True
+    assert model_store.asked == []
+
+
+def test_ensure_models_downloads_after_yes(qtbot, model_store):
+    assert model_download.ensure_models(None, ["a", "b"]) is True
+    assert model_store.asked == [
+        "Photo Sorter needs to download the face models once (180 MB). Download now?"]
+    assert models.missing(["a", "b"]) == []
+    assert model_store.errors == []
+
+
+def test_ensure_models_no_downloads_nothing(qtbot, model_store):
+    model_store.answer = QMessageBox.StandardButton.No
+    assert model_download.ensure_models(None, ["a", "b"]) is False
+    assert models.missing(["a", "b"]) == ["a", "b"]
+
+
+def test_ensure_models_cancel_stops(qtbot, model_store, monkeypatch):
+    real_download = models.download
+
+    def held_download(key, progress=None, cancel=None):
+        progress(1, models.MODELS[key].size)
+        assert cancel.wait(5)  # until the owner presses Cancel
+        return real_download(key, progress=progress, cancel=cancel)
+
+    real_progress = model_download._Downloads._progress
+
+    def press_cancel(self, done, total):
+        real_progress(self, done, total)
+        self.dialog.findChild(QPushButton).click()
+
+    monkeypatch.setattr(models, "download", held_download)
+    monkeypatch.setattr(model_download._Downloads, "_progress", press_cancel)
+    assert model_download.ensure_models(None, ["a", "b"]) is False
+    assert models.missing(["a", "b"]) == ["a", "b"]
+    assert model_store.errors == []
+
+
+def test_ensure_models_reports_damaged_download(qtbot, model_store):
+    models.MODELS["a"] = dataclasses.replace(models.MODELS["a"], sha256="0" * 64)
+    assert model_download.ensure_models(None, ["a", "b"]) is False
+    assert len(model_store.errors) == 1
+    assert "is damaged, please try again" in model_store.errors[0]
+    assert models.missing(["a", "b"]) == ["a", "b"]  # stops at the first error
+
+
 @pytest.fixture
 def window(qtbot, tmp_path, dialog_errors):
     w = MainWindow(Settings(), tmp_path / "config" / "settings.json")
@@ -254,19 +355,40 @@ def test_home_buttons_open_dialogs(window, tmp_path, monkeypatch):
     assert window.home_status_label.text() == ""
 
 
-def test_launcher_resolves_repo_through_symlink(tmp_path):
+def _launch(tmp_path, nvidia: bool) -> list[str]:
+    """Run the launcher through a symlink with a fake uv; return uv's arguments.
+
+    PATH holds only what the script needs, so whether nvidia-smi is found
+    does not depend on this computer.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    for tool in ("bash", "dirname", "readlink"):
+        (bin_dir / tool).symlink_to(shutil.which(tool))
     fake_uv = bin_dir / "uv"
     fake_uv.write_text('#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n')
     fake_uv.chmod(0o755)
+    if nvidia:
+        fake_smi = bin_dir / "nvidia-smi"
+        fake_smi.write_text("#!/bin/sh\n")
+        fake_smi.chmod(0o755)
     link = tmp_path / "launch"
     link.symlink_to(REPO / "scripts" / "photo-sorter.sh")
 
-    env = {**os.environ, "PATH": f"{bin_dir}:/usr/bin:/bin"}
+    env = {**os.environ, "PATH": str(bin_dir)}
     out = subprocess.run([str(link), "--x", "a b"], env=env, cwd=tmp_path,
                          capture_output=True, text=True, check=True).stdout
-    assert out.splitlines() == ["run", "--project", str(REPO), "photo-sorter", "--x", "a b"]
+    return out.splitlines()
+
+
+def test_launcher_resolves_repo_through_symlink(tmp_path):
+    assert _launch(tmp_path, nvidia=True) == [
+        "run", "--project", str(REPO), "photo-sorter", "--x", "a b"]
+
+
+def test_launcher_skips_cuda_libraries_without_nvidia_gpu(tmp_path):
+    assert _launch(tmp_path, nvidia=False) == [
+        "run", "--project", str(REPO), "--no-group", "gpu", "photo-sorter", "--x", "a b"]
 
 
 def test_scripts_are_executable():
