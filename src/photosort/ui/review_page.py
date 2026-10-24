@@ -198,6 +198,10 @@ class ReviewPage(QWidget):
         self.fullscreen_button.setVisible(repeated)
         self._show_group(0)
 
+    def resume(self) -> None:
+        """Show again the group the review ended on, with the answers given so far."""
+        self._show_group(self._index)
+
     def _show_group(self, index: int) -> None:
         self.stop_thumbnails()
         self._generation += 1

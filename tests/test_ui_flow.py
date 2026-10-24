@@ -273,6 +273,7 @@ def test_stale_plan_is_never_executed(qtbot, make_window, photos, make_jpeg, err
     w.start_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
     w.back_button.click()
+    assert w.current_page() is w.home  # date mode has no review to go back to
 
     def broken(root, include_subfolders, progress=None, cancel=None):
         raise RuntimeError("unreadable")
@@ -365,6 +366,62 @@ def test_duplicates_end_to_end(qtbot, make_window, photos, make_pattern_jpeg, er
     assert not (photos / "Duplicates").exists()
     assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == before
     assert errors == []
+
+
+def _two_duplicate_groups(photos, make_pattern_jpeg):
+    import shutil
+
+    make_pattern_jpeg(photos / "x.jpg", 1)
+    shutil.copyfile(photos / "x.jpg", photos / "x copy.jpg")
+    make_pattern_jpeg(photos / "IMG20250220181325.jpg", 3, exif_dt="2025:02:20 18:13:25")
+    make_pattern_jpeg(photos / "IMG-20250220-WA0012.jpg", 3, size=(400, 300), quality=60)
+
+
+def _ticked(page):
+    return {c.candidate.rel for c in page.cards if c.keep_check.isChecked()}
+
+
+def test_back_from_summary_returns_to_the_review(qtbot, make_window, photos,
+                                                 make_pattern_jpeg, errors):
+    _two_duplicate_groups(photos, make_pattern_jpeg)
+    w = make_window()
+    _start_mode(qtbot, w, photos, "duplicates")
+    qtbot.waitUntil(lambda: w.current_page() is w.review_page)
+    page = w.review_page
+    first = _ticked(page)
+    page.confirm_button.click()
+    for card in page.cards:  # group 2: keep both
+        card.keep_check.setChecked(True)
+    kept = _ticked(page)
+    page.confirm_button.click()
+    assert w.current_page() is w.summary_page
+    summary = w.summary_label.text()
+    assert summary.splitlines()[0] == "1 file → Duplicates/ (from 1 group)"
+
+    w.back_button.click()
+    assert w.current_page() is page
+    assert page.heading_label.text().startswith("Group 2 of 2")
+    assert _ticked(page) == kept  # the answer given, still editable
+    qtbot.waitUntil(lambda: all(not c.thumb_label.pixmap().isNull() for c in page.cards))
+
+    page.stop_button.click()  # a fresh plan from the same answers
+    assert w.current_page() is w.summary_page
+    assert w.summary_label.text() == summary
+
+    w.back_button.click()
+    page.back_button.click()  # group 1 kept its answer too
+    assert page.heading_label.text().startswith("Group 1 of 2")
+    assert _ticked(page) == first
+    assert errors == []
+
+
+def test_back_from_no_groups_found_goes_home(qtbot, make_window, photos, make_pattern_jpeg):
+    make_pattern_jpeg(photos / "a.jpg", 1)
+    w = make_window()
+    _start_mode(qtbot, w, photos, "duplicates")
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    w.back_button.click()
+    assert w.current_page() is w.home
 
 
 def test_no_duplicates_found(qtbot, make_window, photos, make_pattern_jpeg, errors):

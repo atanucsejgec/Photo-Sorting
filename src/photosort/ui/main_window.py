@@ -90,7 +90,7 @@ class MainWindow(QMainWindow):
         self._root: Path | None = None
         self._include_subfolders = False
         self._mode: str | None = None
-        self._groups: list[Group] = []  # being reviewed
+        self._groups: list[Group] = []  # being reviewed; kept for Back on the summary
         self._plan: Plan | None = None
         self._run_id: str | None = None
         self._progress_prefix = ""
@@ -215,7 +215,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.moves_table, 1)
         layout.addStretch()
         self.back_button = QPushButton("Back")
-        self.back_button.clicked.connect(lambda: self._show(self.home))
+        self.back_button.clicked.connect(self._back_from_summary)
         self.go_button = QPushButton("Go")
         self.go_button.clicked.connect(self._go)
         _buttons(layout, self.back_button, self.go_button)
@@ -364,6 +364,7 @@ class MainWindow(QMainWindow):
         if self._busy:
             return
         self._plan = None  # a stale plan must never be executed
+        self._groups = []
         root = self._folder()
         if root is None:
             self.show_error("This folder doesn't exist any more.")
@@ -422,7 +423,6 @@ class MainWindow(QMainWindow):
             self._show(self.home)
             self.show_error(f"Could not plan the moves: {e}")
             return
-        self._groups = []
         self._on_plan(plan)
 
     # ----- summary ---------------------------------------------------------
@@ -445,6 +445,15 @@ class MainWindow(QMainWindow):
         self.show_moves_button.setChecked(False)
         self.moves_table.hide()
         self._show(self.summary_page)
+
+    def _back_from_summary(self) -> None:
+        """Back to the review, every answer intact, if there was one; else Home."""
+        if self._groups:
+            self._plan = None  # the review makes a fresh one
+            self.review_page.resume()
+            self._show(self.review_page)
+        else:
+            self._show(self.home)
 
     def _on_plan_error(self, message: str) -> None:
         self._show(self.home)
@@ -475,6 +484,7 @@ class MainWindow(QMainWindow):
             self.show_error(f"Could not start: {e}")
             return
         self._run_id = journal.run_id
+        self._groups = []
         self._begin_progress("Moving…", len(plan.moves))
         self._run(Task(execute, root, plan, journal), self._on_executed, self._on_execute_error)
 
