@@ -400,7 +400,7 @@ def test_repeated_keep_one_moves_the_rest(qtbot, make_window, photos, make_patte
     _start_mode(qtbot, w, photos, "repeated")
     qtbot.waitUntil(lambda: w.current_page() is w.review_page)
     w.review_page.keep_one_button.click()
-    assert w.summary_label.text().splitlines()[0] == "1 files → Repeated Shots/ (from 1 groups)"
+    assert w.summary_label.text().splitlines()[0] == "1 file → Repeated Shots/ (from 1 group)"
     w.go_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.done_page)
     assert (photos / "Repeated Shots" / "b.jpg").is_file()

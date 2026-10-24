@@ -20,6 +20,7 @@ from photosort.groups import Candidate, Group, sharpest, sharpness_label
 from photosort.imageinfo import UnreadableImage, thumbnail
 from photosort.modes import MODE_SPECS
 from photosort.modes.date_mode import MONTH_NAMES
+from photosort.naming import resolve_existing_dir
 from photosort.thresholds import THUMB_PX
 from photosort.ui.fullscreen_viewer import FullscreenViewer
 from photosort.ui.worker import Task
@@ -28,7 +29,7 @@ _log = logging.getLogger("photosort")
 
 KIND_LABEL = {
     "exact": "Exact copies",
-    "resized": "Same photo, different size",
+    "resized": "Same photo, resized or re-saved",
     "repeated": "Repeated shots",
 }
 LOADING = "Loading…"
@@ -188,7 +189,7 @@ class ReviewPage(QWidget):
         self._mode = mode
         self._groups = list(groups)
         self._keep = {}
-        folder = MODE_SPECS[mode].set_aside_folder
+        folder = resolve_existing_dir(self._root, MODE_SPECS[mode].set_aside_folder)
         self.subtitle_label.setText(
             f"Tick the ones to keep. The others go to {folder}/ (nothing is deleted)."
         )

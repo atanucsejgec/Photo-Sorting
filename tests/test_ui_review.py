@@ -123,7 +123,7 @@ def test_heading_subtitle_and_pre_ticks(tmp_path, make_page, make_pattern_jpeg):
     groups = [_group(tmp_path, make_pattern_jpeg, "1", 1, "resized")]
     page = make_page()
     page.load(tmp_path, "duplicates", groups)
-    assert page.heading_label.text() == "Group 1 of 1 · Same photo, different size"
+    assert page.heading_label.text() == "Group 1 of 1 · Same photo, resized or re-saved"
     assert page.subtitle_label.text() == (
         "Tick the ones to keep. The others go to Duplicates/ (nothing is deleted)."
     )
@@ -141,6 +141,15 @@ def test_heading_subtitle_and_pre_ticks(tmp_path, make_page, make_pattern_jpeg):
     assert page.keep_all_button.text() == "Keep all"
     assert not page.keep_one_button.isHidden()
     assert not page.fullscreen_button.isHidden()
+
+
+def test_subtitle_names_the_folder_as_spelt_on_disk(tmp_path, make_page, make_pattern_jpeg):
+    (tmp_path / "duplicates").mkdir()
+    page = make_page()
+    page.load(tmp_path, "duplicates", [_group(tmp_path, make_pattern_jpeg, "1", 1)])
+    assert page.subtitle_label.text() == (
+        "Tick the ones to keep. The others go to duplicates/ (nothing is deleted)."
+    )
 
 
 def test_confirm_disabled_when_nothing_ticked(qtbot, tmp_path, make_page, make_pattern_jpeg):

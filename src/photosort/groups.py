@@ -13,7 +13,7 @@ from typing import Literal
 
 import numpy as np
 
-from photosort.naming import TargetAllocator
+from photosort.naming import TargetAllocator, resolve_existing_dir
 from photosort.plan import Move, Plan
 from photosort.thresholds import (
     DUP_ASPECT_TOL, DUP_HASH_MAX, SAME_MOMENT_S, SHARP_BLURRY, SHARP_SLIGHTLY,
@@ -134,6 +134,10 @@ def close_pairs(hashes: Sequence[int], max_distance: int) -> list[tuple[int, int
     return pairs
 
 
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
 def plan_set_aside(
     root: Path, mode: str, folder: str, groups: list[Group], keep: dict[int, set[str]]
 ) -> Plan:
@@ -165,8 +169,9 @@ def plan_set_aside(
             moves.append(Move(rel, allocator.allocate(f"{folder}/{rel.rpartition('/')[2]}")))
         if unkept:
             from_groups += 1
+    shown = resolve_existing_dir(Path(root), folder)  # as the moves spell it
     summary = [
-        f"{len(moves)} files → {folder}/ (from {from_groups} groups)",
-        f"Nothing is deleted. You can look through {folder}/ later.",
+        f"{_count(len(moves), 'file')} → {shown}/ (from {_count(from_groups, 'group')})",
+        f"Nothing is deleted. You can look through {shown}/ later.",
     ]
     return Plan(mode, moves, summary)

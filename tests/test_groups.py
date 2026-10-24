@@ -117,7 +117,7 @@ def test_plan_set_aside_moves_unkept(tmp_path):
         ("c/x3.jpg", "Duplicates/x3.jpg"),
     }
     assert plan.summary == [
-        "2 files → Duplicates/ (from 1 groups)",
+        "2 files → Duplicates/ (from 1 group)",
         "Nothing is deleted. You can look through Duplicates/ later.",
     ]
 
@@ -144,6 +144,18 @@ def test_plan_set_aside_uses_existing_folder_and_names(tmp_path):
     g0 = Group("exact", [_cand("a/IMG_1.jpg"), _cand("b/IMG_1.jpg")], {"a/IMG_1.jpg"})
     plan = plan_set_aside(tmp_path, "duplicates", "Duplicates", [g0], {0: {"a/IMG_1.jpg"}})
     assert [m.dst for m in plan.moves] == ["duplicates/IMG_1 (1).jpg"]
+    assert plan.summary == [  # the folder as spelt on disk
+        "1 file → duplicates/ (from 1 group)",
+        "Nothing is deleted. You can look through duplicates/ later.",
+    ]
+
+
+def test_plan_set_aside_summary_plurals(tmp_path):
+    groups = [Group("exact", [_cand(f"{n}a.jpg"), _cand(f"{n}b.jpg"), _cand(f"{n}c.jpg")],
+                    {f"{n}a.jpg"}) for n in range(2)]
+    plan = plan_set_aside(tmp_path, "duplicates", "Duplicates", groups,
+                          {0: {"0a.jpg"}, 1: {"1a.jpg"}})
+    assert plan.summary[0] == "4 files → Duplicates/ (from 2 groups)"
 
 
 def test_plan_set_aside_refuses_empty_keep(tmp_path):
