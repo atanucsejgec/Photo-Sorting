@@ -140,7 +140,7 @@ def test_heading_subtitle_and_pre_ticks(tmp_path, make_page, make_pattern_jpeg):
     )
     assert page.keep_all_button.text() == "Keep all"
     assert not page.keep_one_button.isHidden()
-    assert page.fullscreen_button.isHidden()  # wired in Task 5
+    assert not page.fullscreen_button.isHidden()
 
 
 def test_confirm_disabled_when_nothing_ticked(qtbot, tmp_path, make_page, make_pattern_jpeg):

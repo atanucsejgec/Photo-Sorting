@@ -20,6 +20,7 @@ from photosort.groups import Candidate, Group, sharpest, sharpness_label
 from photosort.imageinfo import UnreadableImage, thumbnail
 from photosort.modes import MODE_SPECS
 from photosort.thresholds import THUMB_PX
+from photosort.ui.fullscreen_viewer import FullscreenViewer
 from photosort.ui.worker import Task
 
 _log = logging.getLogger("photosort")
@@ -154,7 +155,6 @@ class ReviewPage(QWidget):
         self.stop_button = QPushButton("Stop reviewing")
         self.cancel_button = QPushButton("Cancel")
         self.fullscreen_button = QPushButton("Full screen…")
-        self.fullscreen_button.hide()  # wired up with the full-screen viewer
         self.keep_all_button = QPushButton("Keep all")
         self.keep_one_button = QPushButton("Keep one (sharpest)")
         self.skip_button = QPushButton("Skip")
@@ -172,6 +172,7 @@ class ReviewPage(QWidget):
         self.back_button.clicked.connect(self._previous)
         self.stop_button.clicked.connect(self._finish)
         self.cancel_button.clicked.connect(self._cancel)
+        self.fullscreen_button.clicked.connect(self._open_fullscreen)
         self.keep_all_button.clicked.connect(self._keep_all)
         self.keep_one_button.clicked.connect(self._keep_one)
         self.skip_button.clicked.connect(self._skip)
@@ -192,6 +193,7 @@ class ReviewPage(QWidget):
         repeated = mode == "repeated"
         self.keep_all_button.setText("Keep all" if repeated else "Keep all (not duplicates)")
         self.keep_one_button.setVisible(repeated)
+        self.fullscreen_button.setVisible(repeated)
         self._show_group(0)
 
     def _show_group(self, index: int) -> None:
@@ -281,6 +283,16 @@ class ReviewPage(QWidget):
 
     def _skip(self) -> None:
         self._answer(None)
+
+    def _open_fullscreen(self) -> None:
+        """Show the group full screen, then tick the cards the owner kept there."""
+        viewer = FullscreenViewer(self._root, self._groups[self._index], self._ticked(), self)
+        viewer.showFullScreen()
+        viewer.exec()
+        keep = viewer.keep_result()
+        viewer.dispose()
+        for card in self.cards:
+            card.keep_check.setChecked(card.candidate.rel in keep)
 
     def _previous(self) -> None:
         if self._index > 0:
