@@ -3,8 +3,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageFilter
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -51,6 +52,40 @@ def make_mp4():
             cmd += ["-metadata", f"creation_time={creation_time}"]
         cmd.append(str(path))
         subprocess.run(cmd, check=True)
+        return path
+
+    return _make
+
+
+@pytest.fixture
+def make_pattern_jpeg():
+    """A seeded random pattern that looks the same at any size.
+
+    Low-frequency noise (a 16x12 grid, bicubic upscaled) carries the overall
+    look, so resized copies hash alike. A finer 64x48 grid upscaled with
+    hard block edges adds detail, so blur measurably lowers sharpness.
+    """
+
+    def _make(path: Path, seed: int, size=(800, 600), exif_dt: str | None = None,
+              orientation: int | None = None, shift: int = 0, blur: float = 0.0,
+              quality: int = 90) -> Path:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rng = np.random.default_rng(seed)
+        coarse = rng.integers(0, 256, (12, 16, 3), dtype=np.uint8)
+        fine = rng.integers(0, 256, (48, 64, 3), dtype=np.uint8)
+        smooth = np.asarray(Image.fromarray(coarse).resize(size, Image.Resampling.BICUBIC))
+        edges = np.asarray(Image.fromarray(fine).resize(size, Image.Resampling.NEAREST))
+        pixels = (0.65 * smooth + 0.35 * edges).astype(np.uint8)
+        img = Image.fromarray(np.roll(pixels, shift, axis=1))
+        if blur:
+            img = img.filter(ImageFilter.GaussianBlur(blur))
+        exif = Image.Exif()
+        if exif_dt is not None:
+            exif.get_ifd(0x8769)[36867] = exif_dt
+        if orientation is not None:
+            exif[0x0112] = orientation
+        img.save(path, "JPEG", quality=quality, exif=exif)
         return path
 
     return _make

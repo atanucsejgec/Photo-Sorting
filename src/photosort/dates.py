@@ -1,4 +1,4 @@
-"""Work out the date a photo or video was taken.
+"""Work out the date (or date and time) a photo or video was taken.
 
 Order: the file's own metadata, then a date in its filename. The file's
 modified date is never used: copying a file changes it.
@@ -33,6 +33,8 @@ FILENAME_MIN = date(2000, 1, 1)
 _MS_EPOCH = re.compile(r"^(\d{13})(?!\d)")
 # Lookahead so every start position is tried, not only non-overlapping ones.
 _YMD = re.compile(r"(?<!\d)(?=(\d{4})[-_.]?(\d{2})[-_.]?(\d{2}))")
+# HHMMSS straight after a date, with the same optional separators.
+_HMS = re.compile(r"[-_.]?(\d{2})[-_.]?(\d{2})[-_.]?(\d{2})")
 
 
 @dataclass(frozen=True)
@@ -49,15 +51,31 @@ def date_from_filename(name: str, today: date | None = None) -> date | None:
     the first YYYY[-_.]?MM[-_.]?DD not preceded by a digit that is a real
     calendar date within 2000-01-01..today is used.
     """
-    today = today or date.today()
+    found = _read_filename(name, today or date.today())
+    return found[0] if found else None
 
+
+def datetime_from_filename(name: str, today: date | None = None) -> datetime | None:
+    """Return the date and time written in a filename, or None.
+
+    The date is the one date_from_filename finds; it needs a time
+    (HHMMSS, optionally separated like the date) straight after it. A
+    13-digit milliseconds epoch gives its full local time. A date with
+    no time gives None.
+    """
+    found = _read_filename(name, today or date.today())
+    return found[1] if found else None
+
+
+def _read_filename(name: str, today: date) -> tuple[date, datetime | None] | None:
+    """Return the filename's date, and its datetime when a time is written too."""
     m = _MS_EPOCH.match(name)
     if m:
         try:
-            found = datetime.fromtimestamp(int(m.group(1)) / 1000).date()
+            found = datetime.fromtimestamp(int(m.group(1)) / 1000)
         except (OverflowError, OSError, ValueError):
             return None
-        return found if FILENAME_MIN <= found <= today else None
+        return (found.date(), found) if FILENAME_MIN <= found.date() <= today else None
 
     for m in _YMD.finditer(name):
         try:
@@ -65,8 +83,18 @@ def date_from_filename(name: str, today: date | None = None) -> date | None:
         except ValueError:
             continue
         if FILENAME_MIN <= found <= today:
-            return found
+            return found, _time_after(name, m.end(3), found)
     return None
+
+
+def _time_after(name: str, pos: int, day: date) -> datetime | None:
+    t = _HMS.match(name, pos)
+    if t is None:
+        return None
+    try:
+        return datetime(day.year, day.month, day.day, int(t[1]), int(t[2]), int(t[3]))
+    except ValueError:
+        return None
 
 
 def date_from_metadata(path: Path) -> datetime | None:
@@ -99,6 +127,18 @@ def find_date(path: Path) -> DateResult:
     if from_name is not None:
         return DateResult(from_name, "filename")
     return DateResult(None, "none")
+
+
+def find_datetime(path: Path) -> datetime | None:
+    """Return when the file was taken, as a naive local datetime.
+
+    Metadata first (video times converted to local), then a date and time
+    in the filename, else None.
+    """
+    found = date_from_metadata(path)
+    if found is not None:
+        return found.replace(tzinfo=None)
+    return datetime_from_filename(Path(path).name)
 
 
 def _in_metadata_range(value: datetime) -> bool:
