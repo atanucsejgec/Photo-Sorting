@@ -257,3 +257,27 @@ def test_execute_journals_rmdir_before_removing(tmp_path, monkeypatch):
     assert seen == [True]
     assert not (tmp_path / "sub").exists()
     assert load_dirs(tmp_path, j.run_id)[1] == ["sub"]
+
+
+def test_execute_journals_mkdir_before_creating(tmp_path, monkeypatch):
+    # A folder made with no record would be left behind by undo; a record
+    # for a folder never made is harmless (undo only removes empty folders).
+    _write(tmp_path / "a.jpg", b"a")
+    real_mkdir = os.mkdir
+    seen = []
+
+    def spy_mkdir(path, *args, **kwargs):
+        runs = tmp_path / ".photosort" / "runs"
+        (log,) = runs.glob("*.jsonl")
+        rel = os.path.relpath(path, tmp_path)
+        seen.append(f'"path": "{rel}"'.encode() in log.read_bytes())
+        return real_mkdir(path, *args, **kwargs)
+
+    plan = Plan("date", [Move("a.jpg", "x/y/a.jpg")], [])
+    journal = RunJournal.create(tmp_path, "date", False, 1)
+    monkeypatch.setattr(executor.os, "mkdir", spy_mkdir)
+    execute(tmp_path, plan, journal)
+    monkeypatch.undo()
+    assert seen == [True, True]
+    assert (tmp_path / "x/y/a.jpg").read_bytes() == b"a"
+    assert load_dirs(tmp_path, journal.run_id)[0] == ["x", "x/y"]

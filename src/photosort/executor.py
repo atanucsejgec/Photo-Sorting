@@ -87,18 +87,23 @@ class ExecResult:
 
 
 def _make_parents(root: Path, dst: str, journal: RunJournal) -> None:
-    """Create dst's missing parent folders top-down, journalling each one made."""
+    """Create dst's missing parent folders top-down, journalling each one first.
+
+    Journal first: a record for a folder that then is not made (or appeared
+    meanwhile) is harmless, as undo only removes folders that are empty; a
+    folder made with no record would be left behind by undo.
+    """
     parts = dst.split("/")[:-1]
     for depth in range(1, len(parts) + 1):
         rel = "/".join(parts[:depth])
         path = root / rel
         if path.is_dir():
             continue
-        try:
-            path.mkdir()
-        except FileExistsError:
-            continue  # appeared meanwhile; it is not ours to record
         journal.record_dir_created(rel)
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            continue  # appeared meanwhile
 
 
 def _is_empty_dir(path: Path) -> bool:
