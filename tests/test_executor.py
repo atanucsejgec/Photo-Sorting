@@ -1,0 +1,218 @@
+import errno
+import os
+import threading
+
+import pytest
+
+from photosort import executor
+from photosort.executor import ExecResult, execute, move_file
+from photosort.journal import JournalMove, RunJournal, load_dirs, load_moves, load_runs
+from photosort.plan import Move, Plan
+
+
+def _write(path, data: bytes):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
+def _run(root, moves, **kwargs) -> tuple[ExecResult, RunJournal]:
+    plan = Plan("date", [Move(s, d) for s, d in moves], [])
+    journal = RunJournal.create(root, "date", False, len(moves))
+    return execute(root, plan, journal, **kwargs), journal
+
+
+def test_execute_moves_and_journals(tmp_path, make_jpeg):
+    make_jpeg(tmp_path / "a.jpg")
+    make_jpeg(tmp_path / "b.jpg")
+    result, j = _run(tmp_path, [("a.jpg", "2025/a.jpg"), ("b.jpg", "No Date/b.jpg")])
+    assert (tmp_path / "2025/a.jpg").is_file()
+    assert (tmp_path / "No Date/b.jpg").is_file()
+    assert not (tmp_path / "a.jpg").exists()
+    assert not (tmp_path / "b.jpg").exists()
+    assert result == ExecResult(moved=2, skipped=[], cancelled=False, run_id=j.run_id)
+    assert load_moves(tmp_path, j.run_id) == [
+        JournalMove("a.jpg", "2025/a.jpg", True),
+        JournalMove("b.jpg", "No Date/b.jpg", True),
+    ]
+    (run,) = load_runs(tmp_path)
+    assert (run.status, run.moved) == ("done", 2)
+
+
+def test_execute_records_created_dirs(tmp_path):
+    _write(tmp_path / "a.jpg", b"a")
+    _write(tmp_path / "2025/old.jpg", b"o")
+    _, j = _run(tmp_path, [("a.jpg", "2025/02-February/20-02-2025/a.jpg")])
+    created, removed = load_dirs(tmp_path, j.run_id)
+    assert created == ["2025/02-February", "2025/02-February/20-02-2025"]
+    assert removed == []
+
+
+def test_execute_never_overwrites(tmp_path):
+    _write(tmp_path / "a.jpg", b"new")
+    _write(tmp_path / "d/a.jpg", b"original")
+    result, j = _run(tmp_path, [("a.jpg", "d/a.jpg")])
+    assert (tmp_path / "d/a.jpg").read_bytes() == b"original"
+    assert (tmp_path / "d/a (1).jpg").read_bytes() == b"new"
+    assert result.moved == 1
+    assert load_moves(tmp_path, j.run_id) == [JournalMove("a.jpg", "d/a (1).jpg", True)]
+
+
+def test_execute_reallocates_on_case_variant_clash(tmp_path):
+    _write(tmp_path / "a.jpg", b"new")
+    _write(tmp_path / "d/A.JPG", b"original")
+    _, j = _run(tmp_path, [("a.jpg", "d/a.jpg")])
+    assert (tmp_path / "d/A.JPG").read_bytes() == b"original"
+    assert (tmp_path / "d/a (1).jpg").read_bytes() == b"new"
+    assert load_moves(tmp_path, j.run_id)[0].dst == "d/a (1).jpg"
+
+
+def test_execute_skips_missing_source(tmp_path):
+    _write(tmp_path / "b.jpg", b"b")
+    result, j = _run(tmp_path, [("gone.jpg", "x/gone.jpg"), ("b.jpg", "x/b.jpg")])
+    assert result.skipped == ["gone.jpg"]
+    assert result.moved == 1
+    assert (tmp_path / "x/b.jpg").read_bytes() == b"b"
+    assert load_moves(tmp_path, j.run_id) == [JournalMove("b.jpg", "x/b.jpg", True)]
+
+
+def test_move_file_refuses_existing_dst(tmp_path):
+    src = _write(tmp_path / "a.jpg", b"src")
+    dst = _write(tmp_path / "b.jpg", b"dst")
+    with pytest.raises(FileExistsError):
+        move_file(src, dst)
+    assert src.read_bytes() == b"src"
+    assert dst.read_bytes() == b"dst"
+
+
+def _fake_cross_device(monkeypatch, src):
+    real_rename = os.rename
+
+    def fake_rename(a, b, *args, **kwargs):
+        if os.fspath(a) == os.fspath(src):
+            raise OSError(errno.EXDEV, "x")
+        return real_rename(a, b, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", fake_rename)
+
+
+def test_move_file_cross_device(tmp_path, monkeypatch):
+    data = os.urandom(200_000)
+    src = _write(tmp_path / "a.jpg", data)
+    dst = tmp_path / "other" / "a.jpg"
+    dst.parent.mkdir()
+    _fake_cross_device(monkeypatch, src)
+    move_file(src, dst)
+    assert dst.read_bytes() == data
+    assert not src.exists()
+    assert os.listdir(dst.parent) == ["a.jpg"]  # no temp file left behind
+
+
+def test_move_file_cross_device_mismatch_keeps_source(tmp_path, monkeypatch):
+    src = _write(tmp_path / "a.jpg", b"good bytes")
+    dst = tmp_path / "other" / "a.jpg"
+    dst.parent.mkdir()
+    _fake_cross_device(monkeypatch, src)
+
+    def bad_copy(a, b, *args, **kwargs):
+        with open(b, "wb") as f:
+            f.write(b"bad bytes!")
+
+    monkeypatch.setattr(executor.shutil, "copy2", bad_copy)
+    with pytest.raises(IOError):
+        move_file(src, dst)
+    assert src.read_bytes() == b"good bytes"
+    assert os.listdir(dst.parent) == []
+
+
+def test_move_file_cross_device_refuses_existing_dst(tmp_path, monkeypatch):
+    src = _write(tmp_path / "a.jpg", b"src")
+    dst = _write(tmp_path / "other" / "a.jpg", b"dst")
+    _fake_cross_device(monkeypatch, src)
+    with pytest.raises(FileExistsError):
+        move_file(src, dst)
+    assert src.read_bytes() == b"src"
+    assert dst.read_bytes() == b"dst"
+    assert os.listdir(dst.parent) == ["a.jpg"]
+
+
+def test_execute_removes_empty_source_dirs(tmp_path):
+    _write(tmp_path / "sub/a.jpg", b"a")
+    _write(tmp_path / "deep/er/b.jpg", b"b")
+    _write(tmp_path / "keep/c.jpg", b"c")
+    _write(tmp_path / "keep/other.txt", b"t")
+    _, j = _run(tmp_path, [
+        ("sub/a.jpg", "x/a.jpg"), ("deep/er/b.jpg", "x/b.jpg"), ("keep/c.jpg", "x/c.jpg"),
+    ])
+    assert not (tmp_path / "sub").exists()
+    assert not (tmp_path / "deep").exists()
+    assert (tmp_path / "keep/other.txt").exists()
+    assert tmp_path.is_dir()
+    assert (tmp_path / ".photosort").is_dir()
+    _, removed = load_dirs(tmp_path, j.run_id)
+    assert sorted(removed) == ["deep", "deep/er", "sub"]
+    assert removed.index("deep/er") < removed.index("deep")
+
+
+def test_execute_keeps_dst_parent_dirs(tmp_path):
+    # A file moved out of a folder that is also the parent of another move's
+    # target must not see that folder removed.
+    _write(tmp_path / "x/a.jpg", b"a")
+    _write(tmp_path / "b.jpg", b"b")
+    _, j = _run(tmp_path, [("x/a.jpg", "a.jpg"), ("b.jpg", "x/b.jpg")])
+    assert (tmp_path / "x/b.jpg").read_bytes() == b"b"
+    assert load_dirs(tmp_path, j.run_id)[1] == []
+
+
+def test_execute_cancel(tmp_path):
+    for name in ("a.jpg", "b.jpg", "c.jpg"):
+        _write(tmp_path / "sub" / name, name.encode())
+    cancel = threading.Event()
+    calls = []
+
+    def progress(done, total):
+        calls.append((done, total))
+        cancel.set()
+
+    result, j = _run(
+        tmp_path,
+        [("sub/a.jpg", "x/a.jpg"), ("sub/b.jpg", "x/b.jpg"), ("sub/c.jpg", "x/c.jpg")],
+        progress=progress, cancel=cancel,
+    )
+    assert result.cancelled is True
+    assert result.moved == 1
+    assert calls == [(1, 3)]
+    assert (tmp_path / "sub/b.jpg").exists()
+    (run,) = load_runs(tmp_path)
+    assert (run.status, run.moved) == ("cancelled", 1)
+
+
+def test_execute_progress_counts_every_move(tmp_path):
+    _write(tmp_path / "a.jpg", b"a")
+    calls = []
+    _run(tmp_path, [("gone.jpg", "x/gone.jpg"), ("a.jpg", "x/a.jpg")],
+         progress=lambda d, t: calls.append((d, t)))
+    assert calls == [(1, 2), (2, 2)]
+
+
+def test_execute_failure_marks_failed_and_keeps_journal(tmp_path, monkeypatch):
+    _write(tmp_path / "a.jpg", b"a")
+    _write(tmp_path / "b.jpg", b"b")
+    real_move = executor.move_file
+
+    def flaky(src, dst):
+        if src.name == "b.jpg":
+            raise PermissionError("nope")
+        real_move(src, dst)
+
+    monkeypatch.setattr(executor, "move_file", flaky)
+    plan = Plan("date", [Move("a.jpg", "x/a.jpg"), Move("b.jpg", "x/b.jpg")], [])
+    j = RunJournal.create(tmp_path, "date", False, 2)
+    with pytest.raises(PermissionError):
+        execute(tmp_path, plan, j)
+    assert load_moves(tmp_path, j.run_id) == [
+        JournalMove("a.jpg", "x/a.jpg", True), JournalMove("b.jpg", "x/b.jpg", False),
+    ]
+    (run,) = load_runs(tmp_path)
+    assert (run.status, run.moved) == ("failed", 1)
+    assert (tmp_path / "b.jpg").read_bytes() == b"b"
