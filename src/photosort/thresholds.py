@@ -26,7 +26,8 @@ FACE_SURE = 0.45  # at or above: surely that person
 FACE_UNSURE = 0.30  # from here up to FACE_SURE: ask the owner; below: a stranger
 # Face detection (SCRFD).
 FACE_DET_SCORE = 0.5  # min detector score for a face
-FACE_NMS_IOU = 0.4  # overlapping detections above this IoU are one face
+FACE_NMS_IOU = 0.4  # a detection overlapping a better one at or above this IoU is dropped
 FACE_DET_SIZE = 640  # the detector's square input, in pixels
 FACE_DECODE_PX = 1600  # photos are decoded at most this long side for faces
 FACE_MIN_PX = 24  # faces whose shortest box side (decoded pixels) is below this are ignored
+FACE_CROP_MARGIN = 0.3  # face pictures for the UI add this fraction of the face on each side

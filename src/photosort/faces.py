@@ -9,6 +9,7 @@ FACE_DECODE_PX on the long side. All boxes and landmarks are in that decoded
 photo's pixels, whose size each Face carries as image_size.
 """
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from PIL import Image
 from photosort.ai import models, runtime
 from photosort.imageinfo import open_image
 from photosort.thresholds import (
+    FACE_CROP_MARGIN,
     FACE_DECODE_PX,
     FACE_DET_SCORE,
     FACE_DET_SIZE,
@@ -33,7 +35,6 @@ _ALIGNED_PX = 112
 # Where ArcFace expects the eyes, nose tip and mouth corners in its 112² crop.
 _TEMPLATE = np.array([[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
                       [41.5493, 92.3655], [70.7299, 92.2041]], np.float64)
-_CROP_MARGIN = 0.3  # face_crop adds this fraction of the face on each side
 
 
 @dataclass(frozen=True, eq=False)
@@ -136,7 +137,7 @@ def face_crop(path: Path, box: Box, size: int = 160) -> Image.Image:
     """
     img = _load(path)
     x1, y1, x2, y2 = box
-    side = max(x2 - x1, y2 - y1, 1) * (1 + 2 * _CROP_MARGIN)
+    side = max(x2 - x1, y2 - y1, 1) * (1 + 2 * FACE_CROP_MARGIN)
     side = min(side, img.width, img.height)
     left = min(max((x1 + x2 - side) / 2, 0), img.width - side)
     top = min(max((y1 + y2 - side) / 2, 0), img.height - side)
@@ -152,18 +153,21 @@ class FaceEngine:
         self.use_gpu = use_gpu
         self._det = None
         self._rec = None
+        self._open_lock = threading.Lock()  # so each model is opened only once
 
     def _detection(self):
-        if self._det is None:
-            self._det = runtime.make_session(models.model_path("face_detection"),
-                                             self.use_gpu)
-        return self._det
+        with self._open_lock:
+            if self._det is None:
+                self._det = runtime.make_session(models.model_path("face_detection"),
+                                                 self.use_gpu)
+            return self._det
 
     def _recognition(self):
-        if self._rec is None:
-            self._rec = runtime.make_session(models.model_path("face_recognition"),
-                                             self.use_gpu)
-        return self._rec
+        with self._open_lock:
+            if self._rec is None:
+                self._rec = runtime.make_session(models.model_path("face_recognition"),
+                                                 self.use_gpu)
+            return self._rec
 
     def detect(self, img: Image.Image) -> list[tuple[Box, np.ndarray, float]]:
         """The faces in img as (box, landmarks (5,2), score), highest score first.
