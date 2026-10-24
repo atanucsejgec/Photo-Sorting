@@ -1,4 +1,4 @@
-"""Tunable limits for the duplicate and repeated-shot finders, in one place.
+"""Tunable limits for the duplicate, repeated-shot and face finders, in one place.
 
 All values are the builder's defaults (design section 9) and can be tuned.
 """
@@ -20,3 +20,13 @@ SHARP_BLURRY = 0.6  # below this fraction: "blurry"
 SHARPNESS_WIDTH = 512  # images are resized to this width before measuring
 
 THUMB_PX = 240  # longest side of review thumbnails
+
+# Faces: matching a face to a remembered person by embedding similarity.
+FACE_SURE = 0.45  # at or above: surely that person
+FACE_UNSURE = 0.30  # from here up to FACE_SURE: ask the owner; below: a stranger
+# Face detection (SCRFD).
+FACE_DET_SCORE = 0.5  # min detector score for a face
+FACE_NMS_IOU = 0.4  # overlapping detections above this IoU are one face
+FACE_DET_SIZE = 640  # the detector's square input, in pixels
+FACE_DECODE_PX = 1600  # photos are decoded at most this long side for faces
+FACE_MIN_PX = 24  # faces whose shortest box side (decoded pixels) is below this are ignored
