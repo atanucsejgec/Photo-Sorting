@@ -17,6 +17,8 @@ TODAY = date(2026, 10, 24)
         ("VID20250301101010.mp4", date(2025, 3, 1)),
         ("Screenshot_2025-02-20-18-13-03-123_com.whatsapp.jpg", date(2025, 2, 20)),
         ("PXL_20250220_181303123.jpg", date(2025, 2, 20)),
+        # An out-of-range calendar date (1201-01-15) is skipped, not the end.
+        ("DSC_1201_0115_20250220.jpg", date(2025, 2, 20)),
     ],
 )
 def test_filename_patterns(name, expected):

@@ -45,9 +45,9 @@ def date_from_filename(name: str, today: date | None = None) -> date | None:
     """Return the date written in a filename, or None.
 
     A name starting with exactly 13 digits is milliseconds since the Unix
-    epoch (local time). Otherwise the first YYYY[-_.]?MM[-_.]?DD not preceded
-    by a digit that is a real calendar date is used. Dates outside
-    2000-01-01..today give None.
+    epoch (local time); outside 2000-01-01..today it gives None. Otherwise
+    the first YYYY[-_.]?MM[-_.]?DD not preceded by a digit that is a real
+    calendar date within 2000-01-01..today is used.
     """
     today = today or date.today()
 
@@ -64,7 +64,8 @@ def date_from_filename(name: str, today: date | None = None) -> date | None:
             found = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
         except ValueError:
             continue
-        return found if FILENAME_MIN <= found <= today else None
+        if FILENAME_MIN <= found <= today:
+            return found
     return None
 
 
