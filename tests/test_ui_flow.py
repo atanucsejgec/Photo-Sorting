@@ -521,7 +521,8 @@ def test_cancel_review_returns_home(qtbot, make_window, photos, make_pattern_jpe
     qtbot.waitUntil(lambda: w.current_page() is w.review_page)
     w.review_page.cancel_button.click()
     assert w.current_page() is w.home
-    assert sorted(p.name for p in photos.iterdir()) == ["a.jpg", "b.jpg"]
+    # the analysis cache is in .photosort; no photo moved
+    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == ["a.jpg", "b.jpg"]
 
 
 def test_cancelled_finder_returns_home(qtbot, make_window, photos, monkeypatch):
@@ -548,7 +549,8 @@ def test_planning_error_goes_home(qtbot, make_window, photos, make_pattern_jpeg,
     w.review_page.keep_one_button.click()
     assert w.current_page() is w.home
     assert errors == ["Could not plan the moves: drive gone"]
-    assert sorted(p.name for p in photos.iterdir()) == ["a.jpg", "b.jpg"]
+    # the analysis cache is in .photosort; no photo moved
+    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == ["a.jpg", "b.jpg"]
 
 
 def _stubborn(result, started: threading.Event):

@@ -9,6 +9,7 @@ FACE_DECODE_PX on the long side. All boxes and landmarks are in that decoded
 photo's pixels, whose size each Face carries as image_size.
 """
 
+import struct
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,41 @@ class Face:
     score: float
     embedding: np.ndarray  # (512,) float32, unit length
     image_size: tuple[int, int]  # (width, height) of the decoded photo
+
+
+FACES_KIND = "faces-v1"  # the analysis cache kind of pack_faces' format
+_COUNT = struct.Struct("<I")
+_FACE_HEAD = struct.Struct("<4ddII")  # box, score, image width and height
+_FACE_ARRAYS = (5 * 2 + 512) * 4  # landmarks then embedding, float32
+_FACE_SIZE = _FACE_HEAD.size + _FACE_ARRAYS
+
+
+def pack_faces(faces: list[Face]) -> bytes:
+    """faces as bytes in the "faces-v1" format; unpack_faces reverses it exactly."""
+    parts = [_COUNT.pack(len(faces))]
+    for face in faces:
+        parts.append(_FACE_HEAD.pack(*face.box, face.score, *face.image_size))
+        parts.append(np.asarray(face.landmarks, "<f4").reshape(5, 2).tobytes())
+        parts.append(np.asarray(face.embedding, "<f4").reshape(512).tobytes())
+    return b"".join(parts)
+
+
+def unpack_faces(data: bytes) -> list[Face]:
+    """The faces packed by pack_faces; raises ValueError if data isn't such."""
+    if len(data) < _COUNT.size:
+        raise ValueError("not packed faces: too short")
+    (count,) = _COUNT.unpack_from(data)
+    if len(data) != _COUNT.size + count * _FACE_SIZE:
+        raise ValueError("not packed faces: wrong length")
+    faces = []
+    for n in range(count):
+        offset = _COUNT.size + n * _FACE_SIZE
+        *box, score, width, height = _FACE_HEAD.unpack_from(data, offset)
+        arrays = np.frombuffer(data, "<f4", 5 * 2 + 512, offset + _FACE_HEAD.size)
+        landmarks = arrays[:10].reshape(5, 2).astype(np.float32)  # copies
+        embedding = arrays[10:].astype(np.float32)
+        faces.append(Face(tuple(box), landmarks, score, embedding, (width, height)))
+    return faces
 
 
 def _load(path: Path) -> Image.Image:

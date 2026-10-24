@@ -31,3 +31,4 @@ FACE_DET_SIZE = 640  # the detector's square input, in pixels
 FACE_DECODE_PX = 1600  # photos are decoded at most this long side for faces
 FACE_MIN_PX = 24  # faces whose shortest box side (decoded pixels) is below this are ignored
 FACE_CROP_MARGIN = 0.3  # face pictures for the UI add this fraction of the face on each side
+PERSON_THUMB_PX = 160  # longest side of a remembered person's face picture

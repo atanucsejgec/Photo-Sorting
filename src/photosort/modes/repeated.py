@@ -14,6 +14,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
+from photosort.cache import AnalysisCache
 from photosort.dates import find_datetime
 from photosort.groups import Candidate, Group, is_copy_pair, sharpest
 from photosort.media import kind
@@ -33,25 +34,27 @@ def find_repeated_groups(
     progress(i, total) is called after each photo is looked at; cancel is
     checked before each one. Videos, unreadable photos and photos with no
     taken time are skipped.
+    Photos measured on an earlier run are taken from root's analysis cache.
     """
     root = Path(root)
     photos = [rel for rel in scan(root, include_subfolders) if kind(rel) == "photo"]
     total = len(photos)
     shots: list[tuple[Candidate, int]] = []  # each with its perceptual hash
-    for i, rel in enumerate(photos, start=1):
-        if cancel is not None and cancel.is_set():
-            return None
-        shot = _look_at(root / rel, rel)
-        if shot is not None:
-            shots.append(shot)
-        if progress is not None:
-            progress(i, total)
+    with AnalysisCache(root) as cache:
+        for i, rel in enumerate(photos, start=1):
+            if cancel is not None and cancel.is_set():
+                return None
+            shot = _look_at(root / rel, rel, cache)
+            if shot is not None:
+                shots.append(shot)
+            if progress is not None:
+                progress(i, total)
     if cancel is not None and cancel.is_set():
         return None
     return _chains(shots)
 
 
-def _look_at(path: Path, rel: str) -> tuple[Candidate, int] | None:
+def _look_at(path: Path, rel: str, cache: AnalysisCache) -> tuple[Candidate, int] | None:
     """Return the photo as a Candidate with its perceptual hash, or None to skip it."""
     taken = find_datetime(path)
     if taken is None:
@@ -60,7 +63,7 @@ def _look_at(path: Path, rel: str) -> tuple[Candidate, int] | None:
         size = os.stat(path).st_size
     except OSError:
         return None
-    measured = measure_photo(path)
+    measured = measure_photo(path, cache)
     if measured is None:
         return None
     width, height, phash, sharp = measured

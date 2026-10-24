@@ -17,6 +17,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
+from photosort.cache import AnalysisCache
 from photosort.dates import find_datetime
 from photosort.groups import Candidate, Group, best_copy, close_pairs, is_copy_pair, pixels
 from photosort.hashing import sha256_file
@@ -42,6 +43,7 @@ def find_duplicate_groups(
     progress(i, total) is called after each file is looked at; cancel is
     checked before each one. Files that can't be read are skipped (an
     unreadable photo can still be an exact copy).
+    Photos measured on an earlier run are taken from root's analysis cache.
     """
     root = Path(root)
     files = scan(root, include_subfolders)
@@ -57,28 +59,29 @@ def find_duplicate_groups(
     digests: dict[str, str] = {}  # only for files whose byte size collides
     hashes: dict[str, int] = {}  # perceptual hashes of readable photos
     candidates: dict[str, Candidate] = {}  # files that may be in a group
-    for i, rel in enumerate(files, start=1):
-        if cancel is not None and cancel.is_set():
-            return None
-        if rel in sizes:
-            path = root / rel
-            if size_counts[sizes[rel]] > 1:
-                try:
-                    digests[rel] = sha256_file(path)
-                except OSError:
-                    pass
-            file_kind = kind(rel)
-            width = height = sharp = None
-            if file_kind == "photo":
-                measured = measure_photo(path)
-                if measured is not None:
-                    width, height, hashes[rel], sharp = measured
-            if rel in hashes or rel in digests:
-                candidates[rel] = Candidate(
-                    rel, file_kind, width, height, sizes[rel], find_datetime(path), sharp,
-                )
-        if progress is not None:
-            progress(i, total)
+    with AnalysisCache(root) as cache:
+        for i, rel in enumerate(files, start=1):
+            if cancel is not None and cancel.is_set():
+                return None
+            if rel in sizes:
+                path = root / rel
+                if size_counts[sizes[rel]] > 1:
+                    try:
+                        digests[rel] = sha256_file(path)
+                    except OSError:
+                        pass
+                file_kind = kind(rel)
+                width = height = sharp = None
+                if file_kind == "photo":
+                    measured = measure_photo(path, cache)
+                    if measured is not None:
+                        width, height, hashes[rel], sharp = measured
+                if rel in hashes or rel in digests:
+                    candidates[rel] = Candidate(
+                        rel, file_kind, width, height, sizes[rel], find_datetime(path), sharp,
+                    )
+            if progress is not None:
+                progress(i, total)
     if cancel is not None and cancel.is_set():
         return None
     return _group(candidates, digests, hashes)
