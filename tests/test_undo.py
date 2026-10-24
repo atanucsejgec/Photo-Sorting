@@ -1,4 +1,6 @@
 import os
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -209,3 +211,73 @@ def test_undo_twice_raises(tmp_path):
 def test_undo_unknown_run_raises(tmp_path):
     with pytest.raises(ValueError):
         undo_run(tmp_path, "no-such-run")
+
+
+def _case_sensitive(path) -> bool:
+    probe = path / "case-probe"
+    probe.write_bytes(b"")
+    sensitive = not (path / "CASE-PROBE").exists()
+    probe.unlink()
+    return sensitive
+
+
+def _temp_fs_case_sensitive() -> bool:
+    with tempfile.TemporaryDirectory() as d:
+        return _case_sensitive(Path(d))
+
+
+needs_case_sensitive_fs = pytest.mark.skipif(
+    not _temp_fs_case_sensitive(),
+    reason="case twins cannot exist on a case-insensitive filesystem",
+)
+
+
+def test_undo_renames_around_case_twin_of_file(tmp_path):
+    _write(tmp_path / "a.jpg", b"a")
+    run_id = _run(tmp_path, [("a.jpg", "d/a.jpg")])
+    _write(tmp_path / "A.JPG", b"owner's")
+    result = undo_run(tmp_path, run_id)
+    assert result == UndoResult(restored=1, missing=[], renamed=[("a.jpg", "a (1).jpg")])
+    assert (tmp_path / "A.JPG").read_bytes() == b"owner's"
+    assert (tmp_path / "a (1).jpg").read_bytes() == b"a"
+    if _case_sensitive(tmp_path):
+        assert not (tmp_path / "a.jpg").exists()
+
+
+@needs_case_sensitive_fs
+def test_undo_reuses_case_twin_folder_for_restored_file(tmp_path):
+    _write(tmp_path / "sub/a.jpg", b"a")
+    run_id = _run(tmp_path, [("sub/a.jpg", "x/a.jpg")])
+    (tmp_path / "SUB").mkdir()  # owner made it after the run
+    result = undo_run(tmp_path, run_id)
+    assert result == UndoResult(restored=1, missing=[], renamed=[("sub/a.jpg", "SUB/a.jpg")])
+    assert (tmp_path / "SUB/a.jpg").read_bytes() == b"a"
+    assert sorted(os.listdir(tmp_path)) == [".photosort", "SUB"]
+
+
+@needs_case_sensitive_fs
+def test_undo_does_not_recreate_removed_dir_beside_case_twin(tmp_path):
+    _write(tmp_path / "deep/er/a.jpg", b"a")
+    run_id = _run(tmp_path, [("deep/er/a.jpg", "x/a.jpg")])
+    (tmp_path / "x/a.jpg").unlink()
+    (tmp_path / "DEEP/ER").mkdir(parents=True)
+    result = undo_run(tmp_path, run_id)
+    assert result.missing == ["deep/er/a.jpg"]
+    assert sorted(os.listdir(tmp_path)) == [".photosort", "DEEP"]
+    assert os.listdir(tmp_path / "DEEP") == ["ER"]
+
+
+def test_undo_restores_exact_name_freed_earlier_in_the_undo(tmp_path):
+    # Undoing m3 lists root while n.jpg (m2's dst) is still there; undoing m2
+    # then moves it away, so m1 must still get its exact name back.
+    run_id = _crashed_journal(tmp_path, [
+        ("n.jpg", "e/n.jpg", True), ("d/n.jpg", "n.jpg", True), ("r.jpg", "e/r.jpg", True),
+    ])
+    _write(tmp_path / "e/n.jpg", b"root n")
+    _write(tmp_path / "n.jpg", b"d n")
+    _write(tmp_path / "e/r.jpg", b"r")
+    result = undo_run(tmp_path, run_id)
+    assert result == UndoResult(restored=3, missing=[], renamed=[])
+    assert (tmp_path / "n.jpg").read_bytes() == b"root n"
+    assert (tmp_path / "d/n.jpg").read_bytes() == b"d n"
+    assert (tmp_path / "r.jpg").read_bytes() == b"r"

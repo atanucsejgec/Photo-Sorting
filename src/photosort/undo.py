@@ -5,7 +5,8 @@ file never left its source (power loss), and a move with no done mark can
 have its file at the source, the target, or both (a cross-drive copy whose
 source could not be removed). Every recorded move is therefore checked
 against the disk. Nothing is ever overwritten or deleted; when the original
-place is taken, the file comes back as "name (1).ext" beside it.
+place is taken, even by a name differing only in case (the owner's drive is
+NTFS), the file comes back as "name (1).ext" beside it.
 """
 
 import os
@@ -60,6 +61,33 @@ def _is_ours(rel: str) -> bool:
     return rel.split("/")[0].casefold() == PHOTOSORT_DIR
 
 
+def _existing_dir(root: Path, rel: str) -> str:
+    """Return folder rel with each part spelt as on disk, if a case variant exists.
+
+    The owner's drive is NTFS, so a "SUB" made after the run is the same
+    folder as the run's "sub": reuse it rather than create a twin beside it.
+    Parts with no match keep their spelling (they are yet to be created).
+    """
+    if not rel:
+        return rel
+    resolved: list[str] = []
+    current = root
+    for part in rel.split("/"):
+        if not (current / part).is_dir():
+            try:
+                matches = sorted(
+                    entry.name for entry in os.scandir(current)
+                    if entry.name.casefold() == part.casefold() and entry.is_dir()
+                )
+            except OSError:
+                matches = []
+            if matches:
+                part = matches[0]
+        resolved.append(part)
+        current = current / part
+    return "/".join(resolved)
+
+
 def undo_run(
     root: Path,
     run_id: str,
@@ -82,15 +110,23 @@ def undo_run(
     result = UndoResult(restored=0)
     moves = load_moves(root, run_id)
     total = len(moves)
+    # One allocator lists each folder once (casefolded) and remembers the
+    # names it gave out. Its listing can be stale only by still holding names
+    # undo has since moved away, so a clash is re-checked against the disk.
+    allocator = TargetAllocator(root)
     for n, move in enumerate(reversed(moves), start=1):
         src, dst = root / move.src, root / move.dst
         if os.path.lexists(dst):
-            target = move.src
-            if os.path.lexists(src):
+            folder, _, name = move.src.rpartition("/")
+            folder = _existing_dir(root, folder)
+            wanted = f"{folder}/{name}" if folder else name
+            target = allocator.allocate(wanted)
+            if target != wanted:
+                allocator = TargetAllocator(root)
+                target = allocator.allocate(wanted)
+            if target != move.src:
                 # The original place is taken (both copies of a half-finished
-                # cross-drive move, or a new file): keep both. A fresh
-                # allocator sees the folder as it is now.
-                target = TargetAllocator(root).allocate(move.src)
+                # cross-drive move, a new file, or a case twin): keep both.
                 result.renamed.append((move.src, target))
             (root / target).parent.mkdir(parents=True, exist_ok=True)
             move_file(dst, root / target)
@@ -106,7 +142,7 @@ def undo_run(
         if _is_ours(rel):
             continue
         try:
-            (root / rel).mkdir(parents=True, exist_ok=True)
+            (root / _existing_dir(root, rel)).mkdir(parents=True, exist_ok=True)
         except OSError:
             pass  # a file sits there now; the files themselves are back
     for rel in sorted(created, key=lambda r: r.count("/"), reverse=True):
