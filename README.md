@@ -7,7 +7,14 @@ Working now:
 - **Date** mode: `2025/02-February/20-02-2025/`. A day with 3 or more files gets its
   own day folder; a day with 1–2 files goes loose into the month folder.
 
-In progress: Duplicates and Repeated shots. Coming later: Face, Notes & Pages, Type,
+- **Duplicates** mode: finds exact copies and re-saved or resized copies (for example
+  `IMG…~2.jpg` edits, WhatsApp copies), shows them side by side, and moves the ones you
+  don't keep into `Duplicates/`.
+- **Repeated shots** mode: finds burst shots taken seconds apart, with a full-screen
+  compare (arrow keys, side by side, zoom), and moves the ones you don't keep into
+  `Repeated Shots/`.
+
+Nothing is ever deleted. In progress: Face. Coming later: Notes & Pages, Type,
 Content, Bad photos, Events, Location, Camera.
 
 ## Set up on a new computer (Linux)
