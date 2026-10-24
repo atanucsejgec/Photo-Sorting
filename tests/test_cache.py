@@ -130,6 +130,63 @@ def test_database_error_mid_run_degrades(tmp_path, caplog):
         cache.put("photo-v1", photo, b"data")
         assert cache.get("photo-v1", photo) is None
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+    assert sorted(p.name for p in _cache_db(tmp_path).parent.iterdir()) == ["cache.db"]
+
+
+def test_locked_database_is_not_set_aside(tmp_path, monkeypatch, caplog):
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"photo bytes")
+    with AnalysisCache(tmp_path) as cache:
+        cache.put("photo-v1", photo, b"data")
+    real_connect = sqlite3.connect
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(sqlite3, "connect", locked)
+    caplog.set_level(logging.WARNING, logger="photosort")
+    with AnalysisCache(tmp_path) as cache:  # the run carries on without it
+        assert cache.get("photo-v1", photo) is None
+        cache.put("photo-v1", photo, b"other")
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+    assert sorted(p.name for p in _cache_db(tmp_path).parent.iterdir()) == ["cache.db"]
+    monkeypatch.setattr(sqlite3, "connect", real_connect)
+    with AnalysisCache(tmp_path) as cache:
+        assert cache.get("photo-v1", photo) == b"data"
+
+
+class _Corrupt:
+    """Stands in for a connection to a database found damaged while in use."""
+
+    def __init__(self, real):
+        self.real = real
+
+    def execute(self, *args):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    def commit(self):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    def close(self):
+        self.real.close()
+
+
+def test_corruption_found_mid_run_sets_it_aside(tmp_path, caplog):
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"photo bytes")
+    caplog.set_level(logging.WARNING, logger="photosort")
+    with AnalysisCache(tmp_path) as cache:
+        cache.put("photo-v1", photo, b"data")
+        cache._conn = _Corrupt(cache._conn)
+        assert cache.get("photo-v1", photo) is None
+        cache.put("photo-v1", photo, b"data")  # off for the rest of the run
+        assert cache.get("photo-v1", photo) is None
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+    assert (_cache_db(tmp_path).parent / "cache.db.broken-1").is_file()
+    assert not _cache_db(tmp_path).exists()
+    with AnalysisCache(tmp_path) as cache:  # the next run starts afresh
+        cache.put("photo-v1", photo, b"new")
+        assert cache.get("photo-v1", photo) == b"new"
 
 
 def test_measure_photo_round_trips_through_cache(tmp_path, make_pattern_jpeg):

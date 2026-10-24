@@ -20,6 +20,7 @@ from photosort.naming import TargetAllocator
 from photosort.plan import Plan
 
 PHOTOSORT_DIR = ".photosort"
+CACHE_NAME = "cache.db"  # photosort.cache's database, in a .photosort folder
 
 
 def _exists(path: Path) -> bool:
@@ -106,14 +107,51 @@ def _is_empty_dir(path: Path) -> bool:
         return False
 
 
+def _cache_only(path: Path) -> Path | None:
+    """The .photosort in folder path if it is all path holds and it holds
+    nothing but analysis-cache files (cache.db and its side and broken
+    copies); else None. That cache is ours and disposable, never photos."""
+    try:
+        with os.scandir(path) as entries:
+            found = list(entries)
+        if (len(found) != 1 or found[0].name.casefold() != PHOTOSORT_DIR
+                or not found[0].is_dir(follow_symlinks=False)):
+            return None
+        with os.scandir(found[0].path) as entries:
+            if all(_is_cache_file(e) for e in entries):
+                return Path(found[0].path)
+    except OSError:
+        pass
+    return None
+
+
+def _is_cache_file(entry: os.DirEntry) -> bool:
+    return (entry.name.casefold().startswith(CACHE_NAME)
+            and entry.is_file(follow_symlinks=False))
+
+
+def _remove_cache(photosort_dir: Path) -> None:
+    """Remove the analysis-cache files in photosort_dir, then the folder itself.
+
+    Raises OSError if anything else has appeared in it meanwhile.
+    """
+    with os.scandir(photosort_dir) as entries:
+        for entry in entries:
+            if _is_cache_file(entry):
+                os.unlink(entry.path)
+    os.rmdir(photosort_dir)  # fails unless empty
+
+
 def _remove_empty_dirs(
     root: Path, moved: list[tuple[str, str]], planned_dsts: list[str],
     journal: RunJournal,
 ) -> None:
     """Remove source folders the moves left empty, walking up towards root.
 
-    Never removes root, .photosort or anything in it, or a parent of any
-    planned or actual dst.
+    A folder holding only a .photosort with nothing but the analysis cache
+    in it counts as empty: the cache goes with it. Never removes root, a
+    .photosort holding anything else (such as undo records), or a parent of
+    any planned or actual dst.
     """
     keep = {""}
     for dst in planned_dsts + [dst for _, dst in moved]:
@@ -129,12 +167,17 @@ def _remove_empty_dirs(
             if rel.split("/")[0].casefold() == PHOTOSORT_DIR:
                 break
             path = root / rel
-            if not _is_empty_dir(path):
+            empty = _is_empty_dir(path)
+            cache = None if empty else _cache_only(path)
+            if not empty and cache is None:
                 break
             # Journal first: a record for a folder that then stays is harmless
             # (undo's mkdir is a no-op), a removed folder with no record is lost.
+            # Undo recreates the folder; the cache is not worth bringing back.
             journal.record_dir_removed(rel)
             try:
+                if cache is not None:
+                    _remove_cache(cache)
                 os.rmdir(path)  # fails unless empty
             except OSError:
                 break

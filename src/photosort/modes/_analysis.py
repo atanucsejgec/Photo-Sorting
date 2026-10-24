@@ -6,6 +6,9 @@ from pathlib import Path
 from photosort.cache import AnalysisCache
 from photosort.imageinfo import UnreadableImage, analyse, image_size
 
+# Bump the version (photo-v2, ...) whenever what is stored would come out
+# differently: a new packing, or a change to thresholds.SHARPNESS_WIDTH or to
+# how the hash or sharpness is worked out. Old entries are then never read.
 PHOTO_KIND = "photo-v1"
 _PHOTO = struct.Struct("<IIQd")  # width, height, perceptual hash, sharpness
 

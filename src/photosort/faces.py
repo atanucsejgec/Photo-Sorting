@@ -47,7 +47,11 @@ class Face:
     image_size: tuple[int, int]  # (width, height) of the decoded photo
 
 
-FACES_KIND = "faces-v1"  # the analysis cache kind of pack_faces' format
+# The analysis cache kind of pack_faces' format. Bump the version (faces-v2,
+# ...) whenever the faces found would come out differently: a new packing, a
+# new model, or a change to thresholds.FACE_DECODE_PX, FACE_DET_SIZE, FACE_DET_SCORE,
+# FACE_MIN_PX or FACE_NMS_IOU. Old entries are then never read.
+FACES_KIND = "faces-v1"
 _COUNT = struct.Struct("<I")
 _FACE_HEAD = struct.Struct("<4ddII")  # box, score, image width and height
 _FACE_ARRAYS = (5 * 2 + 512) * 4  # landmarks then embedding, float32

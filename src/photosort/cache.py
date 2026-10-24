@@ -5,10 +5,11 @@ e.g. "photo-v1" or "faces-v1"), the file's casefolded name, its byte size
 and its modified time. Moving a file within the folder (say, by a Date sort)
 keeps its entries; changing its content loses them.
 
-The cache never stops a run. A database that is corrupt or can't be opened
-is renamed to cache.db.broken-<n> and a fresh one is started; when even that
-fails (a read-only folder, say) the cache does nothing: get() finds nothing
-and put() stores nothing. Either is logged once, as a warning.
+The cache never stops a run. A database found corrupt (on opening, or later)
+is renamed to cache.db.broken-<n>; on opening, a fresh one is then started.
+Any other trouble (a read-only folder, a database locked by another program)
+turns the cache off for the run: get() finds nothing and put() stores
+nothing. Each is logged once, as a warning.
 
 Data is bytes the caller packs (with struct or numpy), never pickles.
 """
@@ -18,11 +19,10 @@ import os
 import sqlite3
 from pathlib import Path
 
-from photosort.executor import PHOTOSORT_DIR
+from photosort.executor import CACHE_NAME, PHOTOSORT_DIR
 
 _log = logging.getLogger("photosort")
 
-CACHE_NAME = "cache.db"
 _COMMIT_EVERY = 200  # puts between commits, so a crash loses little work
 _SCHEMA = """CREATE TABLE IF NOT EXISTS entries (
     kind TEXT, name TEXT, size INT, mtime_ns INT, data BLOB,
@@ -105,8 +105,9 @@ class AnalysisCache:
         try:
             return _connect(self.path)
         except sqlite3.Error as first:
-            if not self.path.exists():
-                _log.warning("Analysis cache off: can't open %s: %s", self.path, first)
+            if not _is_corrupt(first):
+                _log.warning("Analysis cache off for this run: can't open %s: %s",
+                             self.path, first)
                 return None
             try:
                 broken = _set_aside(self.path)
@@ -120,9 +121,22 @@ class AnalysisCache:
             return conn
 
     def _give_up(self, error: sqlite3.Error) -> None:
-        """Stop using the cache for the rest of this run (logged once)."""
-        _log.warning("Analysis cache off for this run: %s: %s", self.path, error)
+        """Stop using the cache for the rest of this run (logged once).
+
+        A database found corrupt is also set aside, so the next run starts afresh.
+        """
         self._close()
+        if not _is_corrupt(error):
+            _log.warning("Analysis cache off for this run: %s: %s", self.path, error)
+            return
+        try:
+            broken = _set_aside(self.path)
+        except OSError as e:
+            _log.warning("Analysis cache off for this run: %s is corrupt (%s) and "
+                         "can't be moved aside: %s", self.path, error, e)
+            return
+        _log.warning("Analysis cache off for this run: %s was corrupt (%s); moved to %s",
+                     self.path, error, broken.name)
 
     def _close(self) -> None:
         conn, self._conn = self._conn, None
@@ -133,13 +147,21 @@ class AnalysisCache:
                 pass
 
 
+def _is_corrupt(error: sqlite3.Error) -> bool:
+    """Whether error says the file is damaged or not a database at all.
+
+    SQLite reports those (SQLITE_CORRUPT, SQLITE_NOTADB) as a plain
+    DatabaseError; its subclasses, such as OperationalError ("database is
+    locked", "unable to open database file"), are passing trouble.
+    """
+    return type(error) is sqlite3.DatabaseError
+
+
 def _connect(path: Path) -> sqlite3.Connection:
-    """Open path, check it is a sound database and make sure the table exists."""
+    """Open path and make sure the table exists (a file that isn't a database
+    fails here; damage further in shows up when it is read)."""
     conn = sqlite3.connect(path)  # check_same_thread: one thread only
     try:
-        (result,) = conn.execute("PRAGMA quick_check").fetchone()
-        if result != "ok":
-            raise sqlite3.DatabaseError(f"quick_check: {result}")
         conn.execute(_SCHEMA)
         conn.commit()
     except BaseException:

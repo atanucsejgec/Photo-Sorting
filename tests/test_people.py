@@ -149,3 +149,90 @@ def test_unreadable_list_is_not_overwritten(tmp_path):
     with pytest.raises(PeopleError):
         store.add("Amy", _unit(1), _thumb())
     assert (tmp_path / "people.json").read_text() == "{ not json"
+
+
+def _listed(folder):
+    return json.loads((folder / "people.json").read_text())["people"]
+
+
+def test_unreadable_samples_never_forget_the_person(tmp_path):
+    store = PeopleStore(tmp_path)
+    amy = store.add("Amy", _unit(1), _thumb())
+    bob = store.add("Bob", _unit(2), _thumb())
+    good = (tmp_path / f"{amy.id}.npy").read_bytes()
+    (tmp_path / f"{amy.id}.npy").write_bytes(b"held open, half read")
+
+    fresh = PeopleStore(tmp_path)
+    assert [p.id for p in fresh.people()] == [bob.id]  # not offered
+    assert fresh.best_match(_unit(1), [amy.id]) is None
+    fresh.add_samples(bob.id, _unit(3)[None])
+    fresh.add("Cat", _unit(4), _thumb())
+    with pytest.raises(PeopleError, match="already exists"):
+        fresh.add("amy", _unit(5), _thumb())
+    with pytest.raises(PeopleError):
+        fresh.delete(amy.id)
+    assert [p["name"] for p in _listed(tmp_path)] == ["Amy", "Bob", "Cat"]
+    assert (tmp_path / f"{amy.id}.jpg").is_file()
+
+    (tmp_path / f"{amy.id}.npy").write_bytes(good)  # the fault passes
+    back = PeopleStore(tmp_path).people()
+    assert [p.name for p in back] == ["Amy", "Bob", "Cat"]
+    assert np.array_equal(back[0].embeddings[0], _unit(1))
+
+
+@pytest.mark.parametrize("bad", [
+    np.zeros(511, np.float32),
+    np.zeros((0, 512), np.float32),
+    np.zeros((2, 511), np.float32),
+    np.zeros((1, 1, 512), np.float32),
+    np.zeros(512, np.int64),
+])
+def test_bad_sample_shapes_refused(tmp_path, bad):
+    store = PeopleStore(tmp_path)
+    with pytest.raises(PeopleError):
+        store.add("Amy", bad, _thumb())
+    amy = store.add("Amy", _unit(1), _thumb())
+    with pytest.raises(PeopleError):
+        store.add_samples(amy.id, bad)
+    assert store.people()[0].embeddings.shape == (1, 512)
+
+
+def test_samples_of_wrong_shape_on_disk_kept_but_not_used(tmp_path):
+    store = PeopleStore(tmp_path)
+    amy = store.add("Amy", _unit(1), _thumb())
+    np.save(tmp_path / f"{amy.id}.npy", np.zeros((2, 10), np.float32))
+    fresh = PeopleStore(tmp_path)
+    assert fresh.people() == []
+    fresh.add("Bob", _unit(2), _thumb())
+    assert [p["id"] for p in _listed(tmp_path)][0] == amy.id
+    with pytest.raises(PeopleError, match="already exists"):
+        fresh.add("AMY", _unit(3), _thumb())
+
+
+def test_entries_not_ours_are_kept_raw_and_never_used(tmp_path):
+    good_id, other_id = "0123456789abcdef", "fedcba9876543210"
+    np.save(tmp_path / f"{good_id}.npy", _unit(1)[None])
+    np.save(tmp_path / f"{other_id}.npy", _unit(2)[None])
+    outside = tmp_path / "outside.npy"
+    np.save(outside, _unit(3)[None])
+    raw = [
+        {"id": good_id, "name": "Amy", "thumb": f"{good_id}.jpg"},
+        {"id": other_id, "name": "amy", "thumb": f"{other_id}.jpg"},  # repeats Amy
+        {"id": other_id, "name": "Bad/Name", "thumb": f"{other_id}.jpg"},  # not clean
+        {"id": other_id, "name": "Dot.", "thumb": f"{other_id}.jpg"},  # not clean
+        {"id": "../outside", "name": "Eve", "thumb": "../outside.jpg"},  # not an id of ours
+        {"id": "ABCDEF0123456789", "name": "Fay", "thumb": "ABCDEF0123456789.jpg"},
+        {"id": other_id, "name": "Gus", "thumb": "people.json"},  # not its thumbnail
+        "not even an entry",
+    ]
+    (tmp_path / "people.json").write_text(json.dumps({"people": raw}))
+    store = PeopleStore(tmp_path)
+    assert [(p.id, p.name) for p in store.people()] == [(good_id, "Amy")]
+    assert store.best_match(_unit(3), ["../outside"]) is None
+    with pytest.raises(PeopleError):
+        store.delete("../outside")
+    with pytest.raises(PeopleError, match="already exists"):
+        store.add("eve", _unit(4), _thumb())  # a kept entry's name stays taken
+    store.add("Hal", _unit(5), _thumb())
+    assert _listed(tmp_path)[1:len(raw)] == raw[1:]
+    assert outside.is_file()
