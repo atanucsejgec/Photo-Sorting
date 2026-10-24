@@ -456,3 +456,54 @@ def test_planning_error_goes_home(qtbot, make_window, photos, make_pattern_jpeg,
     assert w.current_page() is w.home
     assert errors == ["Could not plan the moves: drive gone"]
     assert sorted(p.name for p in photos.iterdir()) == ["a.jpg", "b.jpg"]
+
+
+def _stubborn(result, started: threading.Event):
+    """A prepare function that runs until Cancel, then returns result all the same."""
+
+    def prepare(root, include_subfolders, progress=None, cancel=None):
+        started.set()
+        cancel.wait(10)
+        return result
+
+    return prepare
+
+
+def test_cancel_after_the_finder_loop_returns_home(qtbot, make_window, photos,
+                                                   make_pattern_jpeg, monkeypatch):
+    from photosort.groups import Candidate, Group
+    from photosort.modes import duplicates
+
+    make_pattern_jpeg(photos / "a.jpg", 1)
+    a = Candidate("a.jpg", "photo", 800, 600, 1, None, None)
+    b = Candidate("b.jpg", "photo", 800, 600, 1, None, None)
+    started = threading.Event()
+    monkeypatch.setattr(duplicates, "find_duplicate_groups",
+                        _stubborn([Group("exact", [a, b], {"a.jpg"})], started))
+    w = make_window()
+    _start_mode(qtbot, w, photos, "duplicates")
+    assert started.wait(5)
+    w.cancel_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is not w.progress_page)
+    assert w.current_page() is w.home
+
+
+def test_cancel_after_planning_returns_home(qtbot, make_window, photos, make_jpeg,
+                                            monkeypatch):
+    from photosort.journal import load_runs
+    from photosort.plan import Move, Plan
+
+    make_jpeg(photos / "a.jpg", EXIF)
+    started = threading.Event()
+    plan = Plan("date", [Move("a.jpg", "2025/a.jpg")], ["1 files → somewhere"])
+    monkeypatch.setattr(date_mode, "prepare_date_plan", _stubborn(plan, started))
+    w = make_window()
+    w.folder_edit.setText(str(photos))
+    w.start_button.click()
+    assert started.wait(5)
+    w.cancel_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is not w.progress_page)
+    assert w.current_page() is w.home
+    w.go_button.click()  # the cancelled plan must not run
+    assert (photos / "a.jpg").is_file()
+    assert load_runs(photos) == []

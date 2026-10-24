@@ -396,10 +396,14 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(False)
         self.progress_label.setText("Stopping…")
 
+    def _cancel_pressed(self) -> bool:
+        """Whether Cancel was pressed for the last Task, which may have finished anyway."""
+        return self._task is not None and self._task.cancel_event.is_set()
+
     # ----- review ----------------------------------------------------------
 
     def _on_groups(self, groups: list[Group] | None) -> None:
-        if groups is None:  # cancelled
+        if groups is None or self._cancel_pressed():
             self._show(self.home)
             return
         if not groups:
@@ -424,7 +428,7 @@ class MainWindow(QMainWindow):
     # ----- summary ---------------------------------------------------------
 
     def _on_plan(self, plan: Plan | None) -> None:
-        if plan is None:  # cancelled
+        if plan is None or self._cancel_pressed():
             self._show(self.home)
             return
         self._plan = plan
