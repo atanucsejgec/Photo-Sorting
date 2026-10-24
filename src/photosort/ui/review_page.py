@@ -23,6 +23,7 @@ from photosort.modes.date_mode import MONTH_NAMES
 from photosort.naming import resolve_existing_dir
 from photosort.thresholds import THUMB_PX
 from photosort.ui.fullscreen_viewer import FullscreenViewer
+from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.worker import Task
 
 _log = logging.getLogger("photosort")
@@ -52,9 +53,7 @@ def _render_thumbnail(token: tuple[int, int], path: Path, progress=None, cancel=
     if cancel is not None and cancel.is_set():
         return (*token, None)
     try:
-        img = thumbnail(path)
-        image = QImage(img.tobytes(), img.width, img.height, 3 * img.width,
-                       QImage.Format.Format_RGB888).copy()  # own the pixels
+        image = pil_to_qimage(thumbnail(path))
     except UnreadableImage:
         return (*token, CANT_SHOW)
     except Exception:  # a thumbnail must never stop the review

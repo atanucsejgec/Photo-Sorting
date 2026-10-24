@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from photosort.groups import Group, sharpness_label
 from photosort.imageinfo import UnreadableImage, open_image
+from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.worker import Task
 
 _log = logging.getLogger("photosort")
@@ -44,9 +45,7 @@ def _render_image(index: int, path: Path, progress=None, cancel=None):
     if cancel is not None and cancel.is_set():
         return index, None
     try:
-        img = open_image(path, VIEW_PX)
-        image = QImage(img.tobytes(), img.width, img.height, 3 * img.width,
-                       QImage.Format.Format_RGB888).copy()  # own the pixels
+        image = pil_to_qimage(open_image(path, VIEW_PX))
     except UnreadableImage:
         return index, CANT_SHOW
     except Exception:  # one photo must never stop the review
