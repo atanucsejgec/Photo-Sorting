@@ -178,6 +178,8 @@ def execute(
             if not _exists(src_path):
                 result.skipped.append(move.src)
             else:
+                # The allocator spells dst's folders as on disk where a case
+                # variant exists, so no case-twin folder is ever created.
                 dst = allocator.allocate(move.dst)
                 _make_parents(root, dst, journal)
                 i = journal.record_intent(move.src, dst)

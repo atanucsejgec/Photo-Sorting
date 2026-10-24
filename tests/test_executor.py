@@ -281,3 +281,27 @@ def test_execute_journals_mkdir_before_creating(tmp_path, monkeypatch):
     assert seen == [True, True]
     assert (tmp_path / "x/y/a.jpg").read_bytes() == b"a"
     assert load_dirs(tmp_path, journal.run_id)[0] == ["x", "x/y"]
+
+
+@pytest.mark.usefixtures("case_sensitive_fs")
+def test_execute_reuses_case_twin_folder(tmp_path, make_jpeg):
+    # The owner's drive is NTFS (used from Windows too) mounted case-sensitively:
+    # a "No Date" beside the owner's "no date" would be a broken twin.
+    from photosort.modes.date_mode import prepare_date_plan
+
+    _write(tmp_path / "no date/old.jpg", b"o")
+    (tmp_path / "2025/02-february").mkdir(parents=True)
+    make_jpeg(tmp_path / "x.jpg")
+    for name in ("a.jpg", "b.jpg", "c.jpg"):
+        make_jpeg(tmp_path / name, "2025:02:20 10:00:00")
+    plan = prepare_date_plan(tmp_path, False)
+    journal = RunJournal.create(tmp_path, "date", False, len(plan.moves))
+    result = execute(tmp_path, plan, journal)
+
+    assert result.moved == 4
+    assert sorted(os.listdir(tmp_path)) == [".photosort", "2025", "no date"]
+    assert sorted(os.listdir(tmp_path / "no date")) == ["old.jpg", "x.jpg"]
+    assert os.listdir(tmp_path / "2025") == ["02-february"]
+    day = tmp_path / "2025/02-february/20-02-2025"
+    assert sorted(os.listdir(day)) == ["a.jpg", "b.jpg", "c.jpg"]
+    assert load_dirs(tmp_path, journal.run_id)[0] == ["2025/02-february/20-02-2025"]

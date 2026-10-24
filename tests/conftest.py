@@ -10,6 +10,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 @pytest.fixture
+def case_sensitive_fs(tmp_path):
+    """Skip unless tmp_path can hold names differing only in case."""
+    probe = tmp_path / "case-probe"
+    probe.write_bytes(b"")
+    sensitive = not (tmp_path / "CASE-PROBE").exists()
+    probe.unlink()
+    if not sensitive:
+        pytest.skip("case twins cannot exist on a case-insensitive filesystem")
+
+
+@pytest.fixture
 def make_jpeg():
     def _make(path: Path, exif_dt: str | None = None, size=(16, 16)) -> Path:
         path = Path(path)

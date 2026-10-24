@@ -16,7 +16,7 @@ from pathlib import Path
 
 from photosort.executor import PHOTOSORT_DIR, move_file
 from photosort.journal import load_dirs, load_moves, load_runs, mark_undone
-from photosort.naming import TargetAllocator
+from photosort.naming import TargetAllocator, resolve_existing_dir
 
 
 class UndoBlocked(Exception):
@@ -61,33 +61,6 @@ def _is_ours(rel: str) -> bool:
     return rel.split("/")[0].casefold() == PHOTOSORT_DIR
 
 
-def _existing_dir(root: Path, rel: str) -> str:
-    """Return folder rel with each part spelt as on disk, if a case variant exists.
-
-    The owner's drive is NTFS, so a "SUB" made after the run is the same
-    folder as the run's "sub": reuse it rather than create a twin beside it.
-    Parts with no match keep their spelling (they are yet to be created).
-    """
-    if not rel:
-        return rel
-    resolved: list[str] = []
-    current = root
-    for part in rel.split("/"):
-        if not (current / part).is_dir():
-            try:
-                matches = sorted(
-                    entry.name for entry in os.scandir(current)
-                    if entry.name.casefold() == part.casefold() and entry.is_dir()
-                )
-            except OSError:
-                matches = []
-            if matches:
-                part = matches[0]
-        resolved.append(part)
-        current = current / part
-    return "/".join(resolved)
-
-
 def undo_run(
     root: Path,
     run_id: str,
@@ -118,7 +91,9 @@ def undo_run(
         src, dst = root / move.src, root / move.dst
         if os.path.lexists(dst):
             folder, _, name = move.src.rpartition("/")
-            folder = _existing_dir(root, folder)
+            # A "SUB" made after the run is the same folder (on NTFS) as the
+            # run's "sub": reuse it rather than create a twin beside it.
+            folder = resolve_existing_dir(root, folder)
             wanted = f"{folder}/{name}" if folder else name
             target = allocator.allocate(wanted)
             if target != wanted:
@@ -142,7 +117,7 @@ def undo_run(
         if _is_ours(rel):
             continue
         try:
-            (root / _existing_dir(root, rel)).mkdir(parents=True, exist_ok=True)
+            (root / resolve_existing_dir(root, rel)).mkdir(parents=True, exist_ok=True)
         except OSError:
             pass  # a file sits there now; the files themselves are back
     for rel in sorted(created, key=lambda r: r.count("/"), reverse=True):

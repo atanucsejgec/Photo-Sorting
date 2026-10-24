@@ -1,4 +1,8 @@
-from photosort.naming import TargetAllocator, safe_name
+import os
+
+import pytest
+
+from photosort.naming import TargetAllocator, resolve_existing_dir, safe_name
 
 
 def _touch(p):
@@ -74,7 +78,8 @@ def test_allocate_top_level_and_separate_dirs(tmp_path):
 def test_allocate_dir_names_compared_case_insensitively(tmp_path):
     alloc = TargetAllocator(tmp_path)
     assert alloc.allocate("Rahul/a.jpg") == "Rahul/a.jpg"
-    assert alloc.allocate("rahul/A.jpg") == "rahul/A (1).jpg"
+    # One spelling per folder, so a run never makes "Rahul" and "rahul".
+    assert alloc.allocate("rahul/A.jpg") == "Rahul/A (1).jpg"
 
 
 def test_allocate_clashes_with_a_directory_on_disk(tmp_path):
@@ -88,3 +93,30 @@ def test_allocate_caches_listing_and_creates_nothing(tmp_path):
     assert not (tmp_path / "d").exists()
     _touch(tmp_path / "d" / "b.jpg")  # appears after the listing was read
     assert alloc.allocate("d/b.jpg") == "d/b.jpg"
+
+
+def test_resolve_existing_dir_keeps_spelling_of_missing_parts(tmp_path):
+    assert resolve_existing_dir(tmp_path, "") == ""
+    assert resolve_existing_dir(tmp_path, "No Date") == "No Date"
+    (tmp_path / "2025").mkdir()
+    assert resolve_existing_dir(tmp_path, "2025/02-February") == "2025/02-February"
+
+
+@pytest.mark.usefixtures("case_sensitive_fs")
+def test_resolve_existing_dir_uses_on_disk_spelling(tmp_path):
+    (tmp_path / "no date").mkdir()
+    (tmp_path / "2025" / "02-february").mkdir(parents=True)
+    _touch(tmp_path / "FILE")  # a file is not a folder to reuse
+    assert resolve_existing_dir(tmp_path, "No Date") == "no date"
+    assert (resolve_existing_dir(tmp_path, "2025/02-February/20-02-2025")
+            == "2025/02-february/20-02-2025")
+    assert resolve_existing_dir(tmp_path, "file") == "file"
+
+
+@pytest.mark.usefixtures("case_sensitive_fs")
+def test_allocate_uses_on_disk_spelling_of_folder(tmp_path):
+    _touch(tmp_path / "no date" / "x.jpg")
+    alloc = TargetAllocator(tmp_path)
+    assert alloc.allocate("No Date/x.jpg") == "no date/x (1).jpg"
+    assert alloc.allocate("No Date/y.jpg") == "no date/y.jpg"
+    assert os.listdir(tmp_path) == ["no date"]
