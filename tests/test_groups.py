@@ -5,8 +5,10 @@ import numpy as np
 import pytest
 
 from photosort.groups import (
-    Candidate, Group, best_copy, close_pairs, plan_set_aside, sharpest, sharpness_label,
+    Candidate, Group, best_copy, close_pairs, is_copy_pair, plan_set_aside, sharpest,
+    sharpness_label,
 )
+from photosort.thresholds import DUP_HASH_MAX
 
 
 def _cand(rel, width=800, height=600, size=1000, taken=None, sharpness=100.0, kind="photo"):
@@ -38,6 +40,19 @@ def test_close_pairs_fast():
     assert set(planted) <= set(pairs)
     assert all(i < j for i, j in pairs)
     assert elapsed < 2
+
+
+def test_is_copy_pair():
+    moment = datetime(2025, 6, 1, 7, 16, 47)
+    one_later = datetime(2025, 6, 1, 7, 16, 48)
+    near = (1 << DUP_HASH_MAX) - 1  # DUP_HASH_MAX bits away from 0
+    far = (1 << (DUP_HASH_MAX + 1)) - 1
+    camera = _cand("a.jpg", taken=moment)
+    assert is_copy_pair(camera, _cand("a~2.jpg", taken=moment), 0, near)
+    assert is_copy_pair(camera, _cand("wa.jpg", 400, 300), 0, near)  # undated, smaller
+    assert not is_copy_pair(camera, _cand("b.jpg", taken=one_later), 0, 0)  # a burst
+    assert not is_copy_pair(camera, _cand("a~2.jpg", taken=moment), 0, far)
+    assert not is_copy_pair(camera, _cand("crop.jpg", 800, 500, taken=moment), 0, 0)
 
 
 def test_best_copy_ranking():

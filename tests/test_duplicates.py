@@ -1,13 +1,15 @@
 import shutil
 import threading
 
+import pytest
 from PIL import Image
 
 from photosort.executor import execute
 from photosort.groups import plan_set_aside
-from photosort.imageinfo import open_image
+from photosort.imageinfo import open_image, perceptual_hash
 from photosort.journal import RunJournal
 from photosort.modes.duplicates import find_duplicate_groups
+from photosort.thresholds import DUP_HASH_MAX
 
 
 def _rels(group):
@@ -88,11 +90,34 @@ def test_burst_not_duplicate(tmp_path, make_pattern_jpeg):
     assert find_duplicate_groups(tmp_path, include_subfolders=False) == []
 
 
-def test_burst_not_joined_through_undated_copy(tmp_path, make_pattern_jpeg):
-    # shared.jpg matches both shots, but a and b were taken 4 s apart: a group
-    # must never span two moments, whatever links it.
+def test_burst_one_second_apart_not_duplicate(tmp_path, make_pattern_jpeg):
+    a = make_pattern_jpeg(tmp_path / "IMG20250220181325.jpg", 4, exif_dt="2025:02:20 18:13:25")
+    b = make_pattern_jpeg(tmp_path / "IMG20250220181326.jpg", 4, shift=3,
+                          exif_dt="2025:02:20 18:13:26")
+    # They look alike enough to be copies: only the second apart tells them apart.
+    assert (perceptual_hash(a) ^ perceptual_hash(b)).bit_count() <= DUP_HASH_MAX
+    assert find_duplicate_groups(tmp_path, include_subfolders=False) == []
+
+
+def test_same_second_resave_is_duplicate(tmp_path, make_pattern_jpeg):
+    # A phone re-save: same resolution, same EXIF second, different bytes.
+    make_pattern_jpeg(tmp_path / "IMG20250601071647.jpg", 4, exif_dt="2025:06:01 07:16:47")
+    make_pattern_jpeg(tmp_path / "IMG20250601071647~2.jpg", 4, quality=60,
+                      exif_dt="2025:06:01 07:16:47")
+    groups = find_duplicate_groups(tmp_path, include_subfolders=False)
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.kind == "resized"
+    assert _rels(group) == ["IMG20250601071647.jpg", "IMG20250601071647~2.jpg"]
+    assert group.suggested_keep == {"IMG20250601071647.jpg"}  # same pixels: the larger file
+
+
+@pytest.mark.parametrize("b_time", ["18:13:26", "18:13:29"])
+def test_burst_not_joined_through_undated_copy(tmp_path, make_pattern_jpeg, b_time):
+    # shared.jpg matches both shots, but a and b were taken at different
+    # seconds: a group must never span two moments, whatever links it.
     a = make_pattern_jpeg(tmp_path / "a.jpg", 4, exif_dt="2025:02:20 18:13:25")
-    make_pattern_jpeg(tmp_path / "b.jpg", 4, shift=3, exif_dt="2025:02:20 18:13:29")
+    make_pattern_jpeg(tmp_path / "b.jpg", 4, shift=3, exif_dt=f"2025:02:20 {b_time}")
     open_image(a).resize((400, 300)).save(tmp_path / "shared.jpg", "JPEG", quality=80)
     groups = find_duplicate_groups(tmp_path, include_subfolders=False)
     for group in groups:

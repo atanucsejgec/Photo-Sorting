@@ -3,11 +3,11 @@
 Exact copies (photos and videos) share their bytes: only files whose byte
 size collides are SHA-256 hashed. Resized copies of a photo have close
 perceptual hashes and the same shape, and were not taken at different
-moments (those are repeated shots, not duplicates): no group's dated
-members span more than SAME_MOMENT_S seconds.
+moments (those are repeated shots, not duplicates): see groups.is_copy_pair.
+No group's dated members span more than SAME_MOMENT_S seconds, even when
+undated copies link them.
 """
 
-import hashlib
 import os
 import re
 import threading
@@ -18,29 +18,17 @@ from datetime import datetime
 from pathlib import Path
 
 from photosort.dates import find_datetime
-from photosort.groups import Candidate, Group, best_copy, close_pairs
+from photosort.groups import Candidate, Group, best_copy, close_pairs, is_copy_pair, pixels
+from photosort.hashing import sha256_file
 from photosort.media import kind
 from photosort.modes._analysis import measure_photo
 from photosort.scanner import scan
-from photosort.thresholds import DUP_ASPECT_TOL, DUP_HASH_MAX, SAME_MOMENT_S
+from photosort.thresholds import DUP_HASH_MAX, SAME_MOMENT_S
 
 EXACT_NOTE = "Exact copy"
 SMALLER_NOTE = "Smaller copy"
 WHATSAPP_NOTE = "Smaller copy (WhatsApp)"
 _WHATSAPP = re.compile(r"-WA\d+")
-
-
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
-def _same_shape(a: Candidate, b: Candidate) -> bool:
-    ra, rb = a.width / a.height, b.width / b.height
-    return abs(ra - rb) <= DUP_ASPECT_TOL * max(ra, rb)
 
 
 def find_duplicate_groups(
@@ -76,7 +64,7 @@ def find_duplicate_groups(
             path = root / rel
             if size_counts[sizes[rel]] > 1:
                 try:
-                    digests[rel] = _sha256(path)
+                    digests[rel] = sha256_file(path)
                 except OSError:
                     pass
             file_kind = kind(rel)
@@ -149,9 +137,9 @@ def _group(
     links = []
     for a, b in close_pairs([hashes[rel] for rel in hashed], DUP_HASH_MAX):
         ca, cb = candidates[hashed[a]], candidates[hashed[b]]
-        if _same_shape(ca, cb):
-            distance = (hashes[ca.rel] ^ hashes[cb.rel]).bit_count()
-            links.append((distance, index[ca.rel], index[cb.rel]))
+        hash_a, hash_b = hashes[ca.rel], hashes[cb.rel]
+        if is_copy_pair(ca, cb, hash_a, hash_b):
+            links.append(((hash_a ^ hash_b).bit_count(), index[ca.rel], index[cb.rel]))
     for _, a, b in sorted(links):
         union(a, b, same_moment=True)
 
@@ -176,11 +164,7 @@ def _make_group(members: list[Candidate], digests: dict[str, str]) -> Group:
         if c.rel != best.rel:
             if _WHATSAPP.search(c.rel.rpartition("/")[2]):
                 note = WHATSAPP_NOTE
-            elif _pixels(c) < _pixels(best):
+            elif pixels(c) < pixels(best):
                 note = SMALLER_NOTE
         noted.append(replace(c, note=note))
     return Group("resized", noted, {best.rel})
-
-
-def _pixels(c: Candidate) -> int:
-    return (c.width or 0) * (c.height or 0)

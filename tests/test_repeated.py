@@ -68,6 +68,18 @@ def test_copy_breaks_chain_and_becomes_previous(tmp_path, make_pattern_jpeg):
     assert [_rels(g) for g in groups] == [["b/x.jpg", "c.jpg"]]
 
 
+def test_same_second_resave_not_repeat(tmp_path, make_pattern_jpeg):
+    # The ~2 file is a phone re-save of the first (other bytes, same second);
+    # that is a duplicates-mode copy. The shot a second later is a real repeat.
+    make_pattern_jpeg(tmp_path / "IMG20250220181325.jpg", 5, exif_dt="2025:02:20 18:13:25")
+    make_pattern_jpeg(tmp_path / "IMG20250220181325~2.jpg", 5, quality=60,
+                      exif_dt="2025:02:20 18:13:25")
+    make_pattern_jpeg(tmp_path / "IMG20250220181326.jpg", 5, shift=2,
+                      exif_dt="2025:02:20 18:13:26")
+    groups = find_repeated_groups(tmp_path, include_subfolders=False)
+    assert [_rels(g) for g in groups] == [["IMG20250220181325~2.jpg", "IMG20250220181326.jpg"]]
+
+
 def test_orientation_change_breaks_chain(tmp_path, make_pattern_jpeg):
     wide = make_pattern_jpeg(tmp_path / "a.jpg", 5, exif_dt="2025:02:20 18:13:25")
     square = make_pattern_jpeg(tmp_path / "b.jpg", 5, size=(600, 600),

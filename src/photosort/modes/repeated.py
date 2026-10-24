@@ -3,9 +3,9 @@
 Dated, readable photos are walked in the order they were taken. A photo
 joins the burst of the photo before it when it was taken at most
 REPEAT_WINDOW_S seconds later, looks almost the same (perceptual hashes
-within REPEAT_HASH_MAX bits) and has the same orientation. Two photos with
-the same byte size and the same taken time are copies, a duplicates-mode
-case, so they never link.
+within REPEAT_HASH_MAX bits) and has the same orientation. Two photos that
+are copies of one shot (groups.is_copy_pair: exact copies and same-second
+re-saves) are a duplicates-mode case, so they never link.
 """
 
 import os
@@ -14,7 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from photosort.dates import find_datetime
-from photosort.groups import Candidate, Group, sharpest
+from photosort.groups import Candidate, Group, is_copy_pair, sharpest
 from photosort.media import kind
 from photosort.modes._analysis import measure_photo
 from photosort.scanner import scan
@@ -85,7 +85,7 @@ def _chains(shots: list[tuple[Candidate, int]]) -> list[Group]:
 def _follows(previous: tuple[Candidate, int], shot: tuple[Candidate, int]) -> bool:
     """Whether shot is a repeat of the photo taken just before it."""
     (a, hash_a), (b, hash_b) = previous, shot
-    if a.size == b.size and a.taken == b.taken:
+    if is_copy_pair(a, b, hash_a, hash_b):
         return False  # a copy, not a second shot
     return (
         (b.taken - a.taken).total_seconds() <= REPEAT_WINDOW_S

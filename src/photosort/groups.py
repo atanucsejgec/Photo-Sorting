@@ -15,7 +15,9 @@ import numpy as np
 
 from photosort.naming import TargetAllocator
 from photosort.plan import Move, Plan
-from photosort.thresholds import SHARP_BLURRY, SHARP_SLIGHTLY
+from photosort.thresholds import (
+    DUP_ASPECT_TOL, DUP_HASH_MAX, SAME_MOMENT_S, SHARP_BLURRY, SHARP_SLIGHTLY,
+)
 
 
 @dataclass(frozen=True)
@@ -39,8 +41,28 @@ class Group:
     suggested_keep: set[str]  # rels pre-ticked to keep
 
 
-def _pixels(c: Candidate) -> int:
+def pixels(c: Candidate) -> int:
+    """Width times height; 0 when unknown."""
     return (c.width or 0) * (c.height or 0)
+
+
+def is_copy_pair(a: Candidate, b: Candidate, hash_a: int, hash_b: int) -> bool:
+    """Whether two photos are copies of one shot (a duplicates-mode resized link).
+
+    They have the same shape, perceptual hashes within DUP_HASH_MAX bits, and
+    taken times that don't differ by more than SAME_MOMENT_S. An undated photo
+    (e.g. a WhatsApp copy) can't be told apart by time, so time doesn't refuse it.
+    """
+    if a.taken is not None and b.taken is not None and (
+        abs((a.taken - b.taken).total_seconds()) > SAME_MOMENT_S
+    ):
+        return False
+    return (hash_a ^ hash_b).bit_count() <= DUP_HASH_MAX and _same_shape(a, b)
+
+
+def _same_shape(a: Candidate, b: Candidate) -> bool:
+    ra, rb = a.width / a.height, b.width / b.height
+    return abs(ra - rb) <= DUP_ASPECT_TOL * max(ra, rb)
 
 
 def _sharpness(c: Candidate) -> float:
@@ -55,7 +77,7 @@ def best_copy(members: Iterable[Candidate]) -> Candidate:
     """
     return min(
         sorted(members, key=lambda c: c.rel),
-        key=lambda c: (-_pixels(c), c.taken is None, -c.size, -_sharpness(c)),
+        key=lambda c: (-pixels(c), c.taken is None, -c.size, -_sharpness(c)),
     )
 
 
