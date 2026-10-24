@@ -62,7 +62,7 @@ def image_size(path: Path) -> tuple[int, int]:
 
 def perceptual_hash(path: Path) -> int:
     """Return the photo's 64-bit perceptual hash; similar photos differ in few bits."""
-    return int(str(imagehash.phash(open_image(path, HASH_PX))), 16)
+    return _hash_of(_decode(path, HASH_PX))
 
 
 def sharpness(path: Path) -> float:
@@ -71,7 +71,24 @@ def sharpness(path: Path) -> float:
     The variance of a 4-neighbour Laplacian of the greyscale photo resized
     to SHARPNESS_WIDTH wide.
     """
-    img = _decode(path, SHARPNESS_WIDTH)
+    return _sharpness_of(_decode(path, SHARPNESS_WIDTH))
+
+
+def analyse(path: Path) -> tuple[int, float]:
+    """Return (perceptual_hash(path), sharpness(path)), decoding the photo once."""
+    img = _decode(path, max(HASH_PX, SHARPNESS_WIDTH))
+    measured = _sharpness_of(img)  # first: _hash_of shrinks img in place
+    return _hash_of(img), measured
+
+
+def _hash_of(img: Image.Image) -> int:
+    """The perceptual hash of img, shrunk in place to HASH_PX first."""
+    img.thumbnail((HASH_PX, HASH_PX))
+    return int(str(imagehash.phash(img)), 16)
+
+
+def _sharpness_of(img: Image.Image) -> float:
+    """The sharpness measure of img (see sharpness); img is left unchanged."""
     height = max(3, round(img.height * SHARPNESS_WIDTH / img.width))
     grey = np.asarray(img.convert("L").resize((SHARPNESS_WIDTH, height)), dtype=np.float64)
     laplacian = (

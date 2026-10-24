@@ -4,6 +4,7 @@ from PIL import Image
 
 from photosort.imageinfo import (
     UnreadableImage,
+    analyse,
     image_size,
     open_image,
     perceptual_hash,
@@ -96,3 +97,17 @@ def test_sharpness_measured_at_full_width(tmp_path, make_pattern_jpeg):
 def test_sharpness_graded_by_blur(tmp_path, make_pattern_jpeg):
     values = [sharpness(make_pattern_jpeg(tmp_path / f"{b}.jpg", 5, blur=b)) for b in (0, 0.5, 2)]
     assert values == sorted(values, reverse=True)
+
+
+def test_analyse_matches_separate_measures(tmp_path, make_pattern_jpeg):
+    for name, kwargs in [("a.jpg", {}), ("b.jpg", {"orientation": 6, "size": (1600, 1200)}),
+                         ("c.jpg", {"size": (300, 200), "blur": 1})]:
+        path = make_pattern_jpeg(tmp_path / name, 9, **kwargs)
+        assert analyse(path) == (perceptual_hash(path), sharpness(path))
+
+
+def test_analyse_unreadable_raises(tmp_path):
+    empty = tmp_path / "x.jpg"
+    empty.write_bytes(b"")
+    with pytest.raises(UnreadableImage):
+        analyse(empty)
