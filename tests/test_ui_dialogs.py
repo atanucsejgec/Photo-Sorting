@@ -114,15 +114,28 @@ def test_history_lists_runs_and_undoes(qtbot, make_history, tmp_path, dialog_err
 def test_history_blocks_older_dependent_run(make_history, tmp_path):
     _write(tmp_path / "a.jpg", b"a")
     _run(tmp_path, [("a.jpg", "d/a.jpg")])
-    _run(tmp_path, [("d/a.jpg", "e/a.jpg")])
+    run2 = _run(tmp_path, [("d/a.jpg", "e/a.jpg")])
 
     d = make_history(tmp_path)
     d.runs_table.selectRow(1)
     assert not d.undo_button.isEnabled()
-    assert d.undo_button.toolTip() == "Undo newer runs first"
+    assert d.undo_button.toolTip() == f"Undo these runs first: {run2}"
+    assert d.blocked_label.text() == f"Undo these runs first: {run2}"
     d.runs_table.selectRow(0)
     assert d.undo_button.isEnabled()
     assert d.undo_button.toolTip() == ""
+    assert d.blocked_label.text() == ""
+
+
+def test_history_names_folder_of_blocking_run_inside(make_history, tmp_path):
+    _write(tmp_path / "a.jpg", b"a")
+    _run(tmp_path, [("a.jpg", "d/a.jpg")])
+    inner = _run(tmp_path / "d", [("a.jpg", "e/a.jpg")])  # owner picked "d" later
+
+    d = make_history(tmp_path)
+    d.runs_table.selectRow(0)
+    assert not d.undo_button.isEnabled()
+    assert d.blocked_label.text() == f"Undo these runs first: {inner} (in d)"
 
 
 def test_history_shows_interrupted_run(make_history, tmp_path):

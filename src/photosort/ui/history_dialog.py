@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 from photosort.journal import RunInfo, load_moves, load_runs
 from photosort.modes import MODES
 from photosort.ui.worker import Task
-from photosort.undo import UndoResult, blocking_runs, undo_run
+from photosort.undo import UndoResult, blocking_runs, related_folders, undo_run
 
 _MODE_LABELS = {key: label for key, label, _ in MODES}
 _STATUS_LABELS = {"done": "Done", "cancelled": "Cancelled", "failed": "Failed"}
@@ -80,6 +80,7 @@ class HistoryDialog(QDialog):
         super().__init__(parent)
         self.root = Path(root)
         self._rows: list[_Row] = []
+        self._related: list[Path] = []  # folders around/inside root with runs
         self._task: Task | None = None
         self._undoing = False
 
@@ -100,6 +101,10 @@ class HistoryDialog(QDialog):
         self.runs_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.runs_table.itemSelectionChanged.connect(self._update_undo_button)
         layout.addWidget(self.runs_table, 1)
+
+        self.blocked_label = QLabel()  # why the selected run can't be undone yet
+        self.blocked_label.setWordWrap(True)
+        layout.addWidget(self.blocked_label)
 
         self.result_label = QLabel()
         self.result_label.setWordWrap(True)
@@ -125,6 +130,9 @@ class HistoryDialog(QDialog):
         """Reload the runs from disk, keeping the selected run selected."""
         keep = self._selected()
         self._rows = [_row(self.root, run) for run in load_runs(self.root)]
+        # Walked once here, not on every selection (the tree can be big);
+        # undo_run itself always checks afresh.
+        self._related = related_folders(self.root)
         self.runs_table.blockSignals(True)
         self.runs_table.clearSelection()
         self.runs_table.setRowCount(len(self._rows))
@@ -154,16 +162,18 @@ class HistoryDialog(QDialog):
             tip = "Already undone"
         else:
             try:
-                blocked = bool(blocking_runs(self.root, row.run_id))
+                blocking = blocking_runs(self.root, row.run_id, self._related)
             except _UNREADABLE:
                 tip = "This run's undo record can't be read"
             else:
-                if blocked:
-                    tip = "Undo newer runs first"
+                if blocking:
+                    # Each says which folder's history it is in.
+                    tip = f"Undo these runs first: {', '.join(map(str, blocking))}"
                 else:
                     enabled = True
         self.undo_button.setEnabled(enabled)
         self.undo_button.setToolTip(tip)
+        self.blocked_label.setText("" if row is not None and row.undone else tip)
 
     def _undo(self) -> None:
         row = self._selected()

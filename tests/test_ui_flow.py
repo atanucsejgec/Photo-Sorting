@@ -187,20 +187,22 @@ def _sort_to_done(qtbot, w, photos):
 
 def test_undo_blocked_shows_newer_runs(qtbot, make_window, photos, make_jpeg,
                                        errors, monkeypatch):
-    from photosort.undo import UndoBlocked
+    from photosort.undo import BlockingRun, UndoBlocked
 
     make_jpeg(photos / "a.jpg", EXIF)
     w = make_window()
     _sort_to_done(qtbot, w, photos)
 
     def blocked(root, run_id, progress=None):
-        raise UndoBlocked(["20261024-120000-date", "20261024-130000-date"])
+        raise UndoBlocked([BlockingRun("20261024-130000-date", "2025/02-February"),
+                           BlockingRun("20261024-120000-date", "")])
 
     monkeypatch.setattr(main_window, "undo_run", blocked)
     w.undo_button.click()
     qtbot.waitUntil(lambda: errors != [])
     assert errors == [
-        "Undo the newer run(s) first: 20261024-120000-date, 20261024-130000-date"
+        "Undo the newer run(s) first: 20261024-130000-date (in 2025/02-February), "
+        "20261024-120000-date"
     ]
     assert w.undo_button.isEnabled()
 

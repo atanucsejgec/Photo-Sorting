@@ -70,7 +70,8 @@ def _undo_with_message(root: Path, run_id: str, progress=None) -> UndoResult:
     try:
         return undo_run(root, run_id, progress=progress)
     except UndoBlocked as e:
-        raise RuntimeError(f"Undo the newer run(s) first: {', '.join(e.blocking)}") from e
+        runs = ", ".join(map(str, e.blocking))  # each says which folder's history
+        raise RuntimeError(f"Undo the newer run(s) first: {runs}") from e
 
 
 class MainWindow(QMainWindow):

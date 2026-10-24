@@ -15,15 +15,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from photosort.executor import PHOTOSORT_DIR, move_file
-from photosort.journal import load_dirs, load_moves, load_runs, mark_undone
+from photosort.journal import RUNS_DIR, RunInfo, load_dirs, load_moves, load_runs, mark_undone
 from photosort.naming import TargetAllocator, resolve_existing_dir
+
+
+@dataclass(frozen=True)
+class BlockingRun:
+    """A run to undo first, and the folder whose undo history holds it.
+
+    folder is "" for the folder being undone, a POSIX path relative to it
+    for a folder inside it, and an absolute path for a folder around it.
+    """
+
+    run_id: str
+    folder: str
+
+    def __str__(self) -> str:
+        return f"{self.run_id} (in {self.folder})" if self.folder else self.run_id
 
 
 class UndoBlocked(Exception):
     """A newer run, not yet undone, moved files this run put in place."""
 
-    def __init__(self, blocking: list[str]) -> None:
-        super().__init__(f"Undo these runs first: {', '.join(blocking)}")
+    def __init__(self, blocking: list[BlockingRun]) -> None:
+        super().__init__(f"Undo these runs first: {', '.join(map(str, blocking))}")
         self.blocking = blocking
 
 
@@ -45,19 +60,89 @@ def _run_index(root: Path, run_id: str) -> tuple[list, int]:
     raise ValueError(f"No such run: {run_id}")
 
 
-def blocking_runs(root: Path, run_id: str) -> list[str]:
+def related_folders(root: Path) -> list[Path]:
+    """Return the folders around and inside root that keep their own undo history.
+
+    Each picked folder keeps its own .photosort, so a run on a folder around
+    root (with subfolders on) or inside it can have moved files that root's
+    runs placed. Folders around root are checked up to the filesystem root;
+    every folder inside root is walked, except .photosort folders themselves
+    and folders that can't be read. Paths are absolute.
+    """
+    root = Path(os.path.abspath(root))
+    found = [a for a in root.parents if os.path.isdir(a / RUNS_DIR)]
+    stack = [root]
+    while stack:
+        folder = stack.pop()
+        try:
+            with os.scandir(folder) as entries:
+                subdirs = [Path(e.path) for e in entries
+                           if e.is_dir(follow_symlinks=False)
+                           and e.name.casefold() != PHOTOSORT_DIR]
+        except OSError:
+            continue
+        for path in subdirs:
+            if os.path.isdir(path / RUNS_DIR):
+                found.append(path)
+            stack.append(path)
+    return found
+
+
+def _in_root(prefix: tuple[str, ...], src: str) -> str | None:
+    """Return src (relative to a folder around root) relative to root, or None.
+
+    prefix is root's path below that folder, casefolded part by part.
+    """
+    parts = src.split("/")
+    n = len(prefix)
+    if len(parts) > n and tuple(p.casefold() for p in parts[:n]) == prefix:
+        return "/".join(parts[n:])
+    return None
+
+
+def blocking_runs(
+    root: Path, run_id: str, related: list[Path] | None = None,
+) -> list[BlockingRun]:
     """Return the newer, not undone runs that moved any file this run placed.
 
-    Newest first. Every recorded move counts, done or not.
+    The runs of root and of its related_folders all count (pass related in
+    to reuse one walk of the tree). Newest first. Every recorded move
+    counts, done or not, and paths are compared case-insensitively.
     """
-    root = Path(root)
+    root = Path(os.path.abspath(root))
     runs, k = _run_index(root, run_id)
+    this = runs[k]
     placed = {m.dst.casefold() for m in load_moves(root, run_id)}
-    return [
-        newer.run_id for newer in runs[:k]
-        if not newer.undone
-        and any(m.src.casefold() in placed for m in load_moves(root, newer.run_id))
+    if related is None:
+        related = related_folders(root)
+
+    # (folder, how it is shown, its src -> root-relative path or None)
+    sources: list[tuple[Path, str, Callable[[str], str | None]]] = [
+        (root, "", lambda src: src)
     ]
+    ancestors = set(root.parents)
+    for folder in related:
+        folder = Path(os.path.abspath(folder))
+        if folder in ancestors:
+            prefix = tuple(p.casefold() for p in root.relative_to(folder).parts)
+            sources.append((folder, str(folder),
+                            lambda src, prefix=prefix: _in_root(prefix, src)))
+        elif folder != root and folder.is_relative_to(root):
+            inner = folder.relative_to(root).as_posix()
+            sources.append((folder, inner, lambda src, inner=inner: f"{inner}/{src}"))
+
+    found: list[tuple[RunInfo, BlockingRun]] = []
+    for folder, shown, to_root in sources:
+        for run in runs if folder == root else load_runs(folder):
+            if run.undone or (run.started, run.run_id) <= (this.started, this.run_id):
+                continue
+            for m in load_moves(folder, run.run_id):
+                rel = to_root(m.src)
+                if rel is not None and rel.casefold() in placed:
+                    found.append((run, BlockingRun(run.run_id, shown)))
+                    break
+    found.sort(key=lambda f: (f[0].started, f[0].run_id), reverse=True)
+    return [blocking for _, blocking in found]
 
 
 def _is_ours(rel: str) -> bool:

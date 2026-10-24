@@ -10,7 +10,7 @@ from photosort.executor import execute
 from photosort.journal import RunJournal, load_runs
 from photosort.modes.date_mode import prepare_date_plan
 from photosort.plan import Move, Plan
-from photosort.undo import UndoBlocked, UndoResult, blocking_runs, undo_run
+from photosort.undo import BlockingRun, UndoBlocked, UndoResult, blocking_runs, undo_run
 
 
 def _write(path, data: bytes):
@@ -173,12 +173,13 @@ def test_undo_blocked_by_newer_run(tmp_path):
     _write(tmp_path / "a.jpg", b"a")
     run1 = _run(tmp_path, [("a.jpg", "d/a.jpg")])
     run2 = _run(tmp_path, [("d/a.jpg", "e/a.jpg")])
-    assert blocking_runs(tmp_path, run1) == [run2]
+    assert blocking_runs(tmp_path, run1) == [BlockingRun(run2, "")]
     assert blocking_runs(tmp_path, run2) == []
 
     with pytest.raises(UndoBlocked) as exc:
         undo_run(tmp_path, run1)
-    assert exc.value.blocking == [run2]
+    assert exc.value.blocking == [BlockingRun(run2, "")]
+    assert str(exc.value) == f"Undo these runs first: {run2}"
     assert (tmp_path / "e/a.jpg").read_bytes() == b"a"
     assert not _undone(tmp_path, run1)
 
@@ -197,7 +198,7 @@ def test_blocking_compares_case_insensitively_and_ignores_older_runs(tmp_path):
     run1 = _run(tmp_path, [("a.jpg", "d/a.jpg")])
     run2 = _crashed_journal(tmp_path, [("D/A.JPG", "e/a.jpg", False)])
     run3 = _run(tmp_path, [("z.jpg", "d/z.jpg")])
-    assert blocking_runs(tmp_path, run1) == [run2]
+    assert blocking_runs(tmp_path, run1) == [BlockingRun(run2, "")]
     assert blocking_runs(tmp_path, run3) == []
 
 
@@ -341,3 +342,97 @@ def test_undo_failing_folder_creation_is_recorded_not_raised(tmp_path, monkeypat
     assert (tmp_path / "b.jpg").read_bytes() == b"b"
     assert (tmp_path / "d/a.jpg").read_bytes() == b"a"
     assert not _undone(tmp_path, run_id)
+
+
+# ----- runs in nested picked folders --------------------------------------
+# Each picked folder keeps its own .photosort, so a run in a folder inside
+# (or around) this one can move files this run placed.
+
+
+def test_undo_blocked_by_newer_run_in_a_folder_inside(tmp_path, make_jpeg):
+    n = tmp_path / "n"
+    for name in ("c1.jpg", "c2.jpg", "c3.jpg"):
+        make_jpeg(n / "Camera" / name, "2025:02:20 10:00:00")
+    plan = prepare_date_plan(n, include_subfolders=True)
+    j1 = RunJournal.create(n, "date", True, len(plan.moves))
+    execute(n, plan, j1)
+    day_rel = "2025/02-February/20-02-2025"
+    day = n / day_rel
+    assert sorted(os.listdir(day)) == ["c1.jpg", "c2.jpg", "c3.jpg"]
+
+    plan2 = prepare_date_plan(day, include_subfolders=False)  # owner picks the day folder
+    j2 = RunJournal.create(day, "date", False, len(plan2.moves))
+    execute(day, plan2, j2)
+    assert (day / day_rel / "c1.jpg").is_file()
+
+    assert blocking_runs(n, j1.run_id) == [BlockingRun(j2.run_id, day_rel)]
+    with pytest.raises(UndoBlocked) as exc:
+        undo_run(n, j1.run_id)
+    assert str(exc.value) == f"Undo these runs first: {j2.run_id} (in {day_rel})"
+    assert not _undone(n, j1.run_id)
+    assert (day / day_rel / "c1.jpg").is_file()  # nothing was touched
+
+    undo_run(day, j2.run_id)
+    assert blocking_runs(n, j1.run_id) == []
+    result = undo_run(n, j1.run_id)
+    assert result == UndoResult(restored=3, missing=[], renamed=[], failed=[])
+    assert sorted(os.listdir(n / "Camera")) == ["c1.jpg", "c2.jpg", "c3.jpg"]
+    assert _undone(n, j1.run_id)
+
+
+def test_undo_blocked_by_newer_run_in_a_folder_around(tmp_path):
+    n = tmp_path / "n"
+    inner = n / "X"
+    _write(inner / "a.jpg", b"a")
+    run_a = _run(inner, [("a.jpg", "2025/02-February/a.jpg")])
+    # Then the owner sorts the outer folder with subfolders on.
+    run_b = _run(n, [("X/2025/02-February/a.jpg", "2025/02-February/a.jpg")])
+    assert (n / "2025/02-February/a.jpg").read_bytes() == b"a"
+
+    assert blocking_runs(inner, run_a) == [BlockingRun(run_b, str(n))]
+    with pytest.raises(UndoBlocked) as exc:
+        undo_run(inner, run_a)
+    assert str(exc.value) == f"Undo these runs first: {run_b} (in {n})"
+    assert not _undone(inner, run_a)
+
+    undo_run(n, run_b)
+    assert blocking_runs(inner, run_a) == []
+    result = undo_run(inner, run_a)
+    assert result.restored == 1
+    assert (inner / "a.jpg").read_bytes() == b"a"
+
+
+def test_nested_blocking_compares_case_insensitively(tmp_path):
+    n = tmp_path / "n"
+    inner = n / "X"
+    _write(inner / "a.jpg", b"a")
+    run_a = _run(inner, [("a.jpg", "d/a.jpg")])
+    run_b = _crashed_journal(n, [("x/D/A.JPG", "e/a.jpg", False)])
+    assert blocking_runs(inner, run_a) == [BlockingRun(run_b, str(n))]
+
+
+def test_unrelated_nested_runs_do_not_block(tmp_path):
+    n = tmp_path / "n"
+    inner = n / "X"
+    for rel in ("X/a.jpg", "X/sub/s.jpg", "Xtra/d/a.jpg", "b.jpg"):
+        _write(n / rel, b"x")
+    older_outer = _run(n, [("b.jpg", "X/d/b.jpg")])  # older than run_a
+    run_a = _run(inner, [("a.jpg", "d/a.jpg")])
+    _run(inner / "sub", [("s.jpg", "t/s.jpg")])  # newer, inside, other files
+    _run(n, [("Xtra/d/a.jpg", "e/a.jpg")])  # newer, around: a sibling folder
+    moved_b = _run(n, [("X/d/b.jpg", "f/b.jpg")])  # newer, around: not run_a's file
+    assert blocking_runs(inner, run_a) == []
+    # The runs inside moved none of older_outer's files; only moved_b did.
+    assert blocking_runs(n, older_outer) == [BlockingRun(moved_b, "")]
+    assert undo_run(inner, run_a).restored == 1
+    assert (inner / "a.jpg").read_bytes() == b"x"
+
+
+def test_undone_nested_runs_do_not_block(tmp_path):
+    n = tmp_path / "n"
+    _write(n / "a.jpg", b"a")
+    run1 = _run(n, [("a.jpg", "d/a.jpg")])
+    run2 = _run(n / "d", [("a.jpg", "e/a.jpg")])
+    assert blocking_runs(n, run1) == [BlockingRun(run2, "d")]
+    undo_run(n / "d", run2)
+    assert blocking_runs(n, run1) == []
