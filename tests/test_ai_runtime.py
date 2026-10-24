@@ -16,6 +16,7 @@ def fake_ort(monkeypatch):
     monkeypatch.setattr(runtime, "_dlls_preloaded", False)
     monkeypatch.setattr(runtime, "_logging_set", False)
     monkeypatch.setattr(runtime, "_gpu_failed", False)
+    monkeypatch.setattr(runtime, "_cuda_driver_present", lambda: True)
     monkeypatch.setattr(onnxruntime, "get_available_providers", lambda: [CUDA, CPU])
 
     def preload():
@@ -43,12 +44,43 @@ def fake_ort(monkeypatch):
 
 
 def test_providers_gpu_and_fallback(monkeypatch):
+    monkeypatch.setattr(runtime, "_cuda_driver_present", lambda: True)
     monkeypatch.setattr(onnxruntime, "get_available_providers", lambda: [CUDA, CPU])
     assert runtime.providers(True) == [CUDA, CPU]
     assert runtime.providers(False) == [CPU]
     monkeypatch.setattr(onnxruntime, "get_available_providers", lambda: [CPU])
     assert runtime.providers(True) == [CPU]
     assert runtime.providers(False) == [CPU]
+
+
+def test_no_nvidia_driver_means_cpu(fake_ort, monkeypatch, caplog):
+    # onnxruntime-gpu lists CUDA even on a computer without an NVIDIA GPU.
+    monkeypatch.setattr(runtime, "_cuda_driver_present", lambda: False)
+    assert runtime.providers(True) == [CPU]
+    assert runtime.runtime_status(True) == "CPU (no usable GPU found)"
+    s = runtime.make_session(Path("det.onnx"), True)
+    assert s.get_providers() == [CPU]
+    assert fake_ort["sessions"] == [[CPU]]
+    assert fake_ort["preload"] == 0
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_cuda_driver_probe(monkeypatch):
+    probe = runtime._cuda_driver_present.__wrapped__
+    loaded = []
+    monkeypatch.setattr(runtime.sys, "platform", "linux")
+    monkeypatch.setattr(runtime.ctypes, "CDLL", lambda name: loaded.append(name))
+    assert probe() is True
+    assert loaded == ["libcuda.so.1"]
+
+    def missing(name):
+        raise OSError(f"{name}: cannot open shared object file")
+
+    monkeypatch.setattr(runtime.ctypes, "CDLL", missing)
+    assert probe() is False
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+    monkeypatch.setattr(runtime.ctypes, "WinDLL", missing, raising=False)
+    assert probe() is False
 
 
 def test_runtime_status_texts(fake_ort, monkeypatch):
@@ -84,6 +116,9 @@ def test_make_session_falls_back_to_cpu(fake_ort, caplog):
     assert s.get_providers() == [CPU]
     assert fake_ort["sessions"] == [[CUDA, CPU], [CPU]]
     assert "det.onnx runs on CPUExecutionProvider" in caplog.text
+    [warning] = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert "no CUDA-capable device" in warning.getMessage()
+    assert warning.exc_info is None
     # Settings now tells the truth about this run.
     assert runtime.runtime_status(True) == "CPU (no usable GPU found)"
 
@@ -111,7 +146,7 @@ def test_make_session_silent_cpu_fallback_is_noticed(fake_ort, monkeypatch):
     assert runtime.runtime_status(True) == "CPU (no usable GPU found)"
 
 
-def test_make_session_bad_file_raises_without_blaming_gpu(fake_ort, monkeypatch):
+def test_make_session_bad_file_raises_without_blaming_gpu(fake_ort, monkeypatch, caplog):
     class Broken:
         def __init__(self, path, providers):
             raise RuntimeError("NO_SUCHFILE")
@@ -120,3 +155,4 @@ def test_make_session_bad_file_raises_without_blaming_gpu(fake_ort, monkeypatch)
     with pytest.raises(RuntimeError, match="NO_SUCHFILE"):
         runtime.make_session(Path("gone.onnx"), True)
     assert runtime.runtime_status(True) == "GPU (CUDA)"
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]

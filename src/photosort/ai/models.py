@@ -131,6 +131,8 @@ def download(key: str, progress: Callable[[int, int], None] | None = None,
                     f.write(chunk)
                     digest.update(chunk)
                     have += len(chunk)
+                    if have > m.size:
+                        break  # more than the model holds: damaged below
                     if progress:
                         progress(have, m.size)
                 f.flush()

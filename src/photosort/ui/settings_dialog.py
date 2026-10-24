@@ -31,7 +31,7 @@ class SettingsDialog(QDialog):
         self.gpu_check.toggled.connect(self._show_runtime)
         self._show_runtime(self.gpu_check.isChecked())
         self.note_label = QLabel(
-            "GPU is used by the face and content modes (coming in later stages)."
+            "The GPU makes face recognition faster. Without one, the CPU is used."
         )
         self.note_label.setWordWrap(True)
         layout.addWidget(self.note_label)

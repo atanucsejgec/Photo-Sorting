@@ -215,3 +215,30 @@ def test_download_with_complete_part_only_verifies(store, serve):
     assert models.download("m")
     assert server.ranges == []
     assert models.model_path("m").read_bytes() == data
+
+
+def test_download_stops_when_server_sends_too_much(store, serve):
+    data = os.urandom(MIB)
+    server = serve(data + os.urandom(3 * MIB))
+    models.MODELS["m"] = _model(server.url, data)
+    seen = []
+    with pytest.raises(ModelError, match="is damaged, please try again"):
+        models.download("m", progress=lambda d, t: seen.append(d))
+    assert max(seen) <= len(data)
+    assert not models.model_path("m").exists()
+    assert not _part("m").exists()
+
+
+def test_download_resumed_on_a_wrong_part_raises(store, serve):
+    data = os.urandom(5 * MIB // 2)
+    server = serve(data)
+    models.MODELS["m"] = _model(server.url, data)
+    part = _part("m")
+    part.parent.mkdir(parents=True)
+    part.write_bytes(b"x" * MIB)  # not the start of this model
+
+    with pytest.raises(ModelError, match="is damaged, please try again"):
+        models.download("m")
+    assert server.ranges == [f"bytes={MIB}-"]
+    assert not part.exists()
+    assert not models.model_path("m").exists()

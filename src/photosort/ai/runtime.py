@@ -1,11 +1,15 @@
 """Open ONNX models on the GPU when it works, otherwise on the CPU.
 
-The GPU is used when the owner has "Use GPU" on and ONNX Runtime offers
-CUDA. A CUDA session that fails to start is retried on the CPU, and the
+The GPU is used when the owner has "Use GPU" on, ONNX Runtime offers CUDA
+and an NVIDIA driver is installed (the onnxruntime-gpu wheel offers CUDA
+even on computers without one). A CUDA session that fails to start is retried on the CPU, and the
 failure is remembered so Settings can say the run is on the CPU.
 """
 
+import ctypes
+import functools
 import logging
+import sys
 import threading
 from pathlib import Path
 
@@ -23,8 +27,21 @@ _dlls_preloaded = False
 _gpu_failed = False  # a CUDA session fell back to the CPU in this process
 
 
+@functools.cache
+def _cuda_driver_present() -> bool:
+    """True when the NVIDIA driver's CUDA library can be loaded."""
+    try:
+        if sys.platform == "win32":
+            ctypes.WinDLL("nvcuda.dll")
+        else:
+            ctypes.CDLL("libcuda.so.1")
+    except OSError:
+        return False
+    return True
+
+
 def providers(use_gpu: bool) -> list[str]:
-    if use_gpu and CUDA in ort.get_available_providers():
+    if use_gpu and CUDA in ort.get_available_providers() and _cuda_driver_present():
         return [CUDA, CPU]
     return [CPU]
 
@@ -61,12 +78,12 @@ def make_session(path: Path, use_gpu: bool) -> ort.InferenceSession:
     if wanted[0] == CUDA:
         try:
             session = ort.InferenceSession(str(path), providers=wanted)
-        except Exception:
-            _log.warning("Could not open %s on the GPU, trying the CPU", path.name,
-                         exc_info=True)
-            # Raises on its own if the file itself is bad; only then is the
-            # GPU known to be at fault.
+        except Exception as gpu_error:
+            # If the file itself is bad this raises too, with its own error;
+            # only once the CPU copes is the GPU known to be at fault.
             session = ort.InferenceSession(str(path), providers=[CPU])
+            _log.warning("Could not open %s on the GPU (%s), using the CPU",
+                         path.name, gpu_error)
             _gpu_failed = True
     else:
         session = ort.InferenceSession(str(path), providers=[CPU])

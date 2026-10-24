@@ -211,7 +211,7 @@ def test_settings_dialog_saves_gpu(qtbot, tmp_path, dialog_errors):
     assert d.gpu_check.text() == "Use GPU"
     assert d.gpu_check.isChecked()
     assert d.note_label.text() == (
-        "GPU is used by the face and content modes (coming in later stages)."
+        "The GPU makes face recognition faster. Without one, the CPU is used."
     )
     d.gpu_check.setChecked(False)
     d.accept()
@@ -233,6 +233,7 @@ def test_settings_dialog_cancel_changes_nothing(qtbot, tmp_path):
 
 def test_settings_shows_runtime_status(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "_gpu_failed", False)
+    monkeypatch.setattr(runtime, "_cuda_driver_present", lambda: True)
     monkeypatch.setattr(onnxruntime, "get_available_providers",
                         lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"])
     d = SettingsDialog(Settings(use_gpu=True), tmp_path / "settings.json")
