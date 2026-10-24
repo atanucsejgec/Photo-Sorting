@@ -465,6 +465,42 @@ def test_repeated_keep_one_moves_the_rest(qtbot, make_window, photos, make_patte
     assert errors == []
 
 
+def test_repeated_end_to_end(qtbot, make_window, photos, make_pattern_jpeg, errors):
+    from photosort.journal import load_runs
+
+    make_pattern_jpeg(photos / "a.jpg", 5, shift=2, blur=2, exif_dt="2025:02:20 18:13:25")
+    make_pattern_jpeg(photos / "b.jpg", 5, exif_dt="2025:02:20 18:13:26")  # the sharpest
+    make_pattern_jpeg(photos / "c.jpg", 5, shift=4, blur=3, exif_dt="2025:02:20 18:13:27")
+    w = make_window()
+    _start_mode(qtbot, w, photos, "repeated")
+    qtbot.waitUntil(lambda: w.current_page() is w.review_page)
+    page = w.review_page
+    assert page.heading_label.text() == "Group 1 of 1 · Repeated shots"
+    assert [c.candidate.rel for c in page.cards] == ["a.jpg", "b.jpg", "c.jpg"]
+
+    page.keep_one_button.click()
+    assert w.current_page() is w.summary_page
+    assert w.summary_label.text().splitlines() == [
+        "2 files → Repeated Shots/ (from 1 group)",
+        "Nothing is deleted. You can look through Repeated Shots/ later.",
+    ]
+
+    w.go_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.done_page)
+    assert "Moved 2 files." in w.done_label.text()
+    assert sorted(p.name for p in (photos / "Repeated Shots").iterdir()) == ["a.jpg", "c.jpg"]
+    assert (photos / "b.jpg").is_file()
+    assert [run.mode for run in load_runs(photos)] == ["repeated"]
+
+    w.undo_button.click()
+    qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
+    assert not (photos / "Repeated Shots").exists()
+    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == [
+        "a.jpg", "b.jpg", "c.jpg",
+    ]
+    assert errors == []
+
+
 def test_stop_reviewing_with_nothing_confirmed(qtbot, make_window, photos,
                                                make_pattern_jpeg, errors):
     _burst(photos, make_pattern_jpeg)
