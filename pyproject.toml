@@ -8,6 +8,8 @@ dependencies = [
     "pillow-heif>=0.20",
     "hachoir>=3.3",
     "platformdirs>=4",
+    "numpy>=2.5.4",
+    "imagehash>=4.3.2",
 ]
 
 [project.scripts]

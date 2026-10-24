@@ -5,6 +5,7 @@ import pytest
 from PySide6.QtCore import QMimeData, QPointF, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QDropEvent
 
+from photosort.modes import MODE_SPECS, MODES, date_mode
 from photosort.settings import Settings, load_settings
 from photosort.ui import main_window
 from photosort.ui.main_window import MainWindow
@@ -61,15 +62,27 @@ def test_start_disabled_without_folder(make_window, photos):
     assert w.start_button.isEnabled()
 
 
-def test_only_date_mode_available(make_window):
+def test_three_modes_available(make_window):
     w = make_window()
     buttons = _mode_buttons(w)
     enabled = [b for b in buttons if b.isEnabled()]
     disabled = [b for b in buttons if not b.isEnabled()]
-    assert [b.text() for b in enabled] == ["Date"]
+    assert [b.text() for b in enabled] == ["Date", "Duplicates", "Repeated shots"]
     assert enabled[0].isChecked()
-    assert len(disabled) == 10
+    assert len(disabled) == 8
     assert all("coming soon" in b.text() for b in disabled)
+    assert all(key in MODE_SPECS for key, _, available in MODES if available)
+
+
+def test_folder_is_resolved(make_window, photos, tmp_path):
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(photos, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not allowed here")
+    w = make_window()
+    w.folder_edit.setText(str(link / ".." / "link"))
+    assert w._folder() == photos.resolve()
 
 
 def test_subfolders_default_off_and_saved(make_window, settings_path):
@@ -149,7 +162,7 @@ def test_cancel_while_checking_returns_home(qtbot, make_window, photos, monkeypa
         cancel.wait(10)
         return None
 
-    monkeypatch.setattr(main_window.date_mode, "prepare_date_plan", slow_prepare)
+    monkeypatch.setattr(date_mode, "prepare_date_plan", slow_prepare)
     w = make_window()
     w.folder_edit.setText(str(photos))
     w.start_button.click()
@@ -233,7 +246,7 @@ def test_one_task_at_a_time(qtbot, make_window, photos, monkeypatch):
         cancel.wait(10)
         return None
 
-    monkeypatch.setattr(main_window.date_mode, "prepare_date_plan", slow_prepare)
+    monkeypatch.setattr(date_mode, "prepare_date_plan", slow_prepare)
     w = make_window()
     w.folder_edit.setText(str(photos))
     w.start_button.click()
@@ -260,11 +273,12 @@ def test_stale_plan_is_never_executed(qtbot, make_window, photos, make_jpeg, err
     w.start_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
     w.back_button.click()
+    assert w.current_page() is w.home  # date mode has no review to go back to
 
     def broken(root, include_subfolders, progress=None, cancel=None):
         raise RuntimeError("unreadable")
 
-    monkeypatch.setattr(main_window.date_mode, "prepare_date_plan", broken)
+    monkeypatch.setattr(date_mode, "prepare_date_plan", broken)
     w.start_button.click()
     qtbot.waitUntil(lambda: errors != [])
     assert errors == ["Could not check the files: unreadable"]
@@ -307,3 +321,282 @@ def test_partial_undo_keeps_undo_button(qtbot, make_window, photos, make_jpeg, e
     assert not w.undo_button.isEnabled()
     assert all((photos / n).is_file() for n in names)
     assert errors == []
+
+
+def _start_mode(qtbot, w, photos, mode):
+    w.folder_edit.setText(str(photos))
+    w.mode_buttons[mode].setChecked(True)
+    w.start_button.click()
+
+
+def test_duplicates_end_to_end(qtbot, make_window, photos, make_pattern_jpeg, errors):
+    import shutil
+
+    from photosort.journal import load_runs
+
+    make_pattern_jpeg(photos / "x.jpg", 1)
+    shutil.copyfile(photos / "x.jpg", photos / "x copy.jpg")
+    make_pattern_jpeg(photos / "IMG20250220181325.jpg", 3, exif_dt="2025:02:20 18:13:25")
+    make_pattern_jpeg(photos / "IMG-20250220-WA0012.jpg", 3, size=(400, 300), quality=60)
+    before = sorted(p.name for p in photos.iterdir())
+    w = make_window()
+    _start_mode(qtbot, w, photos, "duplicates")
+    qtbot.waitUntil(lambda: w.current_page() is w.review_page)
+    page = w.review_page
+    unkept = []
+    for _ in range(2):
+        unkept += [c.candidate.rel for c in page.cards if not c.keep_check.isChecked()]
+        page.confirm_button.click()
+    assert sorted(unkept) == ["IMG-20250220-WA0012.jpg", "x.jpg"]
+    assert w.current_page() is w.summary_page
+    assert w.summary_label.text().splitlines() == [
+        "2 files → Duplicates/ (from 2 groups)",
+        "Nothing is deleted. You can look through Duplicates/ later.",
+    ]
+    assert w.go_button.isEnabled()
+
+    w.go_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.done_page)
+    assert "Moved 2 files." in w.done_label.text()
+    assert sorted(p.name for p in (photos / "Duplicates").iterdir()) == sorted(unkept)
+    assert [run.mode for run in load_runs(photos)] == ["duplicates"]
+
+    w.undo_button.click()
+    qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
+    assert not (photos / "Duplicates").exists()
+    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == before
+    assert errors == []
+
+
+def _two_duplicate_groups(photos, make_pattern_jpeg):
+    import shutil
+
+    make_pattern_jpeg(photos / "x.jpg", 1)
+    shutil.copyfile(photos / "x.jpg", photos / "x copy.jpg")
+    make_pattern_jpeg(photos / "IMG20250220181325.jpg", 3, exif_dt="2025:02:20 18:13:25")
+    make_pattern_jpeg(photos / "IMG-20250220-WA0012.jpg", 3, size=(400, 300), quality=60)
+
+
+def _ticked(page):
+    return {c.candidate.rel for c in page.cards if c.keep_check.isChecked()}
+
+
+def test_back_from_summary_returns_to_the_review(qtbot, make_window, photos,
+                                                 make_pattern_jpeg, errors):
+    _two_duplicate_groups(photos, make_pattern_jpeg)
+    w = make_window()
+    _start_mode(qtbot, w, photos, "duplicates")
+    qtbot.waitUntil(lambda: w.current_page() is w.review_page)
+    page = w.review_page
+    first = _ticked(page)
+    page.confirm_button.click()
+    for card in page.cards:  # group 2: keep both
+        card.keep_check.setChecked(True)
+    kept = _ticked(page)
+    page.confirm_button.click()
+    assert w.current_page() is w.summary_page
+    summary = w.summary_label.text()
+    assert summary.splitlines()[0] == "1 file → Duplicates/ (from 1 group)"
+
+    w.back_button.click()
+    assert w.current_page() is page
+    assert page.heading_label.text().startswith("Group 2 of 2")
+    assert _ticked(page) == kept  # the answer given, still editable
+    qtbot.waitUntil(lambda: all(not c.thumb_label.pixmap().isNull() for c in page.cards))
+
+    page.stop_button.click()  # a fresh plan from the same answers
+    assert w.current_page() is w.summary_page
+    assert w.summary_label.text() == summary
+
+    w.back_button.click()
+    page.back_button.click()  # group 1 kept its answer too
+    assert page.heading_label.text().startswith("Group 1 of 2")
+    assert _ticked(page) == first
+    assert errors == []
+
+
+def test_back_from_no_groups_found_goes_home(qtbot, make_window, photos, make_pattern_jpeg):
+    make_pattern_jpeg(photos / "a.jpg", 1)
+    w = make_window()
+    _start_mode(qtbot, w, photos, "duplicates")
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    w.back_button.click()
+    assert w.current_page() is w.home
+
+
+def test_no_duplicates_found(qtbot, make_window, photos, make_pattern_jpeg, errors):
+    make_pattern_jpeg(photos / "a.jpg", 1)
+    make_pattern_jpeg(photos / "b.jpg", 2)
+    w = make_window()
+    _start_mode(qtbot, w, photos, "duplicates")
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    assert w.summary_label.text() == "No duplicates found."
+    assert not w.go_button.isEnabled()
+    assert not w.show_moves_button.isEnabled()
+    assert errors == []
+
+
+def test_no_repeated_shots_found(qtbot, make_window, photos, make_pattern_jpeg, errors):
+    make_pattern_jpeg(photos / "a.jpg", 1, exif_dt="2025:02:20 18:13:25")
+    w = make_window()
+    _start_mode(qtbot, w, photos, "repeated")
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    assert w.summary_label.text() == "No repeated shots found."
+    assert not w.go_button.isEnabled()
+
+
+def _burst(photos, make_pattern_jpeg):
+    make_pattern_jpeg(photos / "a.jpg", 5, exif_dt="2025:02:20 18:13:25")
+    make_pattern_jpeg(photos / "b.jpg", 5, shift=2, blur=2, exif_dt="2025:02:20 18:13:26")
+
+
+def test_repeated_keep_one_moves_the_rest(qtbot, make_window, photos, make_pattern_jpeg,
+                                          errors):
+    _burst(photos, make_pattern_jpeg)
+    w = make_window()
+    _start_mode(qtbot, w, photos, "repeated")
+    qtbot.waitUntil(lambda: w.current_page() is w.review_page)
+    w.review_page.keep_one_button.click()
+    assert w.summary_label.text().splitlines()[0] == "1 file → Repeated Shots/ (from 1 group)"
+    w.go_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.done_page)
+    assert (photos / "Repeated Shots" / "b.jpg").is_file()
+    assert (photos / "a.jpg").is_file()
+    assert errors == []
+
+
+def test_repeated_end_to_end(qtbot, make_window, photos, make_pattern_jpeg, errors):
+    from photosort.journal import load_runs
+
+    make_pattern_jpeg(photos / "a.jpg", 5, shift=2, blur=2, exif_dt="2025:02:20 18:13:25")
+    make_pattern_jpeg(photos / "b.jpg", 5, exif_dt="2025:02:20 18:13:26")  # the sharpest
+    make_pattern_jpeg(photos / "c.jpg", 5, shift=4, blur=3, exif_dt="2025:02:20 18:13:27")
+    w = make_window()
+    _start_mode(qtbot, w, photos, "repeated")
+    qtbot.waitUntil(lambda: w.current_page() is w.review_page)
+    page = w.review_page
+    assert page.heading_label.text() == "Group 1 of 1 · Repeated shots"
+    assert [c.candidate.rel for c in page.cards] == ["a.jpg", "b.jpg", "c.jpg"]
+
+    page.keep_one_button.click()
+    assert w.current_page() is w.summary_page
+    assert w.summary_label.text().splitlines() == [
+        "2 files → Repeated Shots/ (from 1 group)",
+        "Nothing is deleted. You can look through Repeated Shots/ later.",
+    ]
+
+    w.go_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.done_page)
+    assert "Moved 2 files." in w.done_label.text()
+    assert sorted(p.name for p in (photos / "Repeated Shots").iterdir()) == ["a.jpg", "c.jpg"]
+    assert (photos / "b.jpg").is_file()
+    assert [run.mode for run in load_runs(photos)] == ["repeated"]
+
+    w.undo_button.click()
+    qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
+    assert not (photos / "Repeated Shots").exists()
+    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == [
+        "a.jpg", "b.jpg", "c.jpg",
+    ]
+    assert errors == []
+
+
+def test_stop_reviewing_with_nothing_confirmed(qtbot, make_window, photos,
+                                               make_pattern_jpeg, errors):
+    _burst(photos, make_pattern_jpeg)
+    w = make_window()
+    _start_mode(qtbot, w, photos, "repeated")
+    qtbot.waitUntil(lambda: w.current_page() is w.review_page)
+    w.review_page.stop_button.click()
+    assert w.current_page() is w.summary_page
+    assert w.summary_label.text().splitlines()[0] == "Nothing to move."
+    assert not w.go_button.isEnabled()
+    assert errors == []
+
+
+def test_cancel_review_returns_home(qtbot, make_window, photos, make_pattern_jpeg):
+    _burst(photos, make_pattern_jpeg)
+    w = make_window()
+    _start_mode(qtbot, w, photos, "repeated")
+    qtbot.waitUntil(lambda: w.current_page() is w.review_page)
+    w.review_page.cancel_button.click()
+    assert w.current_page() is w.home
+    assert sorted(p.name for p in photos.iterdir()) == ["a.jpg", "b.jpg"]
+
+
+def test_cancelled_finder_returns_home(qtbot, make_window, photos, monkeypatch):
+    from photosort.modes import duplicates
+
+    monkeypatch.setattr(duplicates, "find_duplicate_groups",
+                        lambda root, include, progress=None, cancel=None: None)
+    w = make_window()
+    _start_mode(qtbot, w, photos, "duplicates")
+    assert w.current_page() is w.progress_page
+    qtbot.waitUntil(lambda: w.current_page() is w.home)
+
+
+def test_planning_error_goes_home(qtbot, make_window, photos, make_pattern_jpeg, errors,
+                                  monkeypatch):
+    def unplugged(*args, **kwargs):
+        raise OSError("drive gone")
+
+    monkeypatch.setattr(main_window, "plan_set_aside", unplugged)
+    _burst(photos, make_pattern_jpeg)
+    w = make_window()
+    _start_mode(qtbot, w, photos, "repeated")
+    qtbot.waitUntil(lambda: w.current_page() is w.review_page)
+    w.review_page.keep_one_button.click()
+    assert w.current_page() is w.home
+    assert errors == ["Could not plan the moves: drive gone"]
+    assert sorted(p.name for p in photos.iterdir()) == ["a.jpg", "b.jpg"]
+
+
+def _stubborn(result, started: threading.Event):
+    """A prepare function that runs until Cancel, then returns result all the same."""
+
+    def prepare(root, include_subfolders, progress=None, cancel=None):
+        started.set()
+        cancel.wait(10)
+        return result
+
+    return prepare
+
+
+def test_cancel_after_the_finder_loop_returns_home(qtbot, make_window, photos,
+                                                   make_pattern_jpeg, monkeypatch):
+    from photosort.groups import Candidate, Group
+    from photosort.modes import duplicates
+
+    make_pattern_jpeg(photos / "a.jpg", 1)
+    a = Candidate("a.jpg", "photo", 800, 600, 1, None, None)
+    b = Candidate("b.jpg", "photo", 800, 600, 1, None, None)
+    started = threading.Event()
+    monkeypatch.setattr(duplicates, "find_duplicate_groups",
+                        _stubborn([Group("exact", [a, b], {"a.jpg"})], started))
+    w = make_window()
+    _start_mode(qtbot, w, photos, "duplicates")
+    assert started.wait(5)
+    w.cancel_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is not w.progress_page)
+    assert w.current_page() is w.home
+
+
+def test_cancel_after_planning_returns_home(qtbot, make_window, photos, make_jpeg,
+                                            monkeypatch):
+    from photosort.journal import load_runs
+    from photosort.plan import Move, Plan
+
+    make_jpeg(photos / "a.jpg", EXIF)
+    started = threading.Event()
+    plan = Plan("date", [Move("a.jpg", "2025/a.jpg")], ["1 files → somewhere"])
+    monkeypatch.setattr(date_mode, "prepare_date_plan", _stubborn(plan, started))
+    w = make_window()
+    w.folder_edit.setText(str(photos))
+    w.start_button.click()
+    assert started.wait(5)
+    w.cancel_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is not w.progress_page)
+    assert w.current_page() is w.home
+    w.go_button.click()  # the cancelled plan must not run
+    assert (photos / "a.jpg").is_file()
+    assert load_runs(photos) == []

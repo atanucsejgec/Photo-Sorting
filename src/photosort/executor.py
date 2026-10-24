@@ -6,7 +6,6 @@ source. Each move is journalled before it happens.
 """
 
 import errno
-import hashlib
 import os
 import shutil
 import tempfile
@@ -15,19 +14,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from photosort.hashing import sha256_file
 from photosort.journal import RunJournal, fsync_dir
 from photosort.naming import TargetAllocator
 from photosort.plan import Plan
 
 PHOTOSORT_DIR = ".photosort"
-
-
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
 
 
 def _exists(path: Path) -> bool:
@@ -66,7 +58,7 @@ def _copy_verify_move(src: Path, dst: Path) -> None:
         with open(tmp, "r+b") as f:  # writable: Windows cannot fsync read-only
             os.fsync(f.fileno())
         if (tmp.stat().st_size != src.stat().st_size
-                or _sha256(tmp) != _sha256(src)):
+                or sha256_file(tmp) != sha256_file(src)):
             raise IOError(f"Copy of {src} does not match the original")
         if _exists(dst):
             raise FileExistsError(errno.EEXIST, "Target already exists", str(dst))
