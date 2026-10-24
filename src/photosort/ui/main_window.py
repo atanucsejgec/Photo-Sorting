@@ -1,4 +1,8 @@
-"""The main window: Home, Progress, Summary and Done pages for a sort.
+"""The main window: Home, Progress, Review, Summary and Done pages for a sort.
+
+A mode either plans its moves straight away, or finds groups that the owner
+reviews first; the files not kept are then planned to be set aside (see
+photosort.modes.MODE_SPECS).
 
 Slow work runs in a worker.Task. Only one Task runs at a time (self._busy
 guards every way of starting one); the window keeps a reference to the last
@@ -20,10 +24,12 @@ from PySide6.QtWidgets import (
 
 from photosort.executor import ExecResult, execute
 from photosort.journal import RunJournal
-from photosort.modes import MODES, date_mode
+from photosort.groups import Group, plan_set_aside
+from photosort.modes import MODE_SPECS, MODES
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
 from photosort.ui.history_dialog import HistoryDialog, undo_summary
+from photosort.ui.review_page import ReviewPage
 from photosort.ui.settings_dialog import SettingsDialog
 from photosort.ui.worker import Task
 from photosort.undo import UndoBlocked, UndoResult, undo_run
@@ -83,6 +89,8 @@ class MainWindow(QMainWindow):
         self._busy = False  # a Task is running
         self._root: Path | None = None
         self._include_subfolders = False
+        self._mode: str | None = None
+        self._groups: list[Group] = []  # being reviewed
         self._plan: Plan | None = None
         self._run_id: str | None = None
         self._progress_prefix = ""
@@ -95,9 +103,11 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.stack)
         self.home = self._build_home()
         self.progress_page = self._build_progress()
+        self.review_page = self._build_review()
         self.summary_page = self._build_summary()
         self.done_page = self._build_done()
-        for page in (self.home, self.progress_page, self.summary_page, self.done_page):
+        for page in (self.home, self.progress_page, self.review_page, self.summary_page,
+                     self.done_page):
             self.stack.addWidget(page)
         self._show(self.home)
 
@@ -180,6 +190,12 @@ class MainWindow(QMainWindow):
         _buttons(layout, self.cancel_button)
         return page
 
+    def _build_review(self) -> ReviewPage:
+        page = ReviewPage()
+        page.finished.connect(self._on_reviewed)
+        page.cancelled.connect(lambda: self._show(self.home))
+        return page
+
     def _build_summary(self) -> QWidget:
         page, layout = _page("Ready to sort")
         self.summary_label = _text()
@@ -237,11 +253,14 @@ class MainWindow(QMainWindow):
             self.show_error(f"Could not save settings: {e}")
 
     def _folder(self) -> Path | None:
-        """The folder in the field, if it is an existing directory."""
+        """The folder in the field, resolved (no symlinks), if it is an existing directory."""
         text = self.folder_edit.text().strip()
         if not text:
             return None
-        path = Path(text).expanduser()
+        try:
+            path = Path(text).expanduser().resolve()
+        except (OSError, RuntimeError):  # e.g. a symlink loop
+            return None
         return path if path.is_dir() else None
 
     def _selected_mode(self) -> str | None:
@@ -354,19 +373,21 @@ class MainWindow(QMainWindow):
             self.show_error("Can't write to this folder.")
             return
         mode = self._selected_mode()
-        if mode != "date":  # the only mode built so far
+        spec = MODE_SPECS.get(mode)
+        if spec is None:
             self.show_error("This way of sorting isn't ready yet.")
             return
         self._root = root
+        self._mode = mode
         self._include_subfolders = self.subfolders_check.isChecked()
         self.settings.last_folder = str(root)
         self.settings.include_subfolders = self._include_subfolders
         self._save_settings()
 
         self._begin_progress("Checking files…")
+        on_result = self._on_plan if spec.kind == "plan" else self._on_groups
         self._run(
-            Task(date_mode.prepare_date_plan, root, self._include_subfolders),
-            self._on_plan, self._on_plan_error,
+            Task(spec.prepare, root, self._include_subfolders), on_result, self._on_plan_error
         )
 
     def _cancel(self) -> None:
@@ -374,6 +395,25 @@ class MainWindow(QMainWindow):
             self._task.cancel_event.set()
         self.cancel_button.setEnabled(False)
         self.progress_label.setText("Stopping…")
+
+    # ----- review ----------------------------------------------------------
+
+    def _on_groups(self, groups: list[Group] | None) -> None:
+        if groups is None:  # cancelled
+            self._show(self.home)
+            return
+        if not groups:
+            self._show_summary([MODE_SPECS[self._mode].none_found], can_go=False)
+            return
+        self._groups = groups
+        self.review_page.load(self._root, self._mode, groups)
+        self._show(self.review_page)
+
+    def _on_reviewed(self, keep: dict[int, set[str]]) -> None:
+        folder = MODE_SPECS[self._mode].set_aside_folder
+        plan = plan_set_aside(self._root, self._mode, folder, self._groups, keep)
+        self._groups = []
+        self._on_plan(plan)
 
     # ----- summary ---------------------------------------------------------
 
@@ -385,9 +425,12 @@ class MainWindow(QMainWindow):
         lines = list(plan.summary)
         if not plan.moves:
             lines.insert(0, "Nothing to move.")
+        self._show_summary(lines, can_go=bool(plan.moves))
+
+    def _show_summary(self, lines: list[str], can_go: bool) -> None:
         self.summary_label.setText("\n".join(lines))
-        self.go_button.setEnabled(bool(plan.moves))
-        self.show_moves_button.setEnabled(bool(plan.moves))
+        self.go_button.setEnabled(can_go)
+        self.show_moves_button.setEnabled(can_go)
         self.moves_table.setRowCount(0)
         self.show_moves_button.setChecked(False)
         self.moves_table.hide()
@@ -478,5 +521,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._task is not None:
             self._task.cancel_event.set()
+        self.review_page.stop_thumbnails()
         QThreadPool.globalInstance().waitForDone()
         super().closeEvent(event)
