@@ -19,8 +19,8 @@ from pathlib import Path
 
 from photosort.dates import find_datetime
 from photosort.groups import Candidate, Group, best_copy, close_pairs
-from photosort.imageinfo import UnreadableImage, analyse, image_size
 from photosort.media import kind
+from photosort.modes._analysis import measure_photo
 from photosort.scanner import scan
 from photosort.thresholds import DUP_ASPECT_TOL, DUP_HASH_MAX, SAME_MOMENT_S
 
@@ -82,7 +82,7 @@ def find_duplicate_groups(
             file_kind = kind(rel)
             width = height = sharp = None
             if file_kind == "photo":
-                measured = _measure_photo(path)
+                measured = measure_photo(path)
                 if measured is not None:
                     width, height, hashes[rel], sharp = measured
             if rel in hashes or rel in digests:
@@ -94,16 +94,6 @@ def find_duplicate_groups(
     if cancel is not None and cancel.is_set():
         return None
     return _group(candidates, digests, hashes)
-
-
-def _measure_photo(path: Path) -> tuple[int, int, int, float] | None:
-    """Return (width, height, perceptual hash, sharpness), or None if unreadable."""
-    try:
-        width, height = image_size(path)
-        phash, sharp = analyse(path)
-    except UnreadableImage:
-        return None
-    return width, height, phash, sharp
 
 
 def _group(
