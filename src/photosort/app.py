@@ -11,6 +11,9 @@ from photosort.ui.main_window import TITLE, MainWindow
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     QApplication.setApplicationName(TITLE)
+    # Matches scripts/install-desktop-entry.sh, so the app menu entry's icon
+    # and name are used for the window (the Wayland app id).
+    QApplication.setDesktopFileName("photo-sorter")
     font = app.font()
     if font.pointSizeF() < 11:
         font.setPointSizeF(11)

@@ -22,6 +22,8 @@ from photosort.journal import RunJournal
 from photosort.modes import MODES, date_mode
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
+from photosort.ui.history_dialog import HistoryDialog, undo_summary
+from photosort.ui.settings_dialog import SettingsDialog
 from photosort.ui.worker import Task
 from photosort.undo import UndoBlocked, UndoResult, undo_run
 
@@ -137,6 +139,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.subfolders_check)
 
         layout.addStretch()
+        self.home_status_label = _text()
+        layout.addWidget(self.home_status_label)
         self.undo_history_button = QPushButton("Undo history…")
         self.settings_button = QPushButton("Settings…")
         self.start_button = QPushButton("Start")
@@ -151,6 +155,8 @@ class MainWindow(QMainWindow):
         self.folder_edit.textChanged.connect(self._update_start)
         self.mode_group.buttonToggled.connect(self._update_start)
         self.start_button.clicked.connect(self._start)
+        self.undo_history_button.clicked.connect(self._open_history)
+        self.settings_button.clicked.connect(self._open_settings)
         last = self.settings.last_folder
         if last and Path(last).is_dir():
             self.folder_edit.setText(last)
@@ -266,6 +272,7 @@ class MainWindow(QMainWindow):
     # ----- home ------------------------------------------------------------
 
     def _update_start(self, *_) -> None:
+        self.home_status_label.setText("")
         self.start_button.setEnabled(
             self._folder() is not None and self._selected_mode() is not None
         )
@@ -302,6 +309,17 @@ class MainWindow(QMainWindow):
         if self.current_page() is self.home and folder:
             self.folder_edit.setText(folder)
             event.acceptProposedAction()
+
+    def _open_history(self) -> None:
+        root = self._folder()
+        if root is None:
+            self.home_status_label.setText("Pick a folder first.")
+            return
+        self.home_status_label.setText("")
+        HistoryDialog(root, self).exec()
+
+    def _open_settings(self) -> None:
+        SettingsDialog(self.settings, self._settings_path, self).exec()
 
     def _subfolders_toggled(self, checked: bool) -> None:
         self.settings.include_subfolders = checked
@@ -424,13 +442,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_undone(self, result: UndoResult) -> None:
-        lines = [f"Undo complete: {result.restored} files put back."]
-        if result.renamed:
-            lines.append(f"{len(result.renamed)} files were put back under a new name "
-                         "because the original name was taken.")
-        if result.missing:
-            lines.append(f"{len(result.missing)} files could not be found.")
-        self.undo_label.setText("\n".join(lines))
+        self.undo_label.setText(undo_summary(result))
         self.home_button.setEnabled(True)
 
     def _on_undo_error(self, message: str) -> None:
