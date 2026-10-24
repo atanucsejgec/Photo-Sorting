@@ -270,3 +270,38 @@ def test_stale_plan_is_never_executed(qtbot, make_window, photos, make_jpeg, err
     assert w.current_page() is w.home
     assert (photos / "a.jpg").is_file()
     assert load_runs(photos) == []
+
+
+def test_partial_undo_keeps_undo_button(qtbot, make_window, photos, make_jpeg, errors,
+                                        monkeypatch):
+    import errno
+    import os
+
+    from photosort import undo
+
+    names = ["a.jpg", "b.jpg"]
+    for name in names:
+        make_jpeg(photos / name, EXIF)
+    w = make_window()
+    _sort_to_done(qtbot, w, photos)
+
+    real = undo.move_file
+
+    def flaky(src, dst):
+        if os.path.basename(src) == "b.jpg":
+            raise PermissionError(errno.EACCES, "File in use", str(src))
+        return real(src, dst)
+
+    monkeypatch.setattr(undo, "move_file", flaky)
+    w.undo_button.click()
+    qtbot.waitUntil(lambda: "couldn't be put back" in w.undo_label.text())
+    monkeypatch.undo()
+    assert w.undo_label.text().splitlines()[0] == "Undo not finished: 1 files put back."
+    assert w.undo_button.isEnabled()
+
+    w.undo_button.click()
+    qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
+    assert w.undo_label.text() == "Undo complete: 1 files put back."
+    assert not w.undo_button.isEnabled()
+    assert all((photos / n).is_file() for n in names)
+    assert errors == []

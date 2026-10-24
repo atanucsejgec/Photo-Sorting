@@ -25,13 +25,19 @@ _UNREADABLE = (OSError, ValueError, KeyError, TypeError)
 
 def undo_summary(result: UndoResult) -> str:
     """What an undo did, in the words the Done page and this dialog both use."""
-    lines = [f"Undo complete: {result.restored} files put back."]
+    if result.failed:
+        lines = [f"Undo not finished: {result.restored} files put back."]
+    else:
+        lines = [f"Undo complete: {result.restored} files put back."]
     if result.renamed:
         lines.append(f"{len(result.renamed)} files were put back under a new name "
                      "because the original name was taken.")
     if result.missing:
         lines.append(f"{len(result.missing)} files were moved or deleted after the "
                      "sort, so they were left where they are.")
+    if result.failed:
+        lines.append(f"{len(result.failed)} files couldn't be put back yet. Close any "
+                     "program using them and press Undo again.")
     return "\n".join(lines)
 
 

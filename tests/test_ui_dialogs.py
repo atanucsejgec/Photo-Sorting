@@ -71,6 +71,12 @@ def test_undo_summary_wording():
         "1 files were put back under a new name because the original name was taken.",
         "2 files were moved or deleted after the sort, so they were left where they are.",
     ]
+    stuck = UndoResult(restored=1, failed=[("a.jpg", "in use"), ("b.jpg", "in use")])
+    assert undo_summary(stuck).splitlines() == [
+        "Undo not finished: 1 files put back.",
+        "2 files couldn't be put back yet. Close any program using them and "
+        "press Undo again.",
+    ]
 
 
 def test_history_lists_runs_and_undoes(qtbot, make_history, tmp_path, dialog_errors):
@@ -253,3 +259,40 @@ def test_launcher_resolves_repo_through_symlink(tmp_path):
 def test_scripts_are_executable():
     for name in ("photo-sorter.sh", "install-desktop-entry.sh"):
         assert os.access(REPO / "scripts" / name, os.X_OK)
+
+
+def _fail_undo_moves_of(monkeypatch, names):
+    import errno
+
+    from photosort import undo
+
+    real = undo.move_file
+
+    def flaky(src, dst):
+        if os.path.basename(src) in names:
+            raise PermissionError(errno.EACCES, "File in use", str(src))
+        return real(src, dst)
+
+    monkeypatch.setattr(undo, "move_file", flaky)
+
+
+def test_history_partial_undo_keeps_undo_available(qtbot, make_history, tmp_path,
+                                                   dialog_errors, monkeypatch):
+    _write(tmp_path / "a.jpg", b"a")
+    _write(tmp_path / "b.jpg", b"b")
+    _run(tmp_path, [("a.jpg", "d/a.jpg"), ("b.jpg", "d/b.jpg")])
+    d = make_history(tmp_path)
+    d.runs_table.selectRow(0)
+
+    _fail_undo_moves_of(monkeypatch, {"b.jpg"})
+    d.undo_button.click()
+    qtbot.waitUntil(lambda: "couldn't be put back" in d.result_label.text())
+    monkeypatch.undo()
+    assert _column(d, STATUS) == ["Done"]
+    assert d.undo_button.isEnabled()
+
+    d.undo_button.click()
+    qtbot.waitUntil(lambda: _column(d, STATUS) == ["Undone"])
+    assert d.result_label.text() == "Undo complete: 1 files put back."
+    assert (tmp_path / "b.jpg").read_bytes() == b"b"
+    assert dialog_errors == []

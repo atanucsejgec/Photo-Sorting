@@ -32,6 +32,9 @@ class UndoResult:
     restored: int
     missing: list[str] = field(default_factory=list)  # srcs whose file is gone
     renamed: list[tuple[str, str]] = field(default_factory=list)  # (src, put back as)
+    # (src, error message) of files that could not be moved back this time;
+    # when any, the run is left not undone so undo can be tried again.
+    failed: list[tuple[str, str]] = field(default_factory=list)
 
 
 def _run_index(root: Path, run_id: str) -> tuple[list, int]:
@@ -71,6 +74,11 @@ def undo_run(
     Raises ValueError if the run is unknown or already undone, and
     UndoBlocked if a newer run must be undone first. progress(processed,
     total) is called after each recorded move.
+
+    A file that can't be moved back (an OSError, such as a file held open)
+    is recorded in result.failed and the others still go back. The run is
+    then not marked undone, so undoing it again retries just what is left
+    (undo trusts the disk, so files already back are left alone).
     """
     root = Path(root)
     runs, k = _run_index(root, run_id)
@@ -90,22 +98,29 @@ def undo_run(
     for n, move in enumerate(reversed(moves), start=1):
         src, dst = root / move.src, root / move.dst
         if os.path.lexists(dst):
-            folder, _, name = move.src.rpartition("/")
-            # A "SUB" made after the run is the same folder (on NTFS) as the
-            # run's "sub": reuse it rather than create a twin beside it.
-            folder = resolve_existing_dir(root, folder)
-            wanted = f"{folder}/{name}" if folder else name
-            target = allocator.allocate(wanted)
-            if target != wanted:
-                allocator = TargetAllocator(root)
+            try:
+                folder, _, name = move.src.rpartition("/")
+                # A "SUB" made after the run is the same folder (on NTFS) as
+                # the run's "sub": reuse it rather than create a twin beside it.
+                folder = resolve_existing_dir(root, folder)
+                wanted = f"{folder}/{name}" if folder else name
                 target = allocator.allocate(wanted)
-            if target != move.src:
-                # The original place is taken (both copies of a half-finished
-                # cross-drive move, a new file, or a case twin): keep both.
-                result.renamed.append((move.src, target))
-            (root / target).parent.mkdir(parents=True, exist_ok=True)
-            move_file(dst, root / target)
-            result.restored += 1
+                if target != wanted:
+                    allocator = TargetAllocator(root)
+                    target = allocator.allocate(wanted)
+                (root / target).parent.mkdir(parents=True, exist_ok=True)
+                move_file(dst, root / target)
+            except OSError as e:
+                # E.g. the file is open in another program (Windows locks it).
+                # Carry on with the rest; the run stays undoable for a retry.
+                result.failed.append((move.src, str(e) or type(e).__name__))
+                allocator = TargetAllocator(root)  # release the name it reserved
+            else:
+                if target != move.src:
+                    # The original place is taken (both copies of a half-finished
+                    # cross-drive move, a new file, or a case twin): keep both.
+                    result.renamed.append((move.src, target))
+                result.restored += 1
         elif not os.path.lexists(src):
             result.missing.append(move.src)
         # else: the file never left (or is already back); nothing to do.
@@ -127,5 +142,6 @@ def undo_run(
             os.rmdir(root / rel)  # only succeeds if empty
         except OSError:
             pass  # holds something (or is already gone): leave it
-    mark_undone(root, run_id)
+    if not result.failed:
+        mark_undone(root, run_id)
     return result

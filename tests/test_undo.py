@@ -1,9 +1,11 @@
+import errno
 import os
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from photosort import undo
 from photosort.executor import execute
 from photosort.journal import RunJournal, load_runs
 from photosort.modes.date_mode import prepare_date_plan
@@ -281,3 +283,61 @@ def test_undo_restores_exact_name_freed_earlier_in_the_undo(tmp_path):
     assert (tmp_path / "n.jpg").read_bytes() == b"root n"
     assert (tmp_path / "d/n.jpg").read_bytes() == b"d n"
     assert (tmp_path / "r.jpg").read_bytes() == b"r"
+
+
+def _fail_moves_of(monkeypatch, names):
+    """Make undo's move_file fail (as for a file held open on Windows) for names."""
+    real = undo.move_file
+
+    def flaky(src, dst):
+        if os.path.basename(src) in names:
+            raise PermissionError(errno.EACCES, "File in use", str(src))
+        return real(src, dst)
+
+    monkeypatch.setattr(undo, "move_file", flaky)
+
+
+def test_undo_continues_past_a_failing_move_and_can_be_retried(tmp_path, monkeypatch):
+    for name in ("a.jpg", "b.jpg", "c.jpg"):
+        _write(tmp_path / "sub" / name, name.encode())
+    run_id = _run(tmp_path, [(f"sub/{n}", f"d/{n}") for n in ("a.jpg", "b.jpg", "c.jpg")])
+
+    _fail_moves_of(monkeypatch, {"b.jpg"})
+    result = undo_run(tmp_path, run_id)
+    monkeypatch.undo()
+
+    assert result.restored == 2
+    assert result.missing == []
+    assert [src for src, _ in result.failed] == ["sub/b.jpg"]
+    assert "File in use" in result.failed[0][1]
+    assert (tmp_path / "sub/a.jpg").read_bytes() == b"a.jpg"
+    assert (tmp_path / "sub/c.jpg").read_bytes() == b"c.jpg"
+    assert (tmp_path / "d/b.jpg").read_bytes() == b"b.jpg"
+    assert not _undone(tmp_path, run_id)  # so Undo can be pressed again
+
+    again = undo_run(tmp_path, run_id)
+    assert again == UndoResult(restored=1, missing=[], renamed=[], failed=[])
+    assert sorted(os.listdir(tmp_path / "sub")) == ["a.jpg", "b.jpg", "c.jpg"]
+    assert not (tmp_path / "d").exists()
+    assert _undone(tmp_path, run_id)
+
+
+def test_undo_failing_folder_creation_is_recorded_not_raised(tmp_path, monkeypatch):
+    _write(tmp_path / "sub/a.jpg", b"a")
+    _write(tmp_path / "b.jpg", b"b")
+    run_id = _run(tmp_path, [("sub/a.jpg", "d/a.jpg"), ("b.jpg", "d/b.jpg")])
+    real_mkdir = Path.mkdir
+
+    def no_sub(self, *args, **kwargs):
+        if self.name == "sub":
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", no_sub)
+    result = undo_run(tmp_path, run_id)
+    monkeypatch.undo()
+    assert result.restored == 1
+    assert [src for src, _ in result.failed] == ["sub/a.jpg"]
+    assert (tmp_path / "b.jpg").read_bytes() == b"b"
+    assert (tmp_path / "d/a.jpg").read_bytes() == b"a"
+    assert not _undone(tmp_path, run_id)

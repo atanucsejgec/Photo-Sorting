@@ -463,6 +463,7 @@ class MainWindow(QMainWindow):
 
     def _on_undone(self, result: UndoResult) -> None:
         self.undo_label.setText(undo_summary(result))
+        self.undo_button.setEnabled(bool(result.failed))  # left to retry
         self.home_button.setEnabled(True)
 
     def _on_undo_error(self, message: str) -> None:
