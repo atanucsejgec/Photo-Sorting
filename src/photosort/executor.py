@@ -101,6 +101,14 @@ def _make_parents(root: Path, dst: str, journal: RunJournal) -> None:
         journal.record_dir_created(rel)
 
 
+def _is_empty_dir(path: Path) -> bool:
+    try:
+        with os.scandir(path) as entries:
+            return next(entries, None) is None
+    except OSError:
+        return False
+
+
 def _remove_empty_dirs(
     root: Path, moved: list[tuple[str, str]], planned_dsts: list[str],
     journal: RunJournal,
@@ -123,11 +131,16 @@ def _remove_empty_dirs(
         while rel and rel.casefold() not in keep_folded:
             if rel.split("/")[0].casefold() == PHOTOSORT_DIR:
                 break
+            path = root / rel
+            if not _is_empty_dir(path):
+                break
+            # Journal first: a record for a folder that then stays is harmless
+            # (undo's mkdir is a no-op), a removed folder with no record is lost.
+            journal.record_dir_removed(rel)
             try:
-                os.rmdir(root / rel)  # fails unless empty
+                os.rmdir(path)  # fails unless empty
             except OSError:
                 break
-            journal.record_dir_removed(rel)
             rel = rel.rpartition("/")[0]
 
 
@@ -147,6 +160,10 @@ def execute(
     total = len(plan.moves)
     result = ExecResult(moved=0, skipped=[], cancelled=False, run_id=journal.run_id)
     moved: list[tuple[str, str]] = []
+    # One allocator for the run: it lists each target folder once (listing a
+    # big folder per move would be quadratic) and remembers the names it gave
+    # out. move_file still refuses a target that appeared meanwhile.
+    allocator = TargetAllocator(root)
     try:
         for n, move in enumerate(plan.moves, start=1):
             if cancel is not None and cancel.is_set():
@@ -156,8 +173,7 @@ def execute(
             if not _exists(src_path):
                 result.skipped.append(move.src)
             else:
-                # A fresh allocator sees the disk as it is now, not at plan time.
-                dst = TargetAllocator(root).allocate(move.dst)
+                dst = allocator.allocate(move.dst)
                 _make_parents(root, dst, journal)
                 i = journal.record_intent(move.src, dst)
                 move_file(src_path, root / dst)

@@ -216,3 +216,44 @@ def test_execute_failure_marks_failed_and_keeps_journal(tmp_path, monkeypatch):
     (run,) = load_runs(tmp_path)
     assert (run.status, run.moved) == ("failed", 1)
     assert (tmp_path / "b.jpg").read_bytes() == b"b"
+
+
+def test_execute_lists_target_folder_once(tmp_path, monkeypatch):
+    from photosort import naming
+
+    moves = []
+    for k in range(300):
+        _write(tmp_path / f"f{k:03d}.jpg", b"x")
+        moves.append((f"f{k:03d}.jpg", f"x/f{k:03d}.jpg"))
+    real_listdir = os.listdir
+    listed = []
+
+    def spy(path="."):
+        listed.append(os.fspath(path))
+        return real_listdir(path)
+
+    monkeypatch.setattr(naming.os, "listdir", spy)
+    result, _ = _run(tmp_path, moves)
+    monkeypatch.undo()
+    assert result.moved == 300
+    assert len(real_listdir(tmp_path / "x")) == 300
+    assert listed.count(os.fspath(tmp_path / "x")) <= 2
+
+
+def test_execute_journals_rmdir_before_removing(tmp_path, monkeypatch):
+    _write(tmp_path / "sub/a.jpg", b"a")
+    real_rmdir = os.rmdir
+    seen = []
+
+    def spy_rmdir(path, *args, **kwargs):
+        runs = tmp_path / ".photosort" / "runs"
+        (log,) = runs.glob("*.jsonl")
+        seen.append(b'"rmdir"' in log.read_bytes())
+        return real_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(executor.os, "rmdir", spy_rmdir)
+    _, j = _run(tmp_path, [("sub/a.jpg", "x/a.jpg")])
+    monkeypatch.undo()
+    assert seen == [True]
+    assert not (tmp_path / "sub").exists()
+    assert load_dirs(tmp_path, j.run_id)[1] == ["sub"]
