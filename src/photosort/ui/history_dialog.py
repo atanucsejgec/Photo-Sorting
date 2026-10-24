@@ -30,7 +30,8 @@ def undo_summary(result: UndoResult) -> str:
         lines.append(f"{len(result.renamed)} files were put back under a new name "
                      "because the original name was taken.")
     if result.missing:
-        lines.append(f"{len(result.missing)} files could not be found.")
+        lines.append(f"{len(result.missing)} files were moved or deleted after the "
+                     "sort, so they were left where they are.")
     return "\n".join(lines)
 
 

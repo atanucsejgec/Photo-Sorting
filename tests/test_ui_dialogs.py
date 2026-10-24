@@ -11,9 +11,10 @@ from photosort.journal import RunJournal, load_runs
 from photosort.plan import Move, Plan
 from photosort.settings import Settings, load_settings
 from photosort.ui import history_dialog
-from photosort.ui.history_dialog import HistoryDialog
+from photosort.ui.history_dialog import HistoryDialog, undo_summary
 from photosort.ui.main_window import MainWindow
 from photosort.ui.settings_dialog import SettingsDialog
+from photosort.undo import UndoResult
 
 REPO = Path(__file__).resolve().parents[1]
 DATE, MODE, FILES, STATUS = range(4)
@@ -59,6 +60,17 @@ def make_history(qtbot, dialog_errors):
 
 def _column(d: HistoryDialog, col: int) -> list[str]:
     return [d.runs_table.item(r, col).text() for r in range(d.runs_table.rowCount())]
+
+
+def test_undo_summary_wording():
+    assert undo_summary(UndoResult(restored=2)) == "Undo complete: 2 files put back."
+    result = UndoResult(restored=1, missing=["a.jpg", "b.jpg"],
+                        renamed=[("c.jpg", "c (1).jpg")])
+    assert undo_summary(result).splitlines() == [
+        "Undo complete: 1 files put back.",
+        "1 files were put back under a new name because the original name was taken.",
+        "2 files were moved or deleted after the sort, so they were left where they are.",
+    ]
 
 
 def test_history_lists_runs_and_undoes(qtbot, make_history, tmp_path, dialog_errors):
