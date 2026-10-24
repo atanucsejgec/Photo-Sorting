@@ -1,6 +1,8 @@
 import threading
 from datetime import date
 
+import pytest
+
 from photosort.modes import MODES
 from photosort.modes.date_mode import (
     MONTH_NAMES, date_target, plan_date, prepare_date_plan,
@@ -143,3 +145,27 @@ def test_prepare_date_plan_end_to_end(tmp_path, make_jpeg):
     cancel = threading.Event()
     cancel.set()
     assert prepare_date_plan(tmp_path, False, cancel=cancel) is None
+
+
+def test_existing_day_folder_takes_that_days_files(tmp_path, make_jpeg):
+    # A re-run after 20 Feb's day folder was made: a newly added 20 Feb photo
+    # joins it rather than sitting loose beside it in the month folder.
+    day = tmp_path / "2025/02-February/20-02-2025"
+    for name in ("a.jpg", "b.jpg", "c.jpg"):
+        make_jpeg(day / name, "2025:02:20 10:00:00")
+    make_jpeg(tmp_path / "new.jpg", "2025:02:20 18:00:00")
+    make_jpeg(tmp_path / "other.jpg", "2025:02:21 18:00:00")
+    plan = prepare_date_plan(tmp_path, False)
+    assert _dsts(plan) == {
+        "new.jpg": "2025/02-February/20-02-2025/new.jpg",
+        "other.jpg": "2025/02-February/other.jpg",
+    }
+    assert plan.summary == ["2 files → 1 month folders, 1 day folders, 0 No Date"]
+
+
+@pytest.mark.usefixtures("case_sensitive_fs")
+def test_existing_day_folder_found_case_insensitively(tmp_path):
+    (tmp_path / "2025/02-february/20-02-2025").mkdir(parents=True)
+    d = date(2025, 2, 20)
+    plan = plan_date(tmp_path, ["new.jpg"], {"new.jpg": d})
+    assert _dsts(plan) == {"new.jpg": "2025/02-february/20-02-2025/new.jpg"}

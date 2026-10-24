@@ -1,8 +1,8 @@
 """Date mode: sort files into year/month folders, with a day folder for busy days.
 
 A file goes to "YYYY/MM-Month"; when 3 or more files (photos and videos
-together) share its date it goes to "YYYY/MM-Month/DD-MM-YYYY" instead.
-Files with no date go to "No Date".
+together) share its date, or that day's folder already exists, it goes to
+"YYYY/MM-Month/DD-MM-YYYY" instead. Files with no date go to "No Date".
 """
 
 import threading
@@ -12,7 +12,7 @@ from datetime import date
 from pathlib import Path
 
 from photosort.dates import find_date
-from photosort.naming import TargetAllocator
+from photosort.naming import TargetAllocator, resolve_existing_dir
 from photosort.plan import Move, Plan
 from photosort.scanner import scan
 
@@ -37,7 +37,17 @@ def date_target(d: date | None, day_count: int) -> str:
 
 def plan_date(root: Path, files: list[str], dates: dict[str, date | None]) -> Plan:
     """Plan the date-mode moves for files (relative POSIX paths under root)."""
+    root = Path(root)
     day_counts = Counter(dates[rel] for rel in files if dates[rel] is not None)
+    day_folder_exists: dict[date, bool] = {}
+
+    def has_day_folder(d: date) -> bool:
+        # An earlier run made it: that day's new files join it (any case).
+        if d not in day_folder_exists:
+            day = resolve_existing_dir(root, date_target(d, DAY_FOLDER_MIN))
+            day_folder_exists[d] = (root / day).is_dir()
+        return day_folder_exists[d]
+
     allocator = TargetAllocator(root)
     moves: list[Move] = []
     months: set[str] = set()
@@ -47,8 +57,10 @@ def plan_date(root: Path, files: list[str], dates: dict[str, date | None]) -> Pl
 
     for rel in files:
         d = dates[rel]
-        count = day_counts[d] if d is not None else 0
-        target = date_target(d, count)
+        in_day_folder = d is not None and (
+            day_counts[d] >= DAY_FOLDER_MIN or has_day_folder(d)
+        )
+        target = date_target(d, DAY_FOLDER_MIN if in_day_folder else 0)
         parent, _, name = rel.rpartition("/")
         if parent.casefold() == target.casefold():
             unchanged += 1
@@ -58,7 +70,7 @@ def plan_date(root: Path, files: list[str], dates: dict[str, date | None]) -> Pl
             no_date += 1
         else:
             months.add(date_target(d, 0))
-            if count >= DAY_FOLDER_MIN:
+            if in_day_folder:
                 days.add(target)
 
     summary = [f"{len(moves)} files → {len(months)} month folders, "
