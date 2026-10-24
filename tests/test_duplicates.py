@@ -88,6 +88,19 @@ def test_burst_not_duplicate(tmp_path, make_pattern_jpeg):
     assert find_duplicate_groups(tmp_path, include_subfolders=False) == []
 
 
+def test_burst_not_joined_through_undated_copy(tmp_path, make_pattern_jpeg):
+    # shared.jpg matches both shots, but a and b were taken 4 s apart: a group
+    # must never span two moments, whatever links it.
+    a = make_pattern_jpeg(tmp_path / "a.jpg", 4, exif_dt="2025:02:20 18:13:25")
+    make_pattern_jpeg(tmp_path / "b.jpg", 4, shift=3, exif_dt="2025:02:20 18:13:29")
+    open_image(a).resize((400, 300)).save(tmp_path / "shared.jpg", "JPEG", quality=80)
+    groups = find_duplicate_groups(tmp_path, include_subfolders=False)
+    for group in groups:
+        assert not {"a.jpg", "b.jpg"} <= set(_rels(group))
+    assert [_rels(g) for g in groups] == [["a.jpg", "shared.jpg"]]
+    assert groups[0].suggested_keep == {"a.jpg"}
+
+
 def test_rotated_camera_photo_and_upright_copy(tmp_path, make_pattern_jpeg):
     camera = make_pattern_jpeg(tmp_path / "camera.jpg", 5, orientation=6)
     upright = open_image(camera).resize((300, 400))

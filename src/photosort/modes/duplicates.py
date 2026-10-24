@@ -3,7 +3,8 @@
 Exact copies (photos and videos) share their bytes: only files whose byte
 size collides are SHA-256 hashed. Resized copies of a photo have close
 perceptual hashes and the same shape, and were not taken at different
-moments (those are repeated shots, not duplicates).
+moments (those are repeated shots, not duplicates): no group's dated
+members span more than SAME_MOMENT_S seconds.
 """
 
 import hashlib
@@ -13,6 +14,7 @@ import threading
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 from photosort.dates import find_datetime
@@ -39,12 +41,6 @@ def _sha256(path: Path) -> str:
 def _same_shape(a: Candidate, b: Candidate) -> bool:
     ra, rb = a.width / a.height, b.width / b.height
     return abs(ra - rb) <= DUP_ASPECT_TOL * max(ra, rb)
-
-
-def _different_moments(a: Candidate, b: Candidate) -> bool:
-    if a.taken is None or b.taken is None:
-        return False
-    return abs((a.taken - b.taken).total_seconds()) > SAME_MOMENT_S
 
 
 def find_duplicate_groups(
@@ -116,6 +112,11 @@ def _group(
     rels = sorted(candidates)
     index = {rel: n for n, rel in enumerate(rels)}
     parent = list(range(len(rels)))
+    # Each component's earliest and latest taken time (None: no dated member).
+    span: list[tuple[datetime, datetime] | None] = [
+        (c.taken, c.taken) if c.taken is not None else None
+        for c in (candidates[rel] for rel in rels)
+    ]
 
     def find(n: int) -> int:
         while parent[n] != n:
@@ -123,24 +124,46 @@ def _group(
             n = parent[n]
         return n
 
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
+    def merged_span(ra: int, rb: int) -> tuple[datetime, datetime] | None:
+        a, b = span[ra], span[rb]
+        if a is None or b is None:
+            return a or b
+        return min(a[0], b[0]), max(a[1], b[1])
 
+    def union(a: int, b: int, same_moment: bool) -> None:
+        """Join a's and b's components; with same_moment, only within SAME_MOMENT_S."""
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        joined = merged_span(ra, rb)
+        if same_moment and joined is not None and (
+            (joined[1] - joined[0]).total_seconds() > SAME_MOMENT_S
+        ):
+            return  # would put shots of different moments in one group
+        low, high = min(ra, rb), max(ra, rb)
+        parent[high] = low
+        span[low] = joined
+
+    # Exact links always join: byte-identical files share their metadata.
     by_digest: dict[str, list[int]] = defaultdict(list)
-    for rel, digest in digests.items():
-        if rel in index:
-            by_digest[digest].append(index[rel])
+    for rel in rels:
+        if rel in digests:
+            by_digest[digests[rel]].append(index[rel])
     for same in by_digest.values():
         for n in same[1:]:
-            union(same[0], n)
+            union(same[0], n, same_moment=False)
 
+    # Resized links, closest first (ties by path order), so the result
+    # doesn't depend on the order pairs are found in.
     hashed = [rel for rel in rels if rel in hashes]
+    links = []
     for a, b in close_pairs([hashes[rel] for rel in hashed], DUP_HASH_MAX):
         ca, cb = candidates[hashed[a]], candidates[hashed[b]]
-        if _same_shape(ca, cb) and not _different_moments(ca, cb):
-            union(index[ca.rel], index[cb.rel])
+        if _same_shape(ca, cb):
+            distance = (hashes[ca.rel] ^ hashes[cb.rel]).bit_count()
+            links.append((distance, index[ca.rel], index[cb.rel]))
+    for _, a, b in sorted(links):
+        union(a, b, same_moment=True)
 
     components: dict[int, list[Candidate]] = defaultdict(list)
     for rel in rels:  # in path order, so members come out sorted
