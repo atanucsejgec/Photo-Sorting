@@ -157,3 +157,12 @@ def test_plan_set_aside_refuses_keep_outside_group(tmp_path):
     g0 = Group("exact", [_cand("a.jpg"), _cand("b.jpg")], {"a.jpg"})
     with pytest.raises(ValueError):
         plan_set_aside(tmp_path, "duplicates", "Duplicates", [g0], {0: {"other.jpg"}})
+
+
+def test_plan_set_aside_refuses_a_file_in_two_groups(tmp_path):
+    # Finders keep groups disjoint; a file in two groups could be kept by one
+    # group's answer and set aside by the other's.
+    g0 = Group("exact", [_cand("a.jpg"), _cand("b.jpg")], {"a.jpg"})
+    g1 = Group("repeated", [_cand("b.jpg"), _cand("c.jpg")], {"c.jpg"})
+    with pytest.raises(ValueError, match="b.jpg"):
+        plan_set_aside(tmp_path, "duplicates", "Duplicates", [g0, g1], {0: {"b.jpg"}})

@@ -141,8 +141,16 @@ def plan_set_aside(
 
     keep maps a group's index to the rels to keep; a group with no entry
     (skipped) moves nothing. Raises ValueError if a group's keep set holds
-    none of its members, so a group's last copy is never set aside.
+    none of its members, so a group's last copy is never set aside, or if a
+    file is in more than one group (one group's answer could then set aside
+    what another kept).
     """
+    seen: set[str] = set()
+    for index, group in enumerate(groups):
+        for c in group.members:
+            if c.rel in seen:
+                raise ValueError(f"group {index}: {c.rel} is in more than one group")
+            seen.add(c.rel)
     allocator = TargetAllocator(Path(root))
     moves: list[Move] = []
     from_groups = 0
