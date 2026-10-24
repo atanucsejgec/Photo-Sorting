@@ -411,7 +411,13 @@ class MainWindow(QMainWindow):
 
     def _on_reviewed(self, keep: dict[int, set[str]]) -> None:
         folder = MODE_SPECS[self._mode].set_aside_folder
-        plan = plan_set_aside(self._root, self._mode, folder, self._groups, keep)
+        try:
+            plan = plan_set_aside(self._root, self._mode, folder, self._groups, keep)
+        except OSError as e:  # e.g. the drive was unplugged during the review
+            self._groups = []
+            self._show(self.home)
+            self.show_error(f"Could not plan the moves: {e}")
+            return
         self._groups = []
         self._on_plan(plan)
 

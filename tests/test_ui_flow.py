@@ -440,3 +440,19 @@ def test_cancelled_finder_returns_home(qtbot, make_window, photos, monkeypatch):
     _start_mode(qtbot, w, photos, "duplicates")
     assert w.current_page() is w.progress_page
     qtbot.waitUntil(lambda: w.current_page() is w.home)
+
+
+def test_planning_error_goes_home(qtbot, make_window, photos, make_pattern_jpeg, errors,
+                                  monkeypatch):
+    def unplugged(*args, **kwargs):
+        raise OSError("drive gone")
+
+    monkeypatch.setattr(main_window, "plan_set_aside", unplugged)
+    _burst(photos, make_pattern_jpeg)
+    w = make_window()
+    _start_mode(qtbot, w, photos, "repeated")
+    qtbot.waitUntil(lambda: w.current_page() is w.review_page)
+    w.review_page.keep_one_button.click()
+    assert w.current_page() is w.home
+    assert errors == ["Could not plan the moves: drive gone"]
+    assert sorted(p.name for p in photos.iterdir()) == ["a.jpg", "b.jpg"]

@@ -229,3 +229,46 @@ def test_cancel_emits_cancelled(qtbot, tmp_path, make_page, make_pattern_jpeg):
     with qtbot.waitSignal(page.cancelled, timeout=1000):
         page.cancel_button.click()
     assert results == []
+
+
+ENGLISH_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+class _GermanDatetime(datetime):
+    """A datetime that formats %b as a German locale would."""
+
+    def strftime(self, fmt):
+        german = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
+                  "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"][self.month - 1]
+        return super().strftime(fmt.replace("%b", german))
+
+
+def _foreign_locale(locale) -> bool:
+    """Switch LC_TIME to an installed non-English locale; False if there is none."""
+    for name in ("de_DE.UTF-8", "fr_FR.UTF-8", "es_ES.UTF-8", "nl_NL.UTF-8", "bn_IN.UTF-8"):
+        try:
+            locale.setlocale(locale.LC_TIME, name)
+            return True
+        except locale.Error:
+            continue
+    return False
+
+
+def test_card_month_is_english_whatever_the_locale():
+    import locale
+
+    from photosort.ui.review_page import _taken_text
+
+    for month in range(1, 13):  # a datetime that formats like a German locale
+        taken = _GermanDatetime(2025, month, 20, 18, 13, 25)
+        assert _taken_text(taken) == f"20 {ENGLISH_MONTHS[month - 1]} 2025, 18:13:25"
+
+    old = locale.setlocale(locale.LC_TIME)
+    try:
+        if _foreign_locale(locale):  # and a real one, when one is installed
+            for month in range(1, 13):
+                text = _taken_text(datetime(2025, month, 20, 18, 13, 25))
+                assert text == f"20 {ENGLISH_MONTHS[month - 1]} 2025, 18:13:25"
+    finally:
+        locale.setlocale(locale.LC_TIME, old)

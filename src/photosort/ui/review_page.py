@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from photosort.groups import Candidate, Group, sharpest, sharpness_label
 from photosort.imageinfo import UnreadableImage, thumbnail
 from photosort.modes import MODE_SPECS
+from photosort.modes.date_mode import MONTH_NAMES
 from photosort.thresholds import THUMB_PX
 from photosort.ui.fullscreen_viewer import FullscreenViewer
 from photosort.ui.worker import Task
@@ -38,7 +39,8 @@ CANT_SHOW = "Can't show"
 def _taken_text(taken: datetime | None) -> str:
     if taken is None:
         return "no date inside"
-    return f"{taken.day} {taken:%b %Y, %H:%M:%S}"  # no leading zero on the day
+    month = MONTH_NAMES[taken.month - 1][:3]  # English, whatever the system locale
+    return f"{taken.day} {month} {taken:%Y, %H:%M:%S}"  # no leading zero on the day
 
 
 def _render_thumbnail(token: tuple[int, int], path: Path, progress=None, cancel=None):
