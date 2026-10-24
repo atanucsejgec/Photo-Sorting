@@ -232,3 +232,40 @@ def test_fullscreen_button_only_for_repeated(qtbot, tmp_path, make_pattern_jpeg)
     assert page.fullscreen_button.isHidden()
     QThreadPool.globalInstance().waitForDone()
 
+
+
+def test_image_cache_is_bounded(qtbot, tmp_path, make_viewer, make_pattern_jpeg):
+    from photosort.ui.fullscreen_viewer import CACHE_IMAGES
+
+    members = []
+    for i in range(12):
+        rel = f"IMG_{i + 1:02}.jpg"
+        path = make_pattern_jpeg(tmp_path / rel, i, size=(160, 120))
+        members.append(Candidate(rel, "photo", 160, 120, path.stat().st_size,
+                                 datetime(2025, 2, 20, 18, 13, i), 100.0 - i))
+    viewer = make_viewer(tmp_path, Group("repeated", members, {members[0].rel}),
+                         {members[0].rel})
+    assert CACHE_IMAGES == 8
+
+    def wait_for_current_and_next() -> None:
+        i = viewer.current_index
+        qtbot.waitUntil(lambda: {i, (i + 1) % 12} <= viewer.loaded_indexes())
+        assert len(viewer.loaded_indexes()) <= CACHE_IMAGES
+
+    for _ in range(11):  # flip through all 12
+        wait_for_current_and_next()
+        _key(qtbot, viewer, Qt.Key.Key_Right)
+    wait_for_current_and_next()
+    assert viewer.current_index == 11
+    assert len(viewer.loaded_indexes()) == CACHE_IMAGES
+    assert {11, 0} <= viewer.loaded_indexes()  # on screen, and the next one
+    assert 4 not in viewer.loaded_indexes()  # the least recently seen went
+
+    for _ in range(6):  # back to IMG_06, still cached
+        _key(qtbot, viewer, Qt.Key.Key_Left)
+        assert _texts(viewer) == []
+    _key(qtbot, viewer, Qt.Key.Key_Left)  # IMG_05 was let go: loaded again
+    assert viewer.current_index == 4
+    assert _texts(viewer) == ["Loading…"]
+    qtbot.waitUntil(lambda: len(_pixmaps(viewer)) == 1)
+    assert len(viewer.loaded_indexes()) <= CACHE_IMAGES

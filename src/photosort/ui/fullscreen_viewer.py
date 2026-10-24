@@ -1,8 +1,9 @@
 """The full-screen viewer for a group of repeated shots: flip, compare, zoom, keep.
 
 Photos are decoded on pool threads (a HEIC at 2400 px takes long enough to
-freeze the window) and cached for as long as the dialog lives; the photo
-after the current one is loaded ahead. Results that arrive after the dialog
+freeze the window); the photo after the ones on screen is loaded ahead. The
+CACHE_IMAGES most recently seen are kept; one let go is decoded again if it
+comes back. Results that arrive after the dialog
 closed are ignored.
 
 None of the dialog's children takes the keyboard focus, so every key press
@@ -10,6 +11,7 @@ reaches FullscreenViewer.keyPressEvent whatever was clicked last.
 """
 
 import logging
+from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, QTimer, Qt, Signal
@@ -28,6 +30,7 @@ from photosort.ui.worker import Task
 _log = logging.getLogger("photosort")
 
 VIEW_PX = 2400  # photos are shown at most this many pixels on their longest side
+CACHE_IMAGES = 8  # decoded photos kept (about 17 MB each at VIEW_PX)
 ZOOM_STEP = 1.25
 ZOOM_MAX = 8.0  # zoom 1.0 fits the whole photo; zooming out further shows nothing new
 LOADING = "Loading…"
@@ -86,7 +89,8 @@ class FullscreenViewer(QDialog):
         self.current_index = 0
         self.side_by_side = False
         self.zoom = 1.0
-        self._images: dict[int, QPixmap | str] = {}  # index -> photo, or CANT_SHOW
+        # index -> photo, or CANT_SHOW; least recently wanted first
+        self._images: OrderedDict[int, QPixmap | str] = OrderedDict()
         self._tasks: dict[int, Task] = {}  # kept alive until they report
         self._closed = False
         self._dispose_when_idle = False
@@ -155,11 +159,17 @@ class FullscreenViewer(QDialog):
         """The indexes whose photo (or CANT_SHOW) has arrived."""
         return set(self._images)
 
-    def _show_current(self) -> None:
+    def _wanted(self) -> list[int]:
+        """The photos on screen, then the one after them (loaded ahead)."""
         shown = self.shown_indexes()
-        for index in shown:
-            self._request(index)
-        self._request((shown[-1] + 1) % len(self.group.members))  # the next one, ahead
+        return shown + [(shown[-1] + 1) % len(self.group.members)]
+
+    def _show_current(self) -> None:
+        for index in self._wanted():
+            if index in self._images:
+                self._images.move_to_end(index)
+            else:
+                self._request(index)
         self._rebuild_scene()
         self._update_overlay()
 
@@ -243,8 +253,18 @@ class FullscreenViewer(QDialog):
             self._dispose_if_idle()
             return  # asked for by a viewer that is gone
         self._images[index] = QPixmap.fromImage(value) if isinstance(value, QImage) else value
+        self._evict()
         if index in self.shown_indexes():
             self._rebuild_scene()
+
+    def _evict(self) -> None:
+        """Let the least recently wanted photos go, down to CACHE_IMAGES (never a wanted one)."""
+        wanted = set(self._wanted())
+        for index in list(self._images):
+            if len(self._images) <= CACHE_IMAGES:
+                break
+            if index not in wanted:
+                del self._images[index]
 
     def dispose(self) -> None:
         """Delete this viewer, once the photos still loading have reported."""
