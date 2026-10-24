@@ -53,6 +53,9 @@ def test_is_copy_pair():
     assert not is_copy_pair(camera, _cand("b.jpg", taken=one_later), 0, 0)  # a burst
     assert not is_copy_pair(camera, _cand("a~2.jpg", taken=moment), 0, far)
     assert not is_copy_pair(camera, _cand("crop.jpg", 800, 500, taken=moment), 0, 0)
+    # An undated photo is never refused on time.
+    assert is_copy_pair(_cand("wa1.jpg"), _cand("wa2.jpg"), 0, near)
+    assert is_copy_pair(_cand("b.jpg", taken=one_later), _cand("wa.jpg", 400, 300), 0, near)
 
 
 def test_best_copy_ranking():

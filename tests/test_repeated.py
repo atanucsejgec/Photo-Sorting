@@ -59,25 +59,41 @@ def test_exact_copy_not_repeat(tmp_path, make_pattern_jpeg):
     assert find_repeated_groups(tmp_path, include_subfolders=True) == []
 
 
-def test_copy_breaks_chain_and_becomes_previous(tmp_path, make_pattern_jpeg):
+def test_copy_skipped_original_stays_in_burst(tmp_path, make_pattern_jpeg):
     make_pattern_jpeg(tmp_path / "a/x.jpg", 5, exif_dt="2025:02:20 18:13:25")
     (tmp_path / "b").mkdir()
     shutil.copyfile(tmp_path / "a/x.jpg", tmp_path / "b/x.jpg")
     make_pattern_jpeg(tmp_path / "c.jpg", 5, shift=2, exif_dt="2025:02:20 18:13:26")
     groups = find_repeated_groups(tmp_path, include_subfolders=True)
-    assert [_rels(g) for g in groups] == [["b/x.jpg", "c.jpg"]]
+    assert [_rels(g) for g in groups] == [["a/x.jpg", "c.jpg"]]
 
 
 def test_same_second_resave_not_repeat(tmp_path, make_pattern_jpeg):
     # The ~2 file is a phone re-save of the first (other bytes, same second);
-    # that is a duplicates-mode copy. The shot a second later is a real repeat.
+    # that is a duplicates-mode copy, so it is skipped. The shot a second
+    # later is a real repeat of the original.
     make_pattern_jpeg(tmp_path / "IMG20250220181325.jpg", 5, exif_dt="2025:02:20 18:13:25")
     make_pattern_jpeg(tmp_path / "IMG20250220181325~2.jpg", 5, quality=60,
                       exif_dt="2025:02:20 18:13:25")
     make_pattern_jpeg(tmp_path / "IMG20250220181326.jpg", 5, shift=2,
                       exif_dt="2025:02:20 18:13:26")
     groups = find_repeated_groups(tmp_path, include_subfolders=False)
-    assert [_rels(g) for g in groups] == [["IMG20250220181325~2.jpg", "IMG20250220181326.jpg"]]
+    assert [_rels(g) for g in groups] == [["IMG20250220181325.jpg", "IMG20250220181326.jpg"]]
+
+
+def test_resave_mid_burst_keeps_one_burst(tmp_path, make_pattern_jpeg):
+    # A re-save of the middle shot must not split the burst in two.
+    make_pattern_jpeg(tmp_path / "IMG20250220181325.jpg", 5, exif_dt="2025:02:20 18:13:25")
+    make_pattern_jpeg(tmp_path / "IMG20250220181326.jpg", 5, shift=2,
+                      exif_dt="2025:02:20 18:13:26")
+    make_pattern_jpeg(tmp_path / "IMG20250220181326~2.jpg", 5, shift=2, quality=60,
+                      exif_dt="2025:02:20 18:13:26")
+    make_pattern_jpeg(tmp_path / "IMG20250220181327.jpg", 5, shift=4,
+                      exif_dt="2025:02:20 18:13:27")
+    groups = find_repeated_groups(tmp_path, include_subfolders=False)
+    assert [_rels(g) for g in groups] == [
+        ["IMG20250220181325.jpg", "IMG20250220181326.jpg", "IMG20250220181327.jpg"]
+    ]
 
 
 def test_orientation_change_breaks_chain(tmp_path, make_pattern_jpeg):
