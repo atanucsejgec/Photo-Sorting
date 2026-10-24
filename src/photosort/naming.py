@@ -43,7 +43,7 @@ def _existing_part(folder: Path, part: str) -> str:
     An exact match wins; otherwise the first (sorted) case variant that is a
     folder. With no match part is returned unchanged.
     """
-    if (folder / part).is_dir():
+    if os.path.isdir(folder / part):
         return part
     try:
         with os.scandir(folder) as entries:

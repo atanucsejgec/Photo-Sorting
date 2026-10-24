@@ -5,6 +5,7 @@ together) share its date, or that day's folder already exists, it goes to
 "YYYY/MM-Month/DD-MM-YYYY" instead. Files with no date go to "No Date".
 """
 
+import os
 import threading
 from collections import Counter
 from collections.abc import Callable
@@ -45,7 +46,7 @@ def plan_date(root: Path, files: list[str], dates: dict[str, date | None]) -> Pl
         # An earlier run made it: that day's new files join it (any case).
         if d not in day_folder_exists:
             day = resolve_existing_dir(root, date_target(d, DAY_FOLDER_MIN))
-            day_folder_exists[d] = (root / day).is_dir()
+            day_folder_exists[d] = os.path.isdir(root / day)
         return day_folder_exists[d]
 
     allocator = TargetAllocator(root)
