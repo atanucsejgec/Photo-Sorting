@@ -221,3 +221,52 @@ def test_cancelled_move_says_so(qtbot, make_window, photos, make_jpeg, monkeypat
         "Cancelled — the files moved so far can be undone.",
     ]
     assert (photos / "a.jpg").is_file()
+
+
+def test_one_task_at_a_time(qtbot, make_window, photos, monkeypatch):
+    calls = []
+
+    def slow_prepare(root, include_subfolders, progress=None, cancel=None):
+        calls.append(root)
+        cancel.wait(10)
+        return None
+
+    monkeypatch.setattr(main_window.date_mode, "prepare_date_plan", slow_prepare)
+    w = make_window()
+    w.folder_edit.setText(str(photos))
+    w.start_button.click()
+    w.start_button.click()
+    qtbot.waitUntil(lambda: calls != [])
+    qtbot.wait(100)
+    assert len(calls) == 1
+
+    w.cancel_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.home)
+    w.start_button.click()  # the finished task no longer blocks a new one
+    qtbot.waitUntil(lambda: len(calls) == 2)
+    w.cancel_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.home)
+
+
+def test_stale_plan_is_never_executed(qtbot, make_window, photos, make_jpeg, errors,
+                                      monkeypatch):
+    from photosort.journal import load_runs
+
+    make_jpeg(photos / "a.jpg", EXIF)
+    w = make_window()
+    w.folder_edit.setText(str(photos))
+    w.start_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    w.back_button.click()
+
+    def broken(root, include_subfolders, progress=None, cancel=None):
+        raise RuntimeError("unreadable")
+
+    monkeypatch.setattr(main_window.date_mode, "prepare_date_plan", broken)
+    w.start_button.click()
+    qtbot.waitUntil(lambda: errors != [])
+    assert errors == ["Could not check the files: unreadable"]
+    w.go_button.click()  # the old plan must not run
+    assert w.current_page() is w.home
+    assert (photos / "a.jpg").is_file()
+    assert load_runs(photos) == []

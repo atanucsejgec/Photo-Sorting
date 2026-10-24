@@ -4,12 +4,19 @@ A Task calls its function on QThreadPool.globalInstance() and reports back
 through signals. TaskSignals is created on the GUI thread, so its signals are
 queued to slots there: connect them to methods of a QObject that lives on the
 GUI thread (such as the main window).
+
+When the function raises, its traceback is logged to the "photosort" logger
+before the error signal carries the message.
 """
 
+import logging
 import threading
+import traceback
 from collections.abc import Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+
+_log = logging.getLogger("photosort")
 
 
 class TaskSignals(QObject):
@@ -45,6 +52,8 @@ class Task(QRunnable):
         try:
             value = self._fn(*self._args, **kwargs)
         except Exception as e:
+            name = getattr(self._fn, "__name__", repr(self._fn))
+            _log.error("Task %s failed:\n%s", name, traceback.format_exc())
             self.signals.error.emit(str(e) or type(e).__name__)
         else:
             self.signals.result.emit(value)

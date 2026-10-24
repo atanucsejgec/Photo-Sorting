@@ -1,8 +1,9 @@
 """The main window: Home, Progress, Summary and Done pages for a sort.
 
-Slow work runs in a worker.Task. Only one Task runs at a time; the window
-keeps a reference to it (self._task) so it is not garbage-collected, and
-closing the window cancels it and waits for the pool to finish.
+Slow work runs in a worker.Task. Only one Task runs at a time (self._busy
+guards every way of starting one); the window keeps a reference to the last
+Task (self._task) so it is not garbage-collected while its thread may still be
+using it, and closing the window cancels it and waits for the pool to finish.
 """
 
 import os
@@ -78,6 +79,7 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self._settings_path = default_path() if settings_path is None else Path(settings_path)
         self._task: Task | None = None
+        self._busy = False  # a Task is running
         self._root: Path | None = None
         self._include_subfolders = False
         self._plan: Plan | None = None
@@ -247,12 +249,23 @@ class MainWindow(QMainWindow):
                 return key
         return None
 
-    def _run(self, task: Task, on_result, on_error) -> None:
+    def _run(self, task: Task, on_result, on_error) -> bool:
+        """Start task unless one is already running; return whether it started."""
+        if self._busy:
+            return False
+        self._busy = True
         task.signals.progress.connect(self._on_progress)
+        # Connected first, so the window is free again before on_result/on_error run.
+        task.signals.result.connect(self._task_finished)
+        task.signals.error.connect(self._task_finished)
         task.signals.result.connect(on_result)
         task.signals.error.connect(on_error)
         self._task = task
         task.start()
+        return True
+
+    def _task_finished(self, _value: object = None) -> None:
+        self._busy = False
 
     def _begin_progress(self, prefix: str, total: int | None = None) -> None:
         self._progress_prefix = prefix
@@ -311,6 +324,8 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
 
     def _open_history(self) -> None:
+        if self._busy:
+            return
         root = self._folder()
         if root is None:
             self.home_status_label.setText("Pick a folder first.")
@@ -326,6 +341,9 @@ class MainWindow(QMainWindow):
         self._save_settings()
 
     def _start(self) -> None:
+        if self._busy:
+            return
+        self._plan = None  # a stale plan must never be executed
         root = self._folder()
         if root is None:
             self.show_error("This folder doesn't exist any more.")
@@ -390,6 +408,8 @@ class MainWindow(QMainWindow):
     # ----- moving ----------------------------------------------------------
 
     def _go(self) -> None:
+        if self._busy:
+            return
         plan, root = self._plan, self._root
         if plan is None or root is None or not plan.moves:
             return
@@ -431,7 +451,7 @@ class MainWindow(QMainWindow):
     # ----- undo ------------------------------------------------------------
 
     def _undo(self) -> None:
-        if self._root is None or self._run_id is None:
+        if self._busy or self._root is None or self._run_id is None:
             return
         self.undo_button.setEnabled(False)
         self.home_button.setEnabled(False)
