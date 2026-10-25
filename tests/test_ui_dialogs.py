@@ -17,11 +17,11 @@ from photosort.executor import execute
 from photosort.journal import RunJournal, load_runs
 from photosort.plan import Move, Plan
 from photosort.settings import DEFAULT_CONTENT_CATEGORIES, Settings, load_settings
-from photosort.ui import dialogs, history_dialog, model_download
+from photosort.ui import dialogs, history_page, model_download
 from photosort.ui.category_editor import CategoryEditor
-from photosort.ui.history_dialog import HistoryDialog, undo_summary
+from photosort.ui.history_page import HistoryPage, undo_summary
 from photosort.ui.main_window import MainWindow
-from photosort.ui.settings_dialog import SettingsDialog
+from photosort.ui.settings_page import SettingsPage
 from photosort.undo import UndoResult
 
 REPO = Path(__file__).resolve().parents[1]
@@ -44,29 +44,28 @@ def _run(root: Path, moves) -> str:
 @pytest.fixture
 def dialog_errors(monkeypatch):
     shown: list[str] = []
-    monkeypatch.setattr(HistoryDialog, "show_error", lambda self, text: shown.append(text))
-    monkeypatch.setattr(SettingsDialog, "show_error", lambda self, text: shown.append(text))
+    monkeypatch.setattr(HistoryPage, "show_error", lambda self, text: shown.append(text))
+    monkeypatch.setattr(SettingsPage, "show_error", lambda self, text: shown.append(text))
     monkeypatch.setattr(MainWindow, "show_error", lambda self, text: shown.append(text))
     return shown
 
 
 @pytest.fixture
-def make_history(qtbot, dialog_errors):
-    dialogs = []
+def make_history(qtbot, dialog_errors, monkeypatch):
+    """A History page showing root's runs; its "Undo this sort?" is answered Yes."""
+    monkeypatch.setattr(dialogs, "ask", lambda *args, **kwargs: True)
 
-    def _make(root: Path) -> HistoryDialog:
-        d = HistoryDialog(root)
+    def _make(root: Path) -> HistoryPage:
+        d = HistoryPage()
         qtbot.addWidget(d)
-        dialogs.append(d)
+        d.load(root)
         return d
 
     yield _make
-    for d in dialogs:
-        d.close()
     QThreadPool.globalInstance().waitForDone()
 
 
-def _column(d: HistoryDialog, col: int) -> list[str]:
+def _column(d: HistoryPage, col: int) -> list[str]:
     return [d.runs_table.item(r, col).text() for r in range(d.runs_table.rowCount())]
 
 
@@ -172,7 +171,7 @@ def test_history_undo_error_is_shown(qtbot, make_history, tmp_path, dialog_error
     def broken(root, run_id, progress=None):
         raise OSError("disk unplugged")
 
-    monkeypatch.setattr(history_dialog, "undo_run", broken)
+    monkeypatch.setattr(history_page, "undo_run", broken)
     d = make_history(tmp_path)
     d.runs_table.selectRow(0)
     d.undo_button.click()
@@ -182,49 +181,51 @@ def test_history_undo_error_is_shown(qtbot, make_history, tmp_path, dialog_error
     assert _column(d, STATUS) == ["Done"]
 
 
-def test_closing_history_waits_for_undo(qtbot, make_history, tmp_path, monkeypatch):
+def test_history_says_while_it_undoes(qtbot, make_history, tmp_path, monkeypatch):
     _write(tmp_path / "a.jpg", b"a")
     _run(tmp_path, [("a.jpg", "d/a.jpg")])
-    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    started, release = threading.Event(), threading.Event()
 
     def slow(root, run_id, progress=None):
         started.set()
         release.wait(10)
-        finished.set()
         raise OSError("stopped")
 
-    monkeypatch.setattr(history_dialog, "undo_run", slow)
+    monkeypatch.setattr(history_page, "undo_run", slow)
     d = make_history(tmp_path)
+    running = []
+    d.undo_running.connect(running.append)
     d.runs_table.selectRow(0)
     d.undo_button.click()
+    assert running == [True] and d.undoing()
     assert not d.undo_button.isEnabled()
+    d.undo_button.click()  # one undo at a time
     assert started.wait(5)
-    threading.Timer(0.2, release.set).start()
-    d.reject()
-    assert finished.is_set()
+    release.set()
+    qtbot.waitUntil(lambda: running == [True, False])
+    assert not d.undoing()
 
 
-def test_settings_dialog_saves_gpu(qtbot, tmp_path, dialog_errors):
+def test_settings_page_saves_gpu(qtbot, tmp_path, dialog_errors):
     path = tmp_path / "config" / "settings.json"
     settings = Settings(use_gpu=True)
-    d = SettingsDialog(settings, path)
+    d = SettingsPage(settings, path)
     qtbot.addWidget(d)
     assert d.gpu_check.text() == "Use GPU"
     assert d.gpu_check.isChecked()
     assert d.note_label.text() == (
         "The GPU makes face recognition faster. Without one, the CPU is used."
     )
-    d.gpu_check.setChecked(False)
-    d.accept()
+    d.gpu_check.setChecked(False)  # saved at once
     assert settings.use_gpu is False
     assert load_settings(path).use_gpu is False
     assert dialog_errors == []
 
 
-def test_settings_dialog_saves_the_event_settings(qtbot, tmp_path, dialog_errors):
+def test_settings_page_saves_the_event_settings(qtbot, tmp_path, dialog_errors):
     path = tmp_path / "config" / "settings.json"
     settings = Settings()
-    d = SettingsDialog(settings, path)
+    d = SettingsPage(settings, path)
     qtbot.addWidget(d)
     assert (d.gap_label.text(), d.gap_unit_label.text()) == ("New event after a gap of", "hours")
     assert (d.min_files_label.text(), d.min_files_unit_label.text()) == (
@@ -234,24 +235,20 @@ def test_settings_dialog_saves_the_event_settings(qtbot, tmp_path, dialog_errors
             d.min_files_spin.value()) == (2, 1000, 10)
     d.gap_spin.setValue(12)
     d.min_files_spin.setValue(25)
-    d.accept()
     assert (settings.event_gap_hours, settings.event_min_files) == (12, 25)
     saved = load_settings(path)
     assert (saved.event_gap_hours, saved.event_min_files) == (12, 25)
     assert dialog_errors == []
 
 
-def test_settings_dialog_cancel_changes_nothing(qtbot, tmp_path):
-    path = tmp_path / "config" / "settings.json"
-    settings = Settings(use_gpu=True)
-    d = SettingsDialog(settings, path)
+def test_settings_page_says_when_it_cannot_save(qtbot, tmp_path, dialog_errors):
+    (tmp_path / "config").write_text("a file, not a folder")
+    settings = Settings()
+    d = SettingsPage(settings, tmp_path / "config" / "settings.json")
     qtbot.addWidget(d)
-    d.gpu_check.setChecked(False)
     d.gap_spin.setValue(30)
-    d.reject()
-    assert settings.use_gpu is True
-    assert settings.event_gap_hours == 6
-    assert not path.exists()
+    assert settings.event_gap_hours == 30  # it still applies until the app closes
+    assert len(dialog_errors) == 1 and dialog_errors[0].startswith("Could not save settings")
 
 
 def test_settings_shows_runtime_status(qtbot, tmp_path, monkeypatch):
@@ -259,8 +256,10 @@ def test_settings_shows_runtime_status(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "_cuda_driver_present", lambda: True)
     monkeypatch.setattr(onnxruntime, "get_available_providers",
                         lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"])
-    d = SettingsDialog(Settings(use_gpu=True), tmp_path / "settings.json")
+    d = SettingsPage(Settings(use_gpu=True), tmp_path / "settings.json")
     qtbot.addWidget(d)
+    assert d.runtime_label.text() == ""  # asked when shown: it loads the AI runtime
+    d.show()
     assert d.runtime_label.text() == "Running on: GPU (CUDA)"
     d.gpu_check.setChecked(False)
     assert d.runtime_label.text() == "Running on: CPU (GPU switched off)"
@@ -274,7 +273,7 @@ def test_settings_shows_runtime_status(qtbot, tmp_path, monkeypatch):
 def test_settings_edits_the_categories(qtbot, tmp_path, monkeypatch):
     path = tmp_path / "config" / "settings.json"
     settings = Settings()
-    d = SettingsDialog(settings, path)
+    d = SettingsPage(settings, path)
     qtbot.addWidget(d)
     assert d.categories_button.text() == "Content categories…"
     seen = []
@@ -288,30 +287,14 @@ def test_settings_edits_the_categories(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(CategoryEditor, "exec", edit)
     d.categories_button.click()
     assert seen == [list(DEFAULT_CONTENT_CATEGORIES)]
-    assert settings.content_categories == list(DEFAULT_CONTENT_CATEGORIES)  # not until OK
-    d.accept()
     assert settings.content_categories == list(DEFAULT_CONTENT_CATEGORIES[1:])
     assert load_settings(path).content_categories == list(DEFAULT_CONTENT_CATEGORIES[1:])
 
 
-def test_settings_cancel_keeps_the_categories(qtbot, tmp_path, monkeypatch):
-    settings = Settings(content_categories=["Food"])
-    d = SettingsDialog(settings, tmp_path / "settings.json")
-    qtbot.addWidget(d)
-
-    def edit(editor):
-        editor.reset_button.click()
-        return QDialog.DialogCode.Accepted
-
-    monkeypatch.setattr(CategoryEditor, "exec", edit)
-    d.categories_button.click()
-    d.reject()
-    assert settings.content_categories == ["Food"]
-
-
 def test_settings_editor_cancelled_changes_nothing(qtbot, tmp_path, monkeypatch):
     settings = Settings(content_categories=["Food", "Cars"])
-    d = SettingsDialog(settings, tmp_path / "settings.json")
+    path = tmp_path / "settings.json"
+    d = SettingsPage(settings, path)
     qtbot.addWidget(d)
 
     def edit(editor):
@@ -320,8 +303,8 @@ def test_settings_editor_cancelled_changes_nothing(qtbot, tmp_path, monkeypatch)
 
     monkeypatch.setattr(CategoryEditor, "exec", edit)
     d.categories_button.click()
-    d.accept()
     assert settings.content_categories == ["Food", "Cars"]
+    assert not path.exists()
 
 
 @pytest.fixture
@@ -494,25 +477,14 @@ def window(qtbot, tmp_path, dialog_errors):
     QThreadPool.globalInstance().waitForDone()
 
 
-def test_undo_history_needs_a_folder(window, monkeypatch):
-    opened = []
-    monkeypatch.setattr(HistoryDialog, "exec", lambda self: opened.append(self))
-    window.undo_history_button.click()
-    assert window.home_status_label.text() == "Pick a folder first."
-    assert opened == []
-
-
-def test_home_buttons_open_dialogs(window, tmp_path, monkeypatch):
-    opened = []
-    monkeypatch.setattr(HistoryDialog, "exec", lambda self: opened.append(self))
-    monkeypatch.setattr(SettingsDialog, "exec", lambda self: opened.append(self))
+def test_the_sidebar_pages_use_the_windows_folder_and_settings(window, tmp_path):
+    window.sidebar.items["history"].click()
+    assert window.history_page.root is None
     window.folder_edit.setText(str(tmp_path))
-    window.undo_history_button.click()
-    window.settings_button.click()
-    history, settings = opened
-    assert isinstance(history, HistoryDialog) and history.root == tmp_path
-    assert isinstance(settings, SettingsDialog) and settings.settings is window.settings
-    assert window.home_status_label.text() == ""
+    window.sidebar.items["sort"].click()
+    window.sidebar.items["history"].click()
+    assert window.history_page.root == tmp_path
+    assert window.settings_page.settings is window.settings
 
 
 def _launch(tmp_path, nvidia: bool) -> list[str]:
@@ -583,6 +555,7 @@ def test_history_partial_undo_keeps_undo_available(qtbot, make_history, tmp_path
     d.undo_button.click()
     qtbot.waitUntil(lambda: "couldn't be put back" in d.result_label.text())
     monkeypatch.undo()
+    monkeypatch.setattr(dialogs, "ask", lambda *args, **kwargs: True)  # undone too
     assert _column(d, STATUS) == ["Done"]
     assert d.undo_button.isEnabled()
 

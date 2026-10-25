@@ -7,7 +7,8 @@ object name:
 - primaryButton: the accent-gradient button, for a page's primary action (Go);
 - modeTile, card: a raised panel (give the widget Qt.WA_StyledBackground,
   as styled() does, so a plain QWidget paints it);
-- sidebar: the left column;
+- section: a quiet panel grouping a page's controls (Settings);
+- sidebar, sidebarItem: the left column and its page buttons;
 - shortcutStrip: the key strip along the bottom (see shortcuts.ShortcutStrip);
 - muted: quieter text; error: a problem, in the danger colour;
 - thumb: the grey box a thumbnail or photo shows in while it loads;
@@ -19,9 +20,9 @@ glow (a drop shadow in the focus colour) that follows focus around.
 """
 
 from PySide6.QtCore import QObject, Qt
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QApplication, QComboBox, QGraphicsDropShadowEffect, QLineEdit,
+    QAbstractSpinBox, QApplication, QComboBox, QGraphicsDropShadowEffect, QLabel, QLineEdit,
     QPushButton, QWidget,
 )
 from shiboken6 import isValid
@@ -53,6 +54,9 @@ COLORS: dict[str, str] = {
 
 # The viewer's caption box: deep, see-through. Not a token: QColor can't read it.
 OVERLAY = "rgba(10, 14, 20, 190)"
+
+HEADING_SCALE = 1.5  # a page's heading, of the body font
+SMALL_SCALE = 0.85  # hints, as the shortcut strip
 
 GLOW_BLUR_PX = 18
 GLOW_ALPHA = 150  # of 255: soft, as in the mockup
@@ -163,7 +167,18 @@ QWidget#modeTile, QWidget#card {{ background: {c['panel']};
     border: 1px solid {c['border_soft']}; border-radius: 9px; }}
 QWidget#modeTile:hover, QWidget#card:hover {{ border-color: {c['border']}; }}
 QWidget#modeTile:focus, QWidget#card:focus {{ border: 2px solid {c['focus']}; }}
+QWidget#modeTile:pressed {{ background: {c['raised']}; }}
+QWidget#modeTile:disabled {{ border-color: {c['border_soft']}; }}
+QWidget#section {{ background: {c['panel']}; border: 1px solid {c['border_soft']};
+    border-radius: 9px; }}
 QWidget#sidebar {{ background: {c['deep']}; border-right: 1px solid {c['line']}; }}
+QPushButton#sidebarItem {{ background: transparent; color: {c['muted']}; text-align: left;
+    border: 2px solid transparent; border-radius: 7px; padding: 7px 9px; }}
+QPushButton#sidebarItem:hover {{ color: {c['text']}; }}
+QPushButton#sidebarItem:checked {{ background: {c['panel']}; color: {c['text']}; }}
+QPushButton#sidebarItem:focus {{ border-color: {c['focus']}; }}
+QPushButton#sidebarItem:disabled {{ color: {c['disabled']}; }}
+QPushButton#sidebarItem:checked:disabled {{ background: {c['bg']}; }}
 QWidget#shortcutStrip {{ border-top: 1px solid {c['line']}; }}
 QLabel#keyChip {{ background: {c['raised']}; color: {c['chip_text']};
     border: 1px solid {c['border']}; border-radius: 4px; padding: 0 5px; }}
@@ -196,6 +211,27 @@ def palette() -> QPalette:
     for role in (roles.WindowText, roles.Text, roles.ButtonText):
         p.setColor(disabled, role, c["disabled"])
     return p
+
+
+def heading(text: str) -> QLabel:
+    """A page's heading: bold, HEADING_SCALE times the body font."""
+    label = QLabel(text)
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    font = label.font()
+    font.setPointSizeF(font.pointSizeF() * HEADING_SCALE)
+    font.setWeight(QFont.Weight.Bold)
+    label.setFont(font)
+    return label
+
+
+def scaled_font(widget: QWidget, scale: float, weight: QFont.Weight | None = None) -> QFont:
+    """widget's font at scale times its size (and weight, if given)."""
+    font = widget.font()
+    if font.pointSizeF() > 0:
+        font.setPointSizeF(font.pointSizeF() * scale)
+    if weight is not None:
+        font.setWeight(weight)
+    return font
 
 
 def styled(widget: QWidget, name: str) -> QWidget:

@@ -379,8 +379,7 @@ def photos(tmp_path):
 
 def _start(w, photos, mode):
     w.folder_edit.setText(str(photos))
-    w.mode_buttons[mode].setChecked(True)
-    w.start_button.click()
+    w.mode_buttons[mode].click()
 
 
 def _content_engine() -> _Clip:

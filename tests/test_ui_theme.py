@@ -197,14 +197,13 @@ def test_every_button_and_buddy_label_shows_its_ampersands(qtbot, tmp_path):
     from photosort.people import PeopleStore
     from photosort.settings import Settings
     from photosort.ui.category_editor import CategoryEditor
-    from photosort.ui.history_dialog import HistoryDialog
     from photosort.ui.main_window import MainWindow
-    from photosort.ui.settings_dialog import SettingsDialog
 
     store = PeopleStore(tmp_path / "people")
     window = MainWindow(Settings(), tmp_path / "settings.json", people_store=store)
-    shown = [window, SettingsDialog(Settings(), tmp_path / "settings.json", window, people=store),
-             CategoryEditor(["Food & Drink", "Pets"], window), HistoryDialog(tmp_path, window)]
+    window.history_page.load(tmp_path)
+    # The window holds Home, History, People and Settings as pages.
+    shown = [window, CategoryEditor(["Food & Drink", "Pets"], window)]
     for widget in shown:
         qtbot.addWidget(widget)
     texts = [button.text() for widget in shown for button in widget.findChildren(QAbstractButton)]

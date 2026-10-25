@@ -14,6 +14,7 @@ from pathlib import Path
 
 import platformdirs
 
+from photosort.modes import MODES
 from photosort.naming import fit_name, fold, safe_name
 from photosort.scanner import skipped_folder
 from photosort.thresholds import (
@@ -46,6 +47,7 @@ class Settings:
     event_min_files: int = EVENT_MIN_FILES
     content_categories: list[str] = field(
         default_factory=lambda: list(DEFAULT_CONTENT_CATEGORIES))
+    last_mode: str | None = None  # the MODES key last started; its tile has focus first
 
 
 def _int_in(low: int, high: int):
@@ -98,10 +100,14 @@ def valid_category_list(names) -> bool:
     return len({_folder_key(n) for n in names}) == len(names)
 
 
+_MODE_KEYS = frozenset(key for key, _, _ in MODES)
+
 _VALID = {
     "include_subfolders": lambda v: isinstance(v, bool),
     "use_gpu": lambda v: isinstance(v, bool),
     "last_folder": lambda v: v is None or isinstance(v, str),
+    # An unknown key (from an old or edited file) gives None, so the Date tile.
+    "last_mode": lambda v: v is None or (isinstance(v, str) and v in _MODE_KEYS),
     "face_people": lambda v: isinstance(v, list) and all(isinstance(i, str) for i in v),
     "event_gap_hours": _int_in(*EVENT_GAP_HOURS_RANGE),
     "event_min_files": _int_in(*EVENT_MIN_FILES_RANGE),

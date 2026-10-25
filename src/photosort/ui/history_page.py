@@ -1,21 +1,25 @@
-"""Undo history: the folder's past runs, newest first, each one undoable.
+"""The History page: the past sorts of the folder chosen on Home, newest
+first, each one undoable.
 
-Undo runs in a worker.Task. Only one undo runs at a time, and closing the
-dialog waits for a running undo to finish (an undo can't stop part-way).
+Undo (the button, or Enter) asks first, with "Cancel" focused. It runs in a
+worker.Task, one at a time; undo_running(True/False) says when one starts and
+ends, so the window can keep the sidebar locked meanwhile (an undo can't stop
+part-way, and the window waits for it before closing).
 """
 
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QThreadPool
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QDialogButtonBox, QHBoxLayout, QHeaderView, QLabel,
-    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QPushButton, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from photosort.journal import RunInfo, load_moves, load_runs
 from photosort.modes import MODES
-from photosort.ui import dialogs
+from photosort.ui import dialogs, shortcuts
+from photosort.ui.theme import heading
 from photosort.ui.worker import Task
 from photosort.undo import UndoResult, blocking_runs, related_folders, undo_run
 
@@ -25,7 +29,7 @@ _UNREADABLE = (OSError, ValueError, KeyError, TypeError)
 
 
 def undo_summary(result: UndoResult) -> str:
-    """What an undo did, in the words the Done page and this dialog both use."""
+    """What an undo did, in the words the Done page and this page both use."""
     if result.failed:
         lines = [f"Undo not finished: {result.restored} files put back."]
     else:
@@ -76,30 +80,43 @@ def _row(root: Path, run: RunInfo) -> _Row:
     )
 
 
-class HistoryDialog(QDialog):
-    def __init__(self, root: Path, parent=None) -> None:
+NO_FOLDER = "Choose a folder first, on Sort: its past sorts are listed here."
+
+
+class HistoryPage(QWidget):
+    """The runs of one folder (see load), with Undo on the selected one."""
+
+    undo_running = Signal(bool)
+    keys_changed = Signal()  # a key was switched on or off (the strip redraws)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.root = Path(root)
+        self.root: Path | None = None
         self._rows: list[_Row] = []
         self._related: list[Path] = []  # folders around/inside root with runs
         self._task: Task | None = None
         self._undoing = False
 
-        self.setWindowTitle("Undo history")
-        self.resize(640, 420)
         layout = QVBoxLayout(self)
-        intro = QLabel(f"Past sorts in {self.root}, newest first. "
-                       "Undo newer runs before older ones that touched the same files.")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        layout.setContentsMargins(32, 24, 32, 12)
+        layout.setSpacing(14)
+        layout.addWidget(heading("History"))
+        self.intro_label = QLabel()
+        self.intro_label.setObjectName("muted")
+        self.intro_label.setWordWrap(True)
+        self.intro_label.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.intro_label)
 
         self.runs_table = QTableWidget(0, 4)
         self.runs_table.setHorizontalHeaderLabels(["Date", "Mode", "Files", "Status"])
         self.runs_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.runs_table.horizontalHeader().setHighlightSections(False)
         self.runs_table.verticalHeader().hide()
+        self.runs_table.setShowGrid(False)
         self.runs_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.runs_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.runs_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.runs_table.setTabKeyNavigation(False)  # Tab leaves the table
         self.runs_table.itemSelectionChanged.connect(self._update_undo_button)
         layout.addWidget(self.runs_table, 1)
 
@@ -112,28 +129,42 @@ class HistoryDialog(QDialog):
         layout.addWidget(self.result_label)
 
         row = QHBoxLayout()
-        self.undo_button = QPushButton("Undo")
+        self.undo_button = QPushButton("Undo…")
         self.undo_button.setMinimumWidth(120)
         self.undo_button.clicked.connect(self._undo)
-        row.addWidget(self.undo_button)
         row.addStretch()
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        row.addWidget(buttons)
+        row.addWidget(self.undo_button)
         layout.addLayout(row)
 
-        self.refresh()
+        shortcuts.describe(self.runs_table, "↑↓", "choose")
+        self._undo_key = shortcuts.bind(self, "Return", "Enter", "undo", self._undo)
+        self.load(None)
 
     def show_error(self, text: str) -> None:
-        dialogs.warn(self, "Undo history", text)
+        dialogs.warn(self, "History", text)
+
+    def load(self, root: Path | None) -> None:
+        """Show the runs of root, or, with None, say to choose a folder first."""
+        self.root = None if root is None else Path(root)
+        self.result_label.setText("")
+        if self.root is None:
+            self.intro_label.setText(NO_FOLDER)
+        else:
+            self.intro_label.setText(
+                f"Past sorts in {self.root}, newest first. "
+                "Undo newer runs before older ones that touched the same files.")
+        self.refresh()
 
     def refresh(self) -> None:
         """Reload the runs from disk, keeping the selected run selected."""
         keep = self._selected()
-        self._rows = [_row(self.root, run) for run in load_runs(self.root)]
-        # Walked once here, not on every selection (the tree can be big);
-        # undo_run itself always checks afresh.
-        self._related = related_folders(self.root)
+        if self.root is None:
+            self._rows, self._related = [], []
+        else:
+            self._rows = [_row(self.root, run) for run in load_runs(self.root)]
+            # Walked once here, not on every selection (the tree can be big);
+            # undo_run itself always checks afresh.
+            self._related = related_folders(self.root)
         self.runs_table.blockSignals(True)
         self.runs_table.clearSelection()
         self.runs_table.setRowCount(len(self._rows))
@@ -157,7 +188,7 @@ class HistoryDialog(QDialog):
     def _update_undo_button(self) -> None:
         row = self._selected()
         enabled, tip = False, ""
-        if row is None or self._undoing:
+        if row is None or self._undoing or self.root is None:
             pass
         elif row.undone:
             tip = "Already undone"
@@ -175,10 +206,17 @@ class HistoryDialog(QDialog):
         self.undo_button.setEnabled(enabled)
         self.undo_button.setToolTip(tip)
         self.blocked_label.setText("" if row is not None and row.undone else tip)
+        if self._undo_key.isEnabled() != enabled:
+            self._undo_key.setEnabled(enabled)
+            self.keys_changed.emit()
 
     def _undo(self) -> None:
         row = self._selected()
-        if row is None or self._undoing:
+        if row is None or self._undoing or self.root is None or not self.undo_button.isEnabled():
+            return
+        if not dialogs.ask(self, "Undo this sort?",
+                           f"Put back the {row.files} files this {row.mode} sort of "
+                           f"{row.date} moved?", yes="Undo", no="Cancel", default="no"):
             return
         self._undoing = True
         self._update_undo_button()
@@ -187,21 +225,21 @@ class HistoryDialog(QDialog):
         task.signals.result.connect(self._on_undone)
         task.signals.error.connect(self._on_undo_error)
         self._task = task  # keep it alive while it runs
+        self.undo_running.emit(True)
         task.start()
+
+    def undoing(self) -> bool:
+        return self._undoing
 
     def _on_undone(self, result: UndoResult) -> None:
         self._undoing = False
         self.result_label.setText(undo_summary(result))
         self.refresh()
+        self.undo_running.emit(False)
 
     def _on_undo_error(self, message: str) -> None:
         self._undoing = False
         self.result_label.setText("")
         self.refresh()
+        self.undo_running.emit(False)
         self.show_error(f"Could not undo: {message}")
-
-    def done(self, r: int) -> None:
-        if self._undoing:
-            # An undo can't stop part-way; let it finish before closing.
-            QThreadPool.globalInstance().waitForDone()
-        super().done(r)

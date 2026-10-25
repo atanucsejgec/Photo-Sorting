@@ -1,6 +1,8 @@
 """Find the media files in a folder."""
 
 import os
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 from photosort.media import kind
@@ -25,9 +27,18 @@ def scan(root: Path, include_subfolders: bool) -> list[str]:
     are never entered. A subfolder that cannot be listed (OSError, e.g.
     PermissionError) is skipped silently; an unreadable root still raises.
     """
-    found: list[str] = []
+    return sorted(walk_media(root, include_subfolders))
 
-    def walk(directory: str, prefix: str) -> None:
+
+def walk_media(root: Path, include_subfolders: bool,
+               cancel: threading.Event | None = None) -> Iterator[str]:
+    """The files scan() finds, unsorted, as the folders are listed. With
+    cancel, the walk stops (early, so incomplete) once cancel is set: it is
+    checked before each folder is listed."""
+
+    def walk(directory: str, prefix: str) -> Iterator[str]:
+        if cancel is not None and cancel.is_set():
+            return
         try:
             with os.scandir(directory) as it:
                 entries = list(it)
@@ -41,9 +52,8 @@ def scan(root: Path, include_subfolders: bool) -> list[str]:
                 continue
             if entry.is_dir(follow_symlinks=False):
                 if include_subfolders and not skipped_folder(name):
-                    walk(entry.path, f"{prefix}{name}/")
+                    yield from walk(entry.path, f"{prefix}{name}/")
             elif entry.is_file(follow_symlinks=False) and kind(name) is not None:
-                found.append(prefix + name)
+                yield prefix + name
 
-    walk(os.fspath(root), "")
-    return sorted(found)
+    yield from walk(os.fspath(root), "")

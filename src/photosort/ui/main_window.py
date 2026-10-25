@@ -1,5 +1,15 @@
-"""The main window: Home, Progress, Review, Bad photos, Events, Face setup,
-Face questions, Summary and Done pages for a sort.
+"""The main window: the sidebar beside the pages, with the shortcut strip
+under them.
+
+The sidebar's pages are Sort (Home), History, People and Settings. A sort
+adds the Progress, Review, Bad photos, Events, Face setup, Face questions,
+Summary and Done pages. From the moment a sort starts until its Done page
+the sidebar is locked (dimmed, and can't be focused or clicked): Esc and
+Back are the way out, as before. It is locked too while any Task runs (an
+undo on Done, say) and while History undoes a run.
+
+The strip lists the keys of the page shown, and of its focused control; while
+the focus is in the sidebar, the sidebar's.
 
 A sort runs as one of the flows in photosort.ui.flows, chosen by the mode's
 kind (see photosort.modes.MODE_SPECS). The window is their shell: it checks
@@ -9,7 +19,7 @@ moves them, and Undo puts them back. Back on the Summary calls the flow's
 back_to, if it set one, else goes Home.
 
 The window owns the one PeopleStore of the app: the Face setup page, the
-naming dialog and Settings all use it.
+naming dialog and the People page all use it.
 
 Slow work runs in a worker.Task. Only one Task runs at a time (self.busy
 guards every way of starting one); the window keeps a reference to the last
@@ -22,34 +32,38 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QThreadPool, QUrl
-from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QFont
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QCheckBox, QFileDialog, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMainWindow, QProgressBar,
-    QPushButton, QRadioButton, QStackedWidget, QTableWidget, QTableWidgetItem,
+    QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QMainWindow,
+    QProgressBar, QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
+from shiboken6 import isValid
 
 from photosort.clip import ClipEngine
 from photosort.executor import ExecResult, execute
 from photosort.faces import FaceEngine
 from photosort.journal import RunJournal
-from photosort.modes import MODE_SPECS, MODES
+from photosort.modes import MODE_SPECS
 from photosort.people import PeopleStore
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
-from photosort.ui import dialogs
+from photosort.ui import dialogs, shortcuts
 from photosort.ui.bad_photos_page import BadPhotosPage
 from photosort.ui.category_review_page import CategoryReviewPage
 from photosort.ui.events_page import EventsPage
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
 from photosort.ui.flows import bad, clip, events, face, groups, plain
-from photosort.ui.history_dialog import HistoryDialog, undo_summary
-from photosort.ui.labels import literal
+from photosort.ui.history_page import HistoryPage, undo_summary
+from photosort.ui.home_page import HomePage
 from photosort.ui.model_download import ensure_models
+from photosort.ui.people_page import PeoplePage
 from photosort.ui.review_page import ReviewPage
-from photosort.ui.settings_dialog import SettingsDialog
+from photosort.ui.settings_page import SettingsPage
+from photosort.ui.shortcuts import ShortcutStrip
+from photosort.ui.sidebar import Sidebar
+from photosort.ui.theme import heading
 from photosort.ui.worker import Task
 from photosort.undo import UndoBlocked, UndoResult, undo_run
 
@@ -60,28 +74,19 @@ _FLOWS = {"plan": plain, "groups": groups, "bad": bad, "events": events, "face":
           "content": clip, "notes": clip}
 
 
-def _heading(text: str) -> QLabel:
-    label = QLabel(text)
-    font = label.font()
-    font.setPointSizeF(font.pointSizeF() * 1.6)
-    font.setWeight(QFont.Weight.Bold)
-    label.setFont(font)
-    return label
-
-
 def _text(text: str = "") -> QLabel:
     label = QLabel(text)
     label.setWordWrap(True)
     return label
 
 
-def _page(*heading: str) -> tuple[QWidget, QVBoxLayout]:
+def _page(*headings: str) -> tuple[QWidget, QVBoxLayout]:
     page = QWidget()
     layout = QVBoxLayout(page)
-    layout.setContentsMargins(32, 24, 32, 24)
+    layout.setContentsMargins(32, 24, 32, 12)
     layout.setSpacing(16)
-    for text in heading:
-        layout.addWidget(_heading(text))
+    for text in headings:
+        layout.addWidget(heading(text))
     return page, layout
 
 
@@ -134,9 +139,40 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(900, 600)
         self.setAcceptDrops(True)
 
+        self.sidebar = Sidebar()  # first, so Tab from the last page control wraps to it
+        self.sidebar.chosen.connect(self._choose)
         self.stack = QStackedWidget()
-        self.setCentralWidget(self.stack)
+        self.strip = ShortcutStrip()
+        main = QWidget()
+        column = QVBoxLayout(main)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+        column.addWidget(self.stack, 1)
+        strip_box = QHBoxLayout()
+        strip_box.setContentsMargins(32, 0, 32, 12)
+        strip_box.addWidget(self.strip)
+        column.addLayout(strip_box)
+        central = QWidget()
+        row = QHBoxLayout(central)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addWidget(self.sidebar)
+        row.addWidget(main, 1)
+        self.setCentralWidget(central)
+
         self.home = self._build_home()
+        self.history_page = HistoryPage()
+        self.history_page.undo_running.connect(lambda _: self._update_lock())
+        self.history_page.keys_changed.connect(self.strip.refresh)
+        self.people_page = PeoplePage(self.people_store)
+        self.people_page.keys_changed.connect(self.strip.refresh)
+        self.settings_page = SettingsPage(self.settings, self._settings_path)
+        # The sidebar's pages, by item; every other page is part of Sort.
+        self._sidebar_pages: dict[str, QWidget] = {
+            "sort": self.home, "history": self.history_page,
+            "people": self.people_page, "settings": self.settings_page}
+        for page in (self.history_page, self.people_page, self.settings_page):
+            shortcuts.bind(page, "Escape", "Esc", "sidebar", self.sidebar.focus_current)
         self.progress_page = self._build_progress()
         self.review_page = self._build_review()
         self.bad_page = self._build_bad()
@@ -146,75 +182,33 @@ class MainWindow(QMainWindow):
         self.category_review_page = self._build_category_review()
         self.summary_page = self._build_summary()
         self.done_page = self._build_done()
-        for page in (self.home, self.progress_page, self.review_page, self.bad_page,
+        for page in (self.home, self.history_page, self.people_page, self.settings_page,
+                     self.progress_page, self.review_page, self.bad_page,
                      self.events_page, self.face_setup_page, self.face_question_page,
                      self.category_review_page, self.summary_page, self.done_page):
             self.stack.addWidget(page)
+        # Pages the sidebar stays usable on (it is locked on the others).
+        self._free_pages = (self.home, self.history_page, self.people_page,
+                            self.settings_page, self.done_page)
+        QApplication.instance().focusChanged.connect(self._focus_moved)
         self.show_page(self.home)
 
     # ----- pages -----------------------------------------------------------
 
-    def _build_home(self) -> QWidget:
-        page, layout = _page(TITLE)
-
-        layout.addWidget(_text("Choose a folder (or drop one onto this window):"))
-        row = QHBoxLayout()
-        self.folder_edit = QLineEdit()
-        self.folder_edit.setPlaceholderText("Folder with your photos and videos")
-        self.folder_edit.setAcceptDrops(False)  # a dropped folder goes to the window
-        self.browse_button = QPushButton("Browse…")
-        self.browse_button.clicked.connect(self._browse)
-        row.addWidget(self.folder_edit, 1)
-        row.addWidget(self.browse_button)
-        layout.addLayout(row)
-
-        layout.addWidget(_text("Sort by:"))
-        self.mode_group = QButtonGroup(page)
-        self.mode_buttons: dict[str, QRadioButton] = {}
-        grid = QHBoxLayout()
-        columns = [QVBoxLayout(), QVBoxLayout()]
-        for n, (key, label, available) in enumerate(MODES):
-            button = QRadioButton(literal(label if available else f"{label} (coming soon)"))
-            button.setEnabled(available)
-            self.mode_group.addButton(button)
-            self.mode_buttons[key] = button
-            columns[n * 2 // len(MODES)].addWidget(button)
-        for column in columns:
-            column.addStretch()
-            grid.addLayout(column)
-        grid.addStretch()
-        layout.addLayout(grid)
-        first = next(key for key, _, available in MODES if available)
-        self.mode_buttons[first].setChecked(True)
-
-        self.subfolders_check = QCheckBox("Include subfolders")
-        self.subfolders_check.setChecked(self.settings.include_subfolders)
-        self.subfolders_check.toggled.connect(self._subfolders_toggled)
-        layout.addWidget(self.subfolders_check)
-
-        layout.addStretch()
-        self.home_status_label = _text()
-        layout.addWidget(self.home_status_label)
-        self.undo_history_button = QPushButton("Undo history…")
-        self.settings_button = QPushButton("Settings…")
-        self.start_button = QPushButton("Start")
-        row = QHBoxLayout()
-        row.addWidget(self.undo_history_button)
-        row.addWidget(self.settings_button)
-        row.addStretch()
-        self.start_button.setMinimumWidth(120)
-        row.addWidget(self.start_button)
-        layout.addLayout(row)
-
-        self.folder_edit.textChanged.connect(self._update_start)
-        self.mode_group.buttonToggled.connect(self._update_start)
-        self.start_button.clicked.connect(self._start)
-        self.undo_history_button.clicked.connect(self._open_history)
-        self.settings_button.clicked.connect(self._open_settings)
+    def _build_home(self) -> HomePage:
+        page = HomePage()
+        # Aliases: the tests and the drop code reach the home controls by these.
+        self.folder_edit = page.folder_edit
+        self.browse_button = page.browse_button
+        self.subfolders_check = page.subfolders_switch
+        self.mode_buttons = page.mode_buttons
+        page.subfolders_switch.setChecked(self.settings.include_subfolders)
+        page.subfolders_switch.toggled.connect(self._subfolders_toggled)
+        page.start_requested.connect(self._start)
+        page.set_current(self.settings.last_mode)
         last = self.settings.last_folder
         if last and Path(last).is_dir():
-            self.folder_edit.setText(last)
-        self._update_start()
+            page.folder_edit.setText(last)
         return page
 
     def _build_progress(self) -> QWidget:
@@ -318,7 +312,43 @@ class MainWindow(QMainWindow):
         return self.stack.currentWidget()
 
     def show_page(self, page: QWidget) -> None:
+        """Show page. Home takes the focus to its tiles, unless the focus is in
+        the sidebar (the owner is moving between its pages)."""
+        in_sidebar = self._focus_in_sidebar()
         self.stack.setCurrentWidget(page)
+        self.sidebar.select(next((key for key, p in self._sidebar_pages.items() if p is page),
+                                 "sort"))
+        self._update_lock()
+        if page is self.home:
+            self.home.refresh_count()  # a sort may have moved files in or out
+            if not in_sidebar:
+                self.home.focus_tiles()
+        self._strip_follows_focus()
+
+    def _focus_in_sidebar(self) -> bool:
+        focus = QApplication.focusWidget()
+        return focus is not None and self.sidebar.isAncestorOf(focus)
+
+    def _update_lock(self) -> None:
+        """Lock the sidebar while a sort is under way, a Task runs, or History undoes."""
+        self.sidebar.set_locked(self.current_page() not in self._free_pages or self.busy
+                                or self.history_page.undoing())
+
+    def _strip_follows_focus(self) -> None:
+        self.strip.show_for(self.sidebar if self._focus_in_sidebar() else self.current_page())
+
+    def _focus_moved(self, old: QWidget | None, new: QWidget | None) -> None:
+        if isValid(self) and isValid(self.strip):
+            self._strip_follows_focus()
+
+    def _choose(self, key: str) -> None:
+        """The sidebar picked key's page."""
+        page = self._sidebar_pages[key]
+        if page is self.history_page:
+            self.history_page.load(self._folder())
+        elif page is self.people_page:
+            self.people_page.load()
+        self.show_page(page)
 
     def show_error(self, text: str) -> None:
         dialogs.warn(self, TITLE, text)
@@ -330,21 +360,8 @@ class MainWindow(QMainWindow):
             self.show_error(f"Could not save settings: {e}")
 
     def _folder(self) -> Path | None:
-        """The folder in the field, resolved (no symlinks), if it is an existing directory."""
-        text = self.folder_edit.text().strip()
-        if not text:
-            return None
-        try:
-            path = Path(text).expanduser().resolve()
-        except (OSError, RuntimeError):  # e.g. a symlink loop
-            return None
-        return path if path.is_dir() else None
-
-    def _selected_mode(self) -> str | None:
-        for key, button in self.mode_buttons.items():
-            if button.isChecked():
-                return key
-        return None
+        """The folder in Home's field, resolved, if it is an existing directory."""
+        return self.home.folder()
 
     def run_task(self, task: Task, on_result: Callable[[object], None],
                  on_error: Callable[[str], None]) -> bool:
@@ -360,6 +377,7 @@ class MainWindow(QMainWindow):
         if self.busy:
             return False
         self.busy = True
+        self._update_lock()
         self._on_result, self._on_error = on_result, on_error
         task.signals.progress.connect(self._on_progress)
         task.signals.result.connect(self._task_result)
@@ -371,11 +389,13 @@ class MainWindow(QMainWindow):
     def _task_result(self, value: object) -> None:
         handler, self._on_result, self._on_error = self._on_result, None, None
         self.busy = False
+        self._update_lock()
         handler(value)
 
     def _task_error(self, message: str) -> None:
         handler, self._on_result, self._on_error = self._on_error, None, None
         self.busy = False
+        self._update_lock()
         handler(message)
 
     def begin_progress(self, prefix: str, total: int | None = None,
@@ -398,20 +418,6 @@ class MainWindow(QMainWindow):
             f"{self._progress_prefix} {i} {self._progress_joiner} {total}")
 
     # ----- home ------------------------------------------------------------
-
-    def _update_start(self, *_) -> None:
-        self.home_status_label.setText("")
-        self.start_button.setEnabled(
-            self._folder() is not None and self._selected_mode() is not None
-        )
-
-    def _browse(self) -> None:
-        start = self._folder()
-        folder = QFileDialog.getExistingDirectory(
-            self, "Choose a folder", str(start) if start else ""
-        )
-        if folder:
-            self.folder_edit.setText(folder)
 
     @staticmethod
     def _dropped_folder(event) -> str | None:
@@ -438,37 +444,23 @@ class MainWindow(QMainWindow):
             self.folder_edit.setText(folder)
             event.acceptProposedAction()
 
-    def _open_history(self) -> None:
-        if self.busy:
-            return
-        root = self._folder()
-        if root is None:
-            self.home_status_label.setText("Pick a folder first.")
-            return
-        self.home_status_label.setText("")
-        HistoryDialog(root, self).exec()
-
-    def _open_settings(self) -> None:
-        SettingsDialog(self.settings, self._settings_path, self,
-                       people=self.people_store).exec()
-
     def _subfolders_toggled(self, checked: bool) -> None:
         self.settings.include_subfolders = checked
         self._save_settings()
 
-    def _start(self) -> None:
+    def _start(self, mode: str) -> None:
+        """A tile asked for mode: check the folder and the mode, then hand over to its flow."""
         if self.busy:
             return
         self.begin_sort()
         root = self._folder()
         if root is None:
-            self.show_error("This folder doesn't exist any more.")
-            self._update_start()
+            self.show_error("This folder doesn't exist any more."
+                            if self.folder_edit.text().strip() else "Choose a folder first.")
             return
         if not os.access(root, os.W_OK):
             self.show_error("Can't write to this folder.")
             return
-        mode = self._selected_mode()
         spec = MODE_SPECS.get(mode)
         if spec is None:
             self.show_error("This way of sorting isn't ready yet.")
@@ -479,8 +471,9 @@ class MainWindow(QMainWindow):
             return
         self.root = root
         self.mode = mode
-        self.include_subfolders = self.subfolders_check.isChecked()
+        self.include_subfolders = self.home.subfolders_switch.isChecked()
         self.settings.last_folder = str(root)
+        self.settings.last_mode = mode
         self.settings.include_subfolders = self.include_subfolders
         self._save_settings()
         flow.start(self, root, self.include_subfolders, spec)
@@ -625,6 +618,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._task is not None:
             self._task.cancel_event.set()
+        self.home.stop_count()
         self.review_page.stop_thumbnails()
         self.bad_page.stop_thumbnails()
         self.events_page.stop_thumbnails()

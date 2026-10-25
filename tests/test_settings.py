@@ -190,3 +190,17 @@ def test_valid_category_list():
 ])
 def test_category_problem(name, others, problem):
     assert category_problem(name, others) == problem
+
+
+def test_last_mode_roundtrip_and_default(tmp_path):
+    path = tmp_path / "settings.json"
+    assert Settings().last_mode is None
+    save_settings(Settings(last_mode="bad"), path)
+    assert load_settings(path).last_mode == "bad"
+
+
+@pytest.mark.parametrize("bad", ["sharpness", "", 3, ["date"], {"a": 1}, True])
+def test_unknown_last_mode_is_ignored(tmp_path, bad):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"last_mode": bad, "use_gpu": False}))
+    assert load_settings(path) == Settings(use_gpu=False)

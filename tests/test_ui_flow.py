@@ -63,28 +63,27 @@ def _mode_buttons(w):
     return list(w.mode_buttons.values())
 
 
-def test_start_disabled_without_folder(make_window, photos):
+def test_a_tile_needs_a_folder(make_window, photos, errors):
     w = make_window()
     assert w.folder_edit.text() == ""
-    assert not w.start_button.isEnabled()
+    w.mode_buttons["date"].click()
+    assert errors == ["Choose a folder first."]
     w.folder_edit.setText(str(photos / "missing"))
-    assert not w.start_button.isEnabled()
-    w.folder_edit.setText(str(photos))
-    assert w.start_button.isEnabled()
+    w.mode_buttons["date"].click()
+    assert errors[-1] == "This folder doesn't exist any more."
+    assert w.current_page() is w.home
 
 
 def test_available_modes(make_window):
     w = make_window()
     buttons = _mode_buttons(w)
-    enabled = [b for b in buttons if b.isEnabled()]
-    disabled = [b for b in buttons if not b.isEnabled()]
-    assert [b.text().replace("&&", "&") for b in enabled] == [
-        "Date", "Face", "Duplicates", "Repeated shots", "Notes & Pages", "Type / source",
-        "Content", "Bad photos", "Events", "Location", "Camera"]
+    assert all(b.isEnabled() for b in buttons)
+    assert [b.text().replace("&&", "&") for b in buttons] == [
+        "Date", "Face", "Duplicates", "Repeated shots", "Content", "Notes & Pages",
+        "Bad photos", "Events", "Location", "Camera", "Type / source"]
     assert all(QKeySequence.mnemonic(b.text()).isEmpty() for b in buttons)  # & shown as &
-    assert enabled[0].isChecked()
-    assert len(disabled) == 0
     assert not any("coming soon" in b.text() for b in buttons)
+    assert sorted(w.mode_buttons) == sorted(key for key, _, _ in MODES)
     assert all(key in MODE_SPECS for key, _, available in MODES if available)
 
 
@@ -113,7 +112,7 @@ def test_full_date_flow_and_undo(qtbot, make_window, photos, make_jpeg, errors,
         make_jpeg(photos / name, EXIF)
     w = make_window()
     w.folder_edit.setText(str(photos))
-    w.start_button.click()
+    w.mode_buttons["date"].click()
     qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
     assert "3 files → 1 month folders, 1 day folders, 0 No Date" in w.summary_label.text()
     assert w.go_button.isEnabled()
@@ -143,7 +142,7 @@ def test_done_open_folder_button(qtbot, make_window, photos, make_jpeg, errors,
     make_jpeg(photos / "a.jpg", EXIF)
     w = make_window()
     w.folder_edit.setText(str(photos))
-    w.start_button.click()
+    w.mode_buttons["date"].click()
     qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
     w.go_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.done_page)
@@ -161,7 +160,7 @@ def test_done_open_folder_button(qtbot, make_window, photos, make_jpeg, errors,
 def test_nothing_to_move(qtbot, make_window, photos, errors):
     w = make_window()
     w.folder_edit.setText(str(photos))
-    w.start_button.click()
+    w.mode_buttons["date"].click()
     qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
     assert "Nothing to move." in w.summary_label.text()
     assert not w.go_button.isEnabled()
@@ -172,7 +171,7 @@ def test_show_all_moves_table(qtbot, make_window, photos, make_jpeg):
     make_jpeg(photos / "a.jpg", EXIF)
     w = make_window()
     w.folder_edit.setText(str(photos))
-    w.start_button.click()
+    w.mode_buttons["date"].click()
     qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
     assert w.moves_table.isHidden()
     w.show_moves_button.click()
@@ -186,7 +185,7 @@ def test_unwritable_folder_is_refused(make_window, photos, errors, monkeypatch):
     monkeypatch.setattr(main_window.os, "access", lambda path, mode: False)
     w = make_window()
     w.folder_edit.setText(str(photos))
-    w.start_button.click()
+    w.mode_buttons["date"].click()
     assert errors == ["Can't write to this folder."]
     assert w.current_page() is w.home
 
@@ -202,7 +201,7 @@ def test_cancel_while_checking_returns_home(qtbot, make_window, photos, monkeypa
     monkeypatch.setattr(date_mode, "prepare_date_plan", slow_prepare)
     w = make_window()
     w.folder_edit.setText(str(photos))
-    w.start_button.click()
+    w.mode_buttons["date"].click()
     assert w.current_page() is w.progress_page
     assert w.progress_label.text() == "Checking files…"
     assert started.wait(5)
@@ -229,7 +228,7 @@ def test_last_folder_restored_and_drop(make_window, photos, tmp_path):
 
 def _sort_to_done(qtbot, w, photos):
     w.folder_edit.setText(str(photos))
-    w.start_button.click()
+    w.mode_buttons["date"].click()
     qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
     w.go_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.done_page)
@@ -286,15 +285,15 @@ def test_one_task_at_a_time(qtbot, make_window, photos, monkeypatch):
     monkeypatch.setattr(date_mode, "prepare_date_plan", slow_prepare)
     w = make_window()
     w.folder_edit.setText(str(photos))
-    w.start_button.click()
-    w.start_button.click()
+    w.mode_buttons["date"].click()
+    w.mode_buttons["date"].click()
     qtbot.waitUntil(lambda: calls != [])
     qtbot.wait(100)
     assert len(calls) == 1
 
     w.cancel_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.home)
-    w.start_button.click()  # the finished task no longer blocks a new one
+    w.mode_buttons["date"].click()  # the finished task no longer blocks a new one
     qtbot.waitUntil(lambda: len(calls) == 2)
     w.cancel_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.home)
@@ -307,7 +306,7 @@ def test_stale_plan_is_never_executed(qtbot, make_window, photos, make_jpeg, err
     make_jpeg(photos / "a.jpg", EXIF)
     w = make_window()
     w.folder_edit.setText(str(photos))
-    w.start_button.click()
+    w.mode_buttons["date"].click()
     qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
     w.back_button.click()
     assert w.current_page() is w.home  # date mode has no review to go back to
@@ -316,7 +315,7 @@ def test_stale_plan_is_never_executed(qtbot, make_window, photos, make_jpeg, err
         raise RuntimeError("unreadable")
 
     monkeypatch.setattr(date_mode, "prepare_date_plan", broken)
-    w.start_button.click()
+    w.mode_buttons["date"].click()
     qtbot.waitUntil(lambda: errors != [])
     assert errors == ["Could not check the files: unreadable"]
     w.go_button.click()  # the old plan must not run
@@ -362,8 +361,7 @@ def test_partial_undo_keeps_undo_button(qtbot, make_window, photos, make_jpeg, e
 
 def _start_mode(qtbot, w, photos, mode):
     w.folder_edit.setText(str(photos))
-    w.mode_buttons[mode].setChecked(True)
-    w.start_button.click()
+    w.mode_buttons[mode].click()
 
 
 def test_duplicates_end_to_end(qtbot, make_window, photos, make_pattern_jpeg, errors):
@@ -600,17 +598,16 @@ def test_back_to_cleared_on_start_and_go(qtbot, make_window, photos, make_patter
 
     def to_summary(start=True):
         if start:
-            w.start_button.click()
+            w.mode_buttons["repeated"].click()
         qtbot.waitUntil(lambda: w.current_page() is w.review_page)
         w.review_page.keep_one_button.click()
         assert w.current_page() is w.summary_page
         assert w.back_to is not None  # the flow set it at the summary
 
-    w.mode_buttons["repeated"].setChecked(True)
     to_summary()
     w.back_button.click()
     w.review_page.cancel_button.click()  # home
-    w.start_button.click()
+    w.mode_buttons["repeated"].click()
     assert w.back_to is None and w.flow_state is None
 
     to_summary(start=False)
@@ -657,18 +654,17 @@ def test_back_to_cleared_on_start_and_go(qtbot, make_window, photos, make_patter
         assert w.back_to is None and w.flow_state is None
 
     monkeypatch.setattr(duplicates, "find_duplicate_groups", fails_when_released)
-    w.mode_buttons["duplicates"].setChecked(True)
-    fails_with_both_set(w.start_button.click, "Could not check the files: drive gone")
+    fails_with_both_set(w.mode_buttons["duplicates"].click,
+                        "Could not check the files: drive gone")
 
     w.clip_engine_factory = fails_when_released
-    w.mode_buttons["content"].setChecked(True)
-    fails_with_both_set(w.start_button.click, "Could not look at the photos: drive gone")
+    fails_with_both_set(w.mode_buttons["content"].click,
+                        "Could not look at the photos: drive gone")
 
     person = store.add("Zoe", np.ones(512, np.float32) / np.sqrt(512),
                        Image.new("RGB", (40, 40), "blue"))
     w.engine_factory = fails_when_released
-    w.mode_buttons["face"].setChecked(True)
-    w.start_button.click()
+    w.mode_buttons["face"].click()
     assert w.current_page() is w.face_setup_page
     fails_with_both_set(lambda: face_flow.start_sort(w, [person.id]),
                         "Could not look for faces: drive gone")
@@ -715,7 +711,7 @@ def test_cancel_after_planning_returns_home(qtbot, make_window, photos, make_jpe
     monkeypatch.setattr(date_mode, "prepare_date_plan", _stubborn(plan, started))
     w = make_window()
     w.folder_edit.setText(str(photos))
-    w.start_button.click()
+    w.mode_buttons["date"].click()
     assert started.wait(5)
     w.cancel_button.click()
     qtbot.waitUntil(lambda: w.current_page() is not w.progress_page)
@@ -761,8 +757,7 @@ def test_face_end_to_end(qtbot, make_window, photos, make_jpeg, store, errors,
     w.engine_factory = lambda use_gpu: engine
 
     w.folder_edit.setText(str(photos))
-    w.mode_buttons["face"].setChecked(True)
-    w.start_button.click()
+    w.mode_buttons["face"].click()
     assert w.current_page() is w.face_setup_page
     people = w.face_setup_page.people_list
     for n in range(people.count()):

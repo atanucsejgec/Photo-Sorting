@@ -17,10 +17,10 @@ from photosort.settings import Settings, load_settings
 from photosort.ui import dialogs, face_question_page, main_window
 from photosort.ui.face_naming_dialog import FaceNamingDialog
 from photosort.ui.face_question_page import FaceQuestionPage
-from photosort.ui.face_setup_page import FaceSetupPage, RememberedPeopleDialog
+from photosort.ui.face_setup_page import FaceSetupPage
 from photosort.ui.flows import face as face_flow
 from photosort.ui.main_window import MainWindow
-from photosort.ui.settings_dialog import SettingsDialog
+from photosort.ui.people_page import PeoplePage
 
 NO_FACES = "No faces found in this photo. Try another one."
 
@@ -268,31 +268,21 @@ def test_forget_asks_first_then_removes(qtbot, store, asked):
     assert _rows(page) == [("Atanu", True), ("Bob", False)]  # the other ticks kept
 
 
-def test_remembered_people_dialog_is_delete_only(qtbot, store, asked):
+def test_the_people_page_is_delete_only(qtbot, store, asked):
     _remember(store, "Atanu", 1)
-    d = RememberedPeopleDialog(store)
-    qtbot.addWidget(d)
-    page = d.page
+    page = PeoplePage(store)
+    qtbot.addWidget(page)
+    page.load()
+    setup = page.list_page
     assert page.people_list.count() == 1
     item = page.people_list.item(0)
     assert not item.flags() & Qt.ItemFlag.ItemIsUserCheckable
-    for button in (page.add_button, page.more_button, page.start_button, page.back_button):
+    for button in (setup.add_button, setup.more_button, setup.start_button, setup.back_button):
         assert button.isHidden()
     page.people_list.setCurrentRow(0)
     page.delete_button.click()
     assert store.people() == []
     assert page.people_list.count() == 0
-
-
-def test_settings_remembered_people_uses_the_given_store(qtbot, store, tmp_path,
-                                                          monkeypatch):
-    opened = []
-    monkeypatch.setattr(RememberedPeopleDialog, "exec", lambda self: opened.append(self))
-    d = SettingsDialog(Settings(), tmp_path / "settings.json", people=store)
-    qtbot.addWidget(d)
-    assert d.people_button.text() == "Remembered people…"
-    d.people_button.click()
-    assert len(opened) == 1 and opened[0].store is store
 
 
 # ----- naming dialog --------------------------------------------------------
@@ -835,8 +825,7 @@ def make_window(qtbot, settings_path, errors, store):
 
 def _to_setup(w: MainWindow, photos: Path) -> None:
     w.folder_edit.setText(str(photos))
-    w.mode_buttons["face"].setChecked(True)
-    w.start_button.click()
+    w.mode_buttons["face"].click()
 
 
 def test_face_start_with_models_present_shows_setup(make_window, photos, store,
@@ -1249,12 +1238,13 @@ def test_add_photos_to_a_person(qtbot, make_window, photos, store, make_jpeg, tm
     assert _rows(w.face_setup_page) == [("Atanu", False), ("Bob", True)]  # ticks unchanged
 
 
-def test_settings_gets_the_windows_people_store(make_window, monkeypatch, store):
-    opened = []
-    monkeypatch.setattr(SettingsDialog, "exec", lambda self: opened.append(self))
+def test_the_people_page_shows_the_windows_store(make_window, store):
+    _remember(store, "Atanu", 1)
     w = make_window()
-    w.settings_button.click()
-    assert opened[0].people_store is store is w.people_store
+    assert w.people_page.store is store is w.people_store
+    w.sidebar.items["people"].click()
+    assert w.current_page() is w.people_page
+    assert w.people_page.people_list.count() == 1
 
 
 def test_naming_cancelled_after_a_partial_save_does_not_start(qtbot, make_window, photos,

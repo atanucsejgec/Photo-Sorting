@@ -181,8 +181,7 @@ def photos(tmp_path, make_pattern_jpeg):
 
 def _start_bad(qtbot, w, folder):
     w.folder_edit.setText(str(folder))
-    w.mode_buttons["bad"].setChecked(True)
-    w.start_button.click()
+    w.mode_buttons["bad"].click()
     qtbot.waitUntil(lambda: w.current_page() is not w.progress_page)
 
 
@@ -306,6 +305,5 @@ def test_start_forgets_the_last_ticks(qtbot, make_window, photos):
     assert w.back_to is not None
     w.back_button.click()
     w.bad_page.back_button.click()  # home
-    w.mode_buttons["date"].setChecked(True)
-    w.start_button.click()
+    w.mode_buttons["date"].click()
     assert w.back_to is None and w.flow_state is None  # no old ticks for a later Back

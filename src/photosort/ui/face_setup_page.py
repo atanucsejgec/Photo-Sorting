@@ -4,8 +4,7 @@ Everyone comes up unticked: the owner ticks the people to sort by, one for
 all their photos, two or more for only the photos with two or more of them.
 Only the people load() is asked to tick (say, ones just named) come up ticked. A photo
 dropped on the page is named like one picked with "Add person…". The same
-list, without ticks, drops and with only Forget, is the Settings
-"Remembered people…" dialog.
+list, without ticks, drops and with only Forget, is the People page.
 
 The face pictures are small JPEGs in the app's own data folder, so they are
 read on the GUI thread.
@@ -18,8 +17,7 @@ from PIL import Image
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QPushButton, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
 
 from photosort.people import PeopleError, PeopleStore, Person
@@ -232,19 +230,3 @@ class FaceSetupPage(QWidget):
             self.status_label.setText(str(e))
             return
         self.load(self._store, self.ticked_ids())  # the others' ticks kept
-
-
-class RememberedPeopleDialog(QDialog):
-    """Settings' list of the remembered people, where they can be forgotten."""
-
-    def __init__(self, store: PeopleStore, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.store = store
-        self.setWindowTitle("Remembered people")
-        layout = QVBoxLayout(self)
-        self.page = FaceSetupPage(delete_only=True)
-        layout.addWidget(self.page, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        self.page.load(store)
