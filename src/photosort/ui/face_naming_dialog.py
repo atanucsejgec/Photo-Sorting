@@ -4,7 +4,8 @@ The photo is analysed on a pool thread (the face models take a while to
 open, and so does decoding a big photo); its faces and their pictures
 arrive at FaceNamingDialog._analysed. Save adds each named face as a new
 person, or, when the name is that of a remembered person, as another
-sample of them. Names are compared as they will be saved (people.clean_name,
+sample of them; a face left without a name is skipped, as if "Skip this
+face" were ticked, so in a group photo only the faces wanted need a name. Names are compared as they will be saved (people.clean_name,
 then naming.fold), so "Zoe." is Zoe, whichever way a Bengali name is typed. A row saved once is locked, so
 pressing Save again after fixing another row never saves it twice.
 
@@ -35,7 +36,7 @@ CROP_PX = 160
 LOOKING = "Looking for faces…"
 NO_FACES = "No faces found in this photo. Try another one."
 CANT_OPEN = "This photo can't be opened. Try another one."
-NAME_EACH = "Type a name under each face, or tick Skip this face."
+NAME_EACH = "Type a name under each face to remember. Faces left blank are skipped."
 SAME_NAME = "Two faces can't have the same name."
 
 # Analyses whose dialog may be gone before they report: a Task must outlive
@@ -116,8 +117,10 @@ class FaceRow(QFrame):
         return self.name_edit.text().strip()
 
     def pending(self) -> bool:
-        """Whether Save has yet to do something with this face."""
-        return self.saved_id is None and not self.skip_check.isChecked()
+        """Whether Save has yet to do something with this face: it has a name
+        and is not skipped or saved already."""
+        return (self.saved_id is None and not self.skip_check.isChecked()
+                and _name_key(self.name()) != "")
 
     def show_error(self, text: str) -> None:
         self.error_label.setText(text)

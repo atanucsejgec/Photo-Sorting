@@ -312,13 +312,36 @@ def test_naming_dialog_existing_name_adds_samples(qtbot, store, photo):
     assert [p.id for p in d.added()] == [atanu.id]
 
 
-def test_naming_dialog_empty_name_needs_a_name(qtbot, store, photo):
-    d = _make_dialog(qtbot, photo, _two_faces(photo), store)
-    qtbot.waitUntil(lambda: len(d.rows) == 2)
-    d.rows[0].name_edit.setText("Atanu")
+def _three_faces(photo) -> FakeEngine:
+    return FakeEngine({photo.name: [_face(_unit(1), 10), _face(_unit(2), 70),
+                                    _face(_unit(3), 130)]})
+
+
+def test_naming_dialog_blank_faces_are_skipped(qtbot, store, photo):
+    d = _make_dialog(qtbot, photo, _three_faces(photo), store)
+    qtbot.waitUntil(lambda: len(d.rows) == 3)
+    d.rows[1].name_edit.setText("Zoe")
+    d.rows[2].name_edit.setText(" . ")  # no name to save either
     d.save_button.click()
-    assert d.result() != QDialog.DialogCode.Accepted
-    assert d.rows[1].error_label.text() == "Type a name."
+    assert d.result() == QDialog.DialogCode.Accepted
+    assert [r.error_label.text() for r in d.rows] == ["", "", ""]
+    (zoe,) = store.people()
+    assert zoe.name == "Zoe" and np.array_equal(zoe.embeddings[0], _unit(2))
+    assert [p.name for p in d.added()] == ["Zoe"]
+
+
+def test_naming_dialog_adds_photos_from_a_group_photo(qtbot, store, photo):
+    atanu = _remember(store, "Atanu", 1)
+    d = _make_dialog(qtbot, photo, _three_faces(photo), store, name="Atanu")
+    qtbot.waitUntil(lambda: len(d.rows) == 3)
+    assert d.windowTitle() == "Add photos to Atanu"
+    assert [r.name() for r in d.rows] == ["", "", ""]  # which face is theirs? ask
+    d.rows[2].name_edit.setText("Atanu")
+    d.save_button.click()
+    assert d.result() == QDialog.DialogCode.Accepted
+    (person,) = store.people()
+    assert person.id == atanu.id and len(person.embeddings) == 2
+    assert np.array_equal(person.embeddings[1], _unit(3))
 
 
 def test_naming_dialog_no_faces(qtbot, store, photo):
