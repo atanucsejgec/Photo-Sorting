@@ -16,11 +16,10 @@ from pathlib import Path
 
 import numpy as np
 
-from photosort.modes._clip_scan import ClipScan
-from photosort.naming import TargetAllocator, fit_name, fold
-from photosort.plan import Move, Plan
+from photosort.modes._clip_scan import ClipScan, place, probabilities, summary_rest
+from photosort.naming import fit_name
+from photosort.plan import Plan
 from photosort.thresholds import (
-    CLIP_LOGIT_SCALE,
     CONTENT_BACKGROUND_PROMPTS,
     CONTENT_SURE,
     CONTENT_UNSURE,
@@ -60,15 +59,7 @@ def judge(scan: ClipScan, categories: list[str], category_embeddings: np.ndarray
     cats = np.asarray(category_embeddings, np.float64)
     if not categories or cats.shape[0] != len(categories):
         raise ValueError(f"{len(categories)} categories but {cats.shape[0]} text embeddings")
-    rels = sorted(scan.embeddings)
-    if not rels:
-        return {}, []
-    text = np.concatenate([cats, np.asarray(background_embeddings, np.float64)])
-    images = np.stack([scan.embeddings[rel] for rel in rels]).astype(np.float64)
-    logits = CLIP_LOGIT_SCALE * images @ text.T
-    probs = np.exp(logits - logits.max(axis=1, keepdims=True))
-    probs /= probs.sum(axis=1, keepdims=True)
-
+    rels, probs = probabilities(scan, np.concatenate([cats, background_embeddings]))
     k = len(categories)
     sure: dict[str, str] = {}
     unsure: list[Verdict] = []
@@ -95,35 +86,8 @@ def plan_content(root: Path, scan: ClipScan, sure: dict[str, str],
     photo not answered stays put. Each category's folder is
     fit_name(category) at the root; a photo already in it is left there.
     """
-    root = Path(root)
-    chosen = dict(sure)
-    for rel, category in answers.items():
-        if category is None:
-            chosen.pop(rel, None)
-        else:
-            chosen[rel] = category
-
-    allocator = TargetAllocator(root)
-    moves: list[Move] = []
-    folders: set[str] = set()
-    unchanged = 0
-    for rel in sorted(chosen):
-        if rel not in scan.embeddings:
-            continue  # not a photo of this scan
-        folder = fit_name(chosen[rel], FOLDER_NAME_MAX, FOLDER_NAME_MAX_BYTES)
-        parent, _, name = rel.rpartition("/")
-        if fold(parent) == fold(folder):
-            unchanged += 1
-            continue
-        moves.append(Move(rel, allocator.allocate(f"{folder}/{name}")))
-        folders.add(fold(folder))
-
-    stay = scan.photos - scan.unreadable - len(moves) - unchanged
-    summary = [f"{len(moves)} photos → {len(folders)} category folders"]
-    if stay:
-        summary.append(f"{stay} photos stay where they are")
-    if scan.unreadable:
-        summary.append(f"{scan.unreadable} photos couldn't be read")
-    if unchanged:
-        summary.append(f"{unchanged} already in place")
-    return Plan("content", moves, summary, unchanged)
+    placed = place(root, scan, sure, answers,
+                   lambda category: fit_name(category, FOLDER_NAME_MAX, FOLDER_NAME_MAX_BYTES))
+    summary = [f"{len(placed.moves)} photos → {len(placed.folders)} category folders",
+               *summary_rest(scan, placed)]
+    return Plan("content", placed.moves, summary, placed.unchanged)

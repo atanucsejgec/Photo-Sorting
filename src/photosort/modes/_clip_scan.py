@@ -1,7 +1,9 @@
 """Embed every photo under a folder with CLIP, for the Content and Notes & Pages modes.
 
 The embeddings are cached (clip.CLIP_KIND), so a rerun with other categories
-or prompts never reads the photos again. Videos are skipped.
+or prompts never reads the photos again. Videos are skipped. Also the parts
+the two modes judge and plan with alike: the probabilities over the prompts,
+and the moves to the chosen folders.
 """
 
 import logging
@@ -16,8 +18,10 @@ from photosort.cache import AnalysisCache
 from photosort.clip import CLIP_KIND, pack, unpack
 from photosort.imageinfo import UnreadableImage
 from photosort.media import kind
+from photosort.naming import TargetAllocator, fold
+from photosort.plan import Move
 from photosort.scanner import scan
-from photosort.thresholds import CLIP_ENGINE_FAILS
+from photosort.thresholds import CLIP_ENGINE_FAILS, CLIP_LOGIT_SCALE
 
 _log = logging.getLogger("photosort")
 
@@ -110,3 +114,72 @@ def embed_photos(
     if cancel is not None and cancel.is_set():
         return None
     return ClipScan(embeddings, total, unreadable)
+
+
+def probabilities(scan: ClipScan, text_embeddings: np.ndarray) -> tuple[list[str], np.ndarray]:
+    """scan's rels, sorted, and each photo's probabilities over the prompts.
+
+    text_embeddings holds the prompts' unit embeddings, one row each. Row i of
+    the result is the softmax, over the prompts, of photo i's similarities to
+    them times CLIP_LOGIT_SCALE.
+    """
+    rels = sorted(scan.embeddings)
+    text = np.asarray(text_embeddings, np.float64)
+    if not rels:
+        return rels, np.zeros((0, text.shape[0]))
+    images = np.stack([scan.embeddings[rel] for rel in rels]).astype(np.float64)
+    logits = CLIP_LOGIT_SCALE * images @ text.T
+    probs = np.exp(logits - logits.max(axis=1, keepdims=True))
+    probs /= probs.sum(axis=1, keepdims=True)
+    return rels, probs
+
+
+@dataclass
+class Placed:
+    moves: list[Move]
+    folders: set[str]  # the folded folders moved to
+    unchanged: int  # photos already in their folder
+
+
+def place(root: Path, scan: ClipScan, sure: dict[str, str], answers: dict[str, str | None],
+          folder_of: Callable[[str], str]) -> Placed:
+    """The moves of scan's photos to the folders of their labels.
+
+    sure maps a rel to its label; answers maps an unsure rel to the label the
+    owner chose, or to None to leave it where it is. An unsure photo not
+    answered stays put. folder_of(label) is the label's folder (POSIX, under
+    root); a photo already in it (by fold) is left there.
+    """
+    chosen = dict(sure)
+    for rel, label in answers.items():
+        if label is None:
+            chosen.pop(rel, None)
+        else:
+            chosen[rel] = label
+
+    allocator = TargetAllocator(Path(root))
+    placed = Placed([], set(), 0)
+    for rel in sorted(chosen):
+        if rel not in scan.embeddings:
+            continue  # not a photo of this scan
+        folder = folder_of(chosen[rel])
+        parent, _, name = rel.rpartition("/")
+        if fold(parent) == fold(folder):
+            placed.unchanged += 1
+            continue
+        placed.moves.append(Move(rel, allocator.allocate(f"{folder}/{name}")))
+        placed.folders.add(fold(folder))
+    return placed
+
+
+def summary_rest(scan: ClipScan, placed: Placed) -> list[str]:
+    """The summary lines after the first: the photos left, unreadable and in place."""
+    lines = []
+    stay = scan.photos - scan.unreadable - len(placed.moves) - placed.unchanged
+    if stay:
+        lines.append(f"{stay} photos stay where they are")
+    if scan.unreadable:
+        lines.append(f"{scan.unreadable} photos couldn't be read")
+    if placed.unchanged:
+        lines.append(f"{placed.unchanged} already in place")
+    return lines
