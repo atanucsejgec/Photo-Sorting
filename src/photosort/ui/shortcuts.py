@@ -76,10 +76,13 @@ def _live(widget: QWidget) -> list[tuple[str, str]]:
 
 def _control_keys(focus: QWidget | None, screen: QWidget) -> list[tuple[str, str]]:
     """The records of focus or of its nearest recorded ancestor below screen;
-    none when focus is not inside screen."""
+    none when focus is not inside screen (a window of its own, such as a
+    dialog parented to screen, is not inside it)."""
     holder = None
     widget = focus
     while widget is not None and widget is not screen:
+        if widget.isWindow():
+            return []
         if holder is None and _live(widget):
             holder = widget
         widget = widget.parentWidget()

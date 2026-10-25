@@ -138,7 +138,6 @@ def test_ask_enter_takes_the_default_no(qtbot):
     seen = _answer(qtbot, Qt.Key.Key_Return)
     assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep") is False
     assert seen["focus"] == "Keep"
-    assert seen["primary"] == ["Keep"]  # the default carries the accent
     assert seen["strip"] == "←→ choose · Enter pick · Esc no/close"
 
 
@@ -190,3 +189,21 @@ def test_warn_and_info_close_with_enter_or_esc(qtbot, show, key):
     assert seen["focus"] == "OK"
     assert seen["strip"] == "Enter OK · Esc close"
     assert QApplication.activeModalWidget() is None
+
+
+def test_a_window_of_its_own_is_not_on_the_screen(qtbot, screen):
+    from PySide6.QtWidgets import QDialog
+
+    dialog = QDialog(screen)  # its parent is the screen, but it is a window
+    field = QLineEdit(dialog)
+    shortcuts.describe(dialog, "Enter", "pick")
+    shortcuts.describe(field, "Esc", "stop editing")
+    assert shortcuts.keys_for(field, screen) == [("Esc", "back"), ("←→", "move")]
+
+
+def test_ask_buttons_are_both_plain(qtbot):
+    seen = _answer(qtbot, Qt.Key.Key_Escape)
+    dialogs.ask(None, "Leave this review?", "Your answers so far will be lost.",
+                yes="Leave", no="Stay")
+    assert seen["focus"] == "Stay"
+    assert seen["primary"] == []  # the safe default is not "the primary action"

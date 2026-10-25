@@ -23,6 +23,7 @@ from photosort.modes.date_mode import MONTH_NAMES
 from photosort.naming import resolve_existing_dir
 from photosort.thresholds import THUMB_PX
 from photosort.ui.fullscreen_viewer import FullscreenViewer
+from photosort.ui.labels import literal
 from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.worker import Task
 
@@ -160,7 +161,7 @@ class ReviewPage(QWidget):
         self.keep_all_button = QPushButton("Keep all")
         self.keep_one_button = QPushButton("Keep one (sharpest)")
         self.skip_button = QPushButton("Skip")
-        self.confirm_button = QPushButton("Confirm & next group")
+        self.confirm_button = QPushButton(literal("Confirm & next group"))
         self.confirm_button.setDefault(True)
         row = QHBoxLayout()
         for button in (self.back_button, self.stop_button, self.cancel_button):

@@ -1,9 +1,10 @@
 """The app's own message boxes, in the theme and with a shortcut strip.
 
 ask() is a yes/no question; warn() and info() say something and close. The
-focus starts on the default button, which carries the accent: ← and → move
-between the buttons, Enter presses the focused one and Esc answers no (or
-closes).
+focus starts on the default button: ← and → move between the buttons, Enter
+presses the focused one and Esc answers no (or closes). Both buttons are
+plain, the focused one ringed: the accent gradient means "the primary
+action", and the safe default of a question is not one.
 """
 
 from typing import Literal
@@ -64,14 +65,12 @@ class MessageDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch()
         self.buttons: list[QPushButton] = []
-        for n, (label, is_yes) in enumerate(buttons):
+        for label, is_yes in buttons:
             button = QPushButton(literal(label))
             button.setMinimumWidth(100)
             button.setAutoDefault(False)  # Enter is handled below, on the focused button
             button.clicked.connect(self.accept if is_yes else self.reject)
             button.installEventFilter(self)
-            if n == default:
-                button.setObjectName("primaryButton")
             self.buttons.append(button)
             row.addWidget(button)
 

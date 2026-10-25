@@ -4,7 +4,7 @@ Every colour the UI uses is a token in COLORS; no other module writes a
 colour literal (a test checks). Widgets opt in to the special looks by
 object name:
 
-- primaryButton: the accent-gradient button (Go, the default in a dialog);
+- primaryButton: the accent-gradient button, for a page's primary action (Go);
 - modeTile, card: a raised panel (give the widget Qt.WA_StyledBackground,
   as styled() does, so a plain QWidget paints it);
 - sidebar: the left column;
@@ -48,12 +48,23 @@ COLORS: dict[str, str] = {
     "selection": "#12384a",  # a selected row: a dark cyan
     "danger": "#f85149",
     "thumb_bg": "#1b2230",  # a thumbnail's box while it loads
-    "overlay": "rgba(10, 14, 20, 190)",  # the viewer's caption box (stylesheet only)
     "face_box": "#ffd400",  # the box drawn round a face on a photo
 }
 
+# The viewer's caption box: deep, see-through. Not a token: QColor can't read it.
+OVERLAY = "rgba(10, 14, 20, 190)"
+
 GLOW_BLUR_PX = 18
 GLOW_ALPHA = 150  # of 255: soft, as in the mockup
+
+
+def _triangle(selector: str, points: str, colour: str, ground: str) -> str:
+    """A small solid triangle (the arrow of a spin or combo box) pointing up or
+    down: an empty box with a colour border between two in the ground colour,
+    the colour behind it. (Clear side borders draw a bar, not a triangle.)"""
+    edge = "bottom" if points == "up" else "top"
+    return (f"{selector} {{ width: 0; height: 0; border-left: 5px solid {ground}; "
+            f"border-right: 5px solid {ground}; border-{edge}: 6px solid {colour}; }}")
 
 
 def stylesheet() -> str:
@@ -88,13 +99,31 @@ QLineEdit, QAbstractSpinBox, QComboBox, QPlainTextEdit, QTextEdit {{
     selection-background-color: {c['selection']}; selection-color: {c['text']}; }}
 QLineEdit:focus, QAbstractSpinBox:focus, QComboBox:focus, QPlainTextEdit:focus,
 QTextEdit:focus {{ border: 2px solid {c['focus']}; padding: 5px 7px; }}
+QComboBox {{ padding-right: 26px; }}
+QComboBox:focus {{ padding-right: 25px; }}
+QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{ subcontrol-origin: border;
+    width: 20px; margin: 2px 2px 0 0; background: {c['raised']}; border: none; }}
+QAbstractSpinBox::up-button {{ subcontrol-position: top right;
+    border-top-right-radius: 6px; }}
+QAbstractSpinBox::down-button {{ subcontrol-position: bottom right; margin: 0 2px 2px 0;
+    border-bottom-right-radius: 6px; }}
+QComboBox::drop-down {{ subcontrol-origin: border; subcontrol-position: top right;
+    width: 22px; margin: 2px; border: none; background: transparent; }}
+{_triangle("QAbstractSpinBox::up-arrow", "up", c['text'], c['raised'])}
+{_triangle("QAbstractSpinBox::down-arrow", "down", c['text'], c['raised'])}
+{_triangle("QAbstractSpinBox::up-arrow:disabled, QAbstractSpinBox::up-arrow:off",
+           "up", c['disabled'], c['raised'])}
+{_triangle("QAbstractSpinBox::down-arrow:disabled, QAbstractSpinBox::down-arrow:off",
+           "down", c['disabled'], c['raised'])}
+{_triangle("QComboBox::down-arrow", "down", c['text'], c['panel'])}
+{_triangle("QComboBox::down-arrow:disabled", "down", c['disabled'], c['panel'])}
 QLineEdit:disabled, QAbstractSpinBox:disabled, QComboBox:disabled {{
     color: {c['disabled']}; border-color: {c['border_soft']}; }}
 QComboBox QAbstractItemView {{ background: {c['panel']}; color: {c['text']};
     border: 1px solid {c['border']}; selection-background-color: {c['selection']}; }}
 
-QCheckBox, QRadioButton {{ color: {c['text']}; spacing: 8px; padding: 2px;
-    border: 1px solid transparent; border-radius: 6px; }}
+QCheckBox, QRadioButton {{ color: {c['text']}; spacing: 8px; padding: 2px 4px;
+    border: 2px solid transparent; border-radius: 6px; }}
 QCheckBox:focus, QRadioButton:focus {{ border-color: {c['focus']}; }}
 QCheckBox:disabled, QRadioButton:disabled {{ color: {c['disabled']}; }}
 QCheckBox::indicator, QRadioButton::indicator {{ width: 14px; height: 14px;
@@ -110,7 +139,9 @@ QListView, QTreeView, QTableView {{ background: {c['panel']}; color: {c['text']}
     alternate-background-color: {c['bg']}; gridline-color: {c['border_soft']};
     border: 1px solid {c['border_soft']}; border-radius: 8px;
     selection-background-color: {c['selection']}; selection-color: {c['text']}; }}
-QListView:focus, QTreeView:focus, QTableView:focus {{ border: 1px solid {c['focus']}; }}
+QListView, QTreeView, QTableView {{ padding: 1px; }}
+QListView:focus, QTreeView:focus, QTableView:focus {{ border: 2px solid {c['focus']};
+    padding: 0; }}
 QHeaderView::section {{ background: {c['panel']}; color: {c['muted']}; border: none;
     border-bottom: 1px solid {c['border']}; padding: 6px; }}
 QTableCornerButton::section {{ background: {c['panel']}; border: none; }}
@@ -140,14 +171,14 @@ QLabel#keyWord {{ color: {c['muted']}; }}
 
 QDialog#viewer {{ background: {c['deep']}; }}
 QDialog#viewer QLabel, QDialog#viewer QCheckBox {{ color: {c['text']}; }}
-QLabel#viewerOverlay {{ background: {c['overlay']}; color: {c['text']};
+QLabel#viewerOverlay {{ background: {OVERLAY}; color: {c['text']};
     padding: 6px 10px; }}
 """
 
 
 def palette() -> QPalette:
     """The dark palette, for what the stylesheet does not reach."""
-    c = {k: QColor(v) for k, v in COLORS.items() if v.startswith("#")}
+    c = {k: QColor(v) for k, v in COLORS.items()}
     p = QPalette()
     roles = QPalette.ColorRole
     for role, token in ((roles.Window, "bg"), (roles.WindowText, "text"),

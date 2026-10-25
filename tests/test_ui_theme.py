@@ -3,9 +3,11 @@
 import re
 from pathlib import Path
 
-from PySide6.QtGui import QColor, QKeySequence, QPalette
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPalette
 from PySide6.QtWidgets import (
-    QGraphicsDropShadowEffect, QHBoxLayout, QPushButton, QRadioButton, QWidget,
+    QAbstractButton, QApplication, QCheckBox, QComboBox, QGraphicsDropShadowEffect,
+    QHBoxLayout, QLabel, QListWidget, QPushButton, QRadioButton, QSpinBox, QStyle,
+    QStyleOptionSpinBox, QWidget,
 )
 
 from photosort.modes import MODES
@@ -31,6 +33,7 @@ def test_the_tokens_are_the_spec_palette():
         "muted": "#8b949e", "accent_from": "#06b6d4", "accent_to": "#8b5cf6",
         "focus": "#22d3ee"}
     assert "danger" in c
+    assert all(re.fullmatch(r"#[0-9a-f]{6}", v) for v in c.values())  # QColor-ready
 
 
 def test_the_stylesheet_targets_the_object_names():
@@ -101,3 +104,111 @@ def test_literal_shows_an_ampersand_on_buttons(qtbot):
 def test_no_message_box_left_in_the_ui():
     found = [path.name for path in UI.rglob("*.py") if "QMessageBox" in path.read_text()]
     assert found == []
+
+
+# ----- controls under the theme ----------------------------------------------------
+
+def _near(colour: QColor, token: str, tolerance: int = 40) -> bool:
+    want = QColor(theme.COLORS[token])
+    return (colour.alpha() > 200 and abs(colour.red() - want.red()) <= tolerance
+            and abs(colour.green() - want.green()) <= tolerance
+            and abs(colour.blue() - want.blue()) <= tolerance)
+
+
+def _pixels(image: QImage, rect, token: str) -> int:
+    """How many pixels in rect are about the colour of token."""
+    return sum(_near(image.pixelColor(x, y), token)
+               for x in range(max(rect.left(), 0), min(rect.right() + 1, image.width()))
+               for y in range(max(rect.top(), 0), min(rect.bottom() + 1, image.height())))
+
+
+def _show_focused(qtbot, widget: QWidget) -> QWidget:
+    """widget in a shown window, focused, beside a button (so focus can leave)."""
+    window = QWidget()
+    layout = QHBoxLayout(window)
+    layout.addWidget(widget)
+    window.other = QPushButton("Other")
+    layout.addWidget(window.other)
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+    window.activateWindow()
+    widget.setFocus()
+    qtbot.waitUntil(lambda: QApplication.focusWidget() is widget)
+    return window
+
+
+class _Spin(QSpinBox):
+    def part(self, control: QStyle.SubControl):
+        option = QStyleOptionSpinBox()
+        self.initStyleOption(option)
+        return self.style().subControlRect(QStyle.ComplexControl.CC_SpinBox, option,
+                                           control, self)
+
+
+def test_spin_box_arrows_are_drawn(qtbot):
+    spin = _Spin()
+    spin.setRange(1, 99)
+    spin.setValue(50)  # both arrows live
+    window = _show_focused(qtbot, spin)  # noqa: F841 (kept alive)
+    image = spin.grab().toImage()
+    for control in (QStyle.SubControl.SC_SpinBoxUp, QStyle.SubControl.SC_SpinBoxDown):
+        rect = spin.part(control)
+        assert not rect.isEmpty(), control
+        assert _pixels(image, rect, "text") >= 4, control  # an arrow, not an empty box
+
+
+def test_focus_rings_are_two_pixels_all_round(qtbot):
+    combo = QComboBox()
+    combo.addItems(["Food", "Pets"])
+    spin = QSpinBox()
+    for widget in (combo, spin, QCheckBox("Include subfolders"),
+                   QRadioButton("Date"), QListWidget()):
+        window = _show_focused(qtbot, widget)  # noqa: F841 (kept alive)
+        image = widget.grab().toImage()
+        mid = image.height() // 2
+        for x in (0, 1, image.width() - 2, image.width() - 1):  # left and right sides
+            assert _near(image.pixelColor(x, mid), "focus"), (type(widget).__name__, x)
+
+
+def test_focus_does_not_move_anything(qtbot):
+    for widget in (QCheckBox("Include subfolders"), QRadioButton("Date"), QListWidget()):
+        def layout_of(w=widget):
+            inner = w.viewport().geometry() if isinstance(w, QListWidget) else None
+            return w.sizeHint(), w.contentsRect(), inner
+
+        window = _show_focused(qtbot, widget)
+        focused = layout_of()
+        window.other.setFocus()
+        qtbot.waitUntil(lambda: QApplication.focusWidget() is window.other)
+        assert layout_of() == focused, type(widget).__name__
+
+
+def test_combo_box_arrow_is_drawn(qtbot):
+    combo = QComboBox()
+    combo.addItems(["Food", "Pets"])
+    window = _show_focused(qtbot, combo)  # noqa: F841 (kept alive)
+    image = combo.grab().toImage()
+    right = combo.rect().adjusted(combo.width() - 24, 2, -2, -2)
+    assert _pixels(image, right, "text") >= 4
+
+
+def test_every_button_and_buddy_label_shows_its_ampersands(qtbot, tmp_path):
+    from photosort.people import PeopleStore
+    from photosort.settings import Settings
+    from photosort.ui.category_editor import CategoryEditor
+    from photosort.ui.history_dialog import HistoryDialog
+    from photosort.ui.main_window import MainWindow
+    from photosort.ui.settings_dialog import SettingsDialog
+
+    store = PeopleStore(tmp_path / "people")
+    window = MainWindow(Settings(), tmp_path / "settings.json", people_store=store)
+    shown = [window, SettingsDialog(Settings(), tmp_path / "settings.json", window, people=store),
+             CategoryEditor(["Food & Drink", "Pets"], window), HistoryDialog(tmp_path, window)]
+    for widget in shown:
+        qtbot.addWidget(widget)
+    texts = [button.text() for widget in shown for button in widget.findChildren(QAbstractButton)]
+    texts += [label.text() for widget in shown for label in widget.findChildren(QLabel)
+              if label.buddy() is not None]
+    assert "Confirm && next group" in texts
+    assert [t for t in texts if "&" in t.replace("&&", "")] == []
