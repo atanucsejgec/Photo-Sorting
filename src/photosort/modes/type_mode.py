@@ -13,9 +13,9 @@ from pathlib import Path
 from photosort.imageinfo import UnreadableImage, image_size
 from photosort.media import kind
 from photosort.metadata import camera_of
+from photosort.modes._scan import read_each
 from photosort.naming import TargetAllocator, fold
 from photosort.plan import Move, Plan
-from photosort.scanner import scan
 
 CAMERA_PHOTOS = "Camera Photos"
 SCREENSHOTS = "Screenshots"
@@ -24,7 +24,9 @@ VIDEOS = "Videos"
 OTHER = "Other"
 FOLDERS: tuple[str, ...] = (CAMERA_PHOTOS, SCREENSHOTS, WHATSAPP, VIDEOS, OTHER)
 
-_WHATSAPP_NAME = re.compile(r"-WA\d+", re.IGNORECASE)  # IMG-20250315-WA0036.jpg
+# WhatsApp's own names: IMG-20250315-WA0036.jpg (and " (1)" copies), or
+# "WhatsApp Image 2025-03-15 at 10.15.00.jpeg" as WhatsApp Desktop and iPhones save them.
+_WHATSAPP_NAME = re.compile(r"(IMG|VID|AUD|PTT|STK|DOC)-\d{8}-WA\d+", re.IGNORECASE)
 _NAME_GAPS = re.compile(r"[\s_-]")
 
 
@@ -32,7 +34,9 @@ def source_of(path: Path) -> str:
     """The folder (one of FOLDERS) a photo or video belongs in.
 
     The first rule that matches wins:
-    1. a name with "-WA" and a number (WhatsApp's naming): WhatsApp;
+    1. a name in WhatsApp's style, "IMG-20250315-WA0036..." (IMG, VID, AUD,
+       PTT, STK or DOC, a date, "-WA" and a number) or starting "WhatsApp"
+       (any case): WhatsApp;
     2. a photo whose name says "screenshot" (any case, spaces, "_" or "-"
        ignored), or a readable .png with no camera make or model: Screenshots;
     3. any other video: Videos;
@@ -41,7 +45,7 @@ def source_of(path: Path) -> str:
     """
     path = Path(path)
     media = kind(path)
-    if _WHATSAPP_NAME.search(path.name):
+    if _WHATSAPP_NAME.match(path.name) or path.name.casefold().startswith("whatsapp"):
         return WHATSAPP
     if media == "photo" and "screenshot" in _NAME_GAPS.sub("", path.name.casefold()):
         return SCREENSHOTS
@@ -101,16 +105,7 @@ def prepare_type_plan(
 ) -> Plan | None:
     """Scan root, sort every file by type and source and plan the moves.
     None if cancelled."""
-    root = Path(root)
-    files = scan(root, include_subfolders)
-    total = len(files)
-    sources: dict[str, str] = {}
-    for i, rel in enumerate(files, start=1):
-        if cancel is not None and cancel.is_set():
-            return None
-        sources[rel] = source_of(root / rel)
-        if progress is not None:
-            progress(i, total)
-    if cancel is not None and cancel.is_set():
+    found = read_each(root, include_subfolders, source_of, progress, cancel)
+    if found is None:
         return None
-    return plan_type(root, files, sources)
+    return plan_type(Path(root), *found)

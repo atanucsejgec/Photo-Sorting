@@ -9,9 +9,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 from photosort.metadata import camera_folder, camera_of
+from photosort.modes._scan import read_each
 from photosort.naming import TargetAllocator, fold
 from photosort.plan import Move, Plan
-from photosort.scanner import scan
 
 
 def plan_camera(root: Path, files: list[str], folders: dict[str, str]) -> Plan:
@@ -56,17 +56,13 @@ def prepare_camera_plan(
     cancel: threading.Event | None = None,
 ) -> Plan | None:
     """Scan root, read every file's camera and plan the moves. None if cancelled."""
-    root = Path(root)
-    files = scan(root, include_subfolders)
-    total = len(files)
-    folders: dict[str, str] = {}
-    for i, rel in enumerate(files, start=1):
-        if cancel is not None and cancel.is_set():
-            return None
-        camera = camera_of(root / rel)
-        folders[rel] = camera_folder(*camera) if camera is not None else ""
-        if progress is not None:
-            progress(i, total)
-    if cancel is not None and cancel.is_set():
+    found = read_each(root, include_subfolders, _folder_of, progress, cancel)
+    if found is None:
         return None
-    return plan_camera(root, files, folders)
+    return plan_camera(Path(root), *found)
+
+
+def _folder_of(path: Path) -> str:
+    """path's camera folder, "" if it has no camera info."""
+    camera = camera_of(path)
+    return camera_folder(*camera) if camera is not None else ""

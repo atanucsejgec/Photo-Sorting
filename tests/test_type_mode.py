@@ -67,9 +67,25 @@ def test_source_of_each_kind(tmp_path):
     ("photo.webp", "WEBP", None, OTHER),
     ("WA0036.jpg", "JPEG", None, OTHER),  # no dash: not WhatsApp's pattern
     ("IMG-WA.jpg", "JPEG", None, OTHER),  # no number
+    ("IMG-20250315-WA0036 (1).jpg", "JPEG", None, WHATSAPP),  # a copy still matches
+    ("STK-20250315-WA0001.webp", "WEBP", None, WHATSAPP),  # a sticker
+    ("DOC-20250315-WA0002.jpg", "JPEG", None, WHATSAPP),
+    ("WhatsApp Image 2025-03-15 at 10.15.00.jpeg", "JPEG", None, WHATSAPP),
+    ("whatsapp image.png", "PNG", "OPPO", WHATSAPP),
+    ("Seattle-WA2019.jpg", "JPEG", "Canon", CAMERA_PHOTOS),  # "-WA" and a number, not WhatsApp's
+    ("old IMG-20250315-WA0036.jpg", "JPEG", None, OTHER),  # the pattern starts the name
+    ("IMG-2025031-WA0036.jpg", "JPEG", None, OTHER),  # 7 digits, not a date
+    ("PIC-20250315-WA0036.jpg", "JPEG", None, OTHER),  # not one of WhatsApp's prefixes
+    ("my whatsapp.jpg", "JPEG", None, OTHER),  # "whatsapp" must start the name
 ])
 def test_source_of_rules(tmp_path, name, fmt, make, folder):
     assert source_of(image(tmp_path / name, make, fmt=fmt)) == folder
+
+
+def test_whatsapp_videos(tmp_path):
+    assert source_of(video(tmp_path / "WhatsApp Video 2025-03-15 at 10.15.00.mp4")) == WHATSAPP
+    assert source_of(video(tmp_path / "vid-20250315-wa0001.MP4")) == WHATSAPP
+    assert source_of(video(tmp_path / "Seattle-WA2019.mp4")) == VIDEOS
 
 
 def test_unreadable_png_is_other(tmp_path):
