@@ -1,10 +1,12 @@
-"""The main window: Home, Progress, Review, Bad photos, Face setup, Face
-questions, Summary and Done pages for a sort.
+"""The main window: Home, Progress, Review, Bad photos, Events, Face setup,
+Face questions, Summary and Done pages for a sort.
 
 A mode either plans its moves straight away, or finds groups that the owner
 reviews first; the files not kept are then planned to be set aside (see
 photosort.modes.MODE_SPECS). Bad photos mode finds bad photos that the owner
-ticks; the ticked ones are planned to be set aside. Face mode first makes
+ticks; the ticked ones are planned to be set aside. Events mode finds events
+(with the gap and minimum from Settings) that the owner names, merges, splits
+or skips before they are planned. Face mode first makes
 sure the face models are there, then shows the remembered people to pick
 from (or to add to); the photos are then searched for those people, the
 owner is asked about the unsure matches, and the moves planned.
@@ -20,6 +22,7 @@ using it, and closing the window cancels it and waits for the pool to finish.
 
 import os
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 
 from PySide6.QtCore import QThreadPool, QUrl
@@ -38,11 +41,13 @@ from photosort.journal import RunJournal
 from photosort.groups import Candidate, Group, plan_set_aside
 from photosort.modes import MODE_SPECS, MODES
 from photosort.modes.bad_photos import plan_bad
+from photosort.modes.events import Event, plan_events
 from photosort.modes.face_mode import Answer, FaceScan, find_face_matches, plan_faces
 from photosort.people import PeopleError, PeopleStore, Person
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
 from photosort.ui.bad_photos_page import BadPhotosPage
+from photosort.ui.events_page import EventsPage
 from photosort.ui.face_naming_dialog import FaceNamingDialog, pick_photo
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
@@ -131,6 +136,8 @@ class MainWindow(QMainWindow):
         self._groups: list[Group] = []  # being reviewed; kept for Back on the summary
         self._bad: list[Candidate] = []  # bad photos shown; kept for Back on the summary
         self._bad_ticked: set[str] = set()  # the bad photos last ticked to move
+        self._events: list[Event] = []  # as last named; kept for Back on the summary
+        self._events_left_out = 0  # files in no event
         self._plan: Plan | None = None
         self._run_id: str | None = None
         self._progress_prefix = ""
@@ -146,13 +153,14 @@ class MainWindow(QMainWindow):
         self.progress_page = self._build_progress()
         self.review_page = self._build_review()
         self.bad_page = self._build_bad()
+        self.events_page = self._build_events()
         self.face_setup_page = self._build_face_setup()
         self.face_question_page = self._build_face_questions()
         self.summary_page = self._build_summary()
         self.done_page = self._build_done()
         for page in (self.home, self.progress_page, self.review_page, self.bad_page,
-                     self.face_setup_page, self.face_question_page, self.summary_page,
-                     self.done_page):
+                     self.events_page, self.face_setup_page, self.face_question_page,
+                     self.summary_page, self.done_page):
             self.stack.addWidget(page)
         self._show(self.home)
 
@@ -244,6 +252,12 @@ class MainWindow(QMainWindow):
     def _build_bad(self) -> BadPhotosPage:
         page = BadPhotosPage()
         page.finished.connect(self._on_bad_ticked)
+        page.cancelled.connect(lambda: self._show(self.home))
+        return page
+
+    def _build_events(self) -> EventsPage:
+        page = EventsPage()
+        page.finished.connect(self._on_events_named)
         page.cancelled.connect(lambda: self._show(self.home))
         return page
 
@@ -441,6 +455,7 @@ class MainWindow(QMainWindow):
         self._groups = []
         self._bad = []
         self._bad_ticked = set()
+        self._events = []
         self._face_scan = None
         root = self._folder()
         if root is None:
@@ -468,15 +483,19 @@ class MainWindow(QMainWindow):
         if spec.kind == "face":
             self._show_face_setup()
             return
+        prepare = spec.prepare
         if spec.kind == "bad":
             self._begin_progress("Checking photos…", joiner="of")
             on_result = self._on_bad
+        elif spec.kind == "events":
+            self._begin_progress("Dating files…", joiner="of")
+            prepare = partial(prepare, gap_hours=self.settings.event_gap_hours,
+                              min_files=self.settings.event_min_files)
+            on_result = self._on_events
         else:
             self._begin_progress("Checking files…")
             on_result = self._on_plan if spec.kind == "plan" else self._on_groups
-        self._run(
-            Task(spec.prepare, root, self._include_subfolders), on_result, self._on_plan_error
-        )
+        self._run(Task(prepare, root, self._include_subfolders), on_result, self._on_plan_error)
 
     def _cancel(self) -> None:
         if self._task is not None:
@@ -534,6 +553,31 @@ class MainWindow(QMainWindow):
             self._show(self.home)
             self.show_error(f"Could not plan the moves: {e}")
             return
+        self._on_plan(plan)
+
+    # ----- events ----------------------------------------------------------
+
+    def _on_events(self, found: tuple[list[Event], int] | None) -> None:
+        if found is None or self._cancel_pressed():
+            self._show(self.home)
+            return
+        events, self._events_left_out = found
+        if not events:
+            self._show_summary([MODE_SPECS["events"].none_found], can_go=False)
+            return
+        self.events_page.load(self._root, events, self._events_left_out)
+        self._show(self.events_page)
+
+    def _on_events_named(self, events: list[Event], names: list[str],
+                         skipped: set[int]) -> None:
+        try:
+            plan = plan_events(self._root, events, names, skipped, self._events_left_out)
+        except OSError as e:  # e.g. the drive was unplugged while naming
+            self._events = []
+            self._show(self.home)
+            self.show_error(f"Could not plan the moves: {e}")
+            return
+        self._events = events
         self._on_plan(plan)
 
     # ----- face ------------------------------------------------------------
@@ -662,10 +706,13 @@ class MainWindow(QMainWindow):
         self._show(self.summary_page)
 
     def _back_from_summary(self) -> None:
-        """Back to the review, the bad photos or the face questions, every
-        answer intact, if there was one; to the people picked for a face
-        sort; else Home."""
-        if self._bad:
+        """Back to the review, the bad photos, the events or the face
+        questions, every answer intact, if there was one; to the people
+        picked for a face sort; else Home."""
+        if self._events:
+            self._plan = None  # the page, as the owner left it, makes a fresh one
+            self._show(self.events_page)
+        elif self._bad:
             self._plan = None  # the ticks make a fresh one
             self.bad_page.load(self._root, self._bad, self._bad_ticked)
             self._show(self.bad_page)
@@ -714,6 +761,8 @@ class MainWindow(QMainWindow):
         self._run_id = journal.run_id
         self._groups = []
         self._bad = []
+        self._events = []
+        self.events_page.stop_thumbnails()
         self._face_scan = None
         self._begin_progress("Moving…", len(plan.moves))
         self._run(Task(execute, root, plan, journal), self._on_executed, self._on_execute_error)
@@ -779,6 +828,7 @@ class MainWindow(QMainWindow):
             self._task.cancel_event.set()
         self.review_page.stop_thumbnails()
         self.bad_page.stop_thumbnails()
+        self.events_page.stop_thumbnails()
         self.face_question_page.stop_loading()
         QThreadPool.globalInstance().waitForDone()
         super().closeEvent(event)

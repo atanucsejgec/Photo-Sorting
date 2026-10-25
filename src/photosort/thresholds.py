@@ -63,6 +63,15 @@ PERSON_THUMB_PX = 160  # longest side of a remembered person's face picture
 # (at sea, at the poles) has no place.
 GEO_MAX_CITY_KM = 200
 
+# Events: the owner picks the gap and the minimum in Settings, within these
+# ranges; the defaults are the design's (section 5.9).
+EVENT_GAP_HOURS = 6  # a gap of more than this many hours starts a new event
+EVENT_GAP_HOURS_RANGE = (1, 168)
+EVENT_MIN_FILES = 10  # a run of fewer files is no event
+EVENT_MIN_FILES_RANGE = (2, 1000)
+EVENT_THUMBS = 4  # thumbnails shown for each event ...
+EVENT_THUMB_PX = 120  # ... at most this long on their longest side
+
 # Video metadata: the most box payload read from one video, in bytes (box
 # headers are read by seeking; the video data itself is never read).
 MP4_META_MAX = 4 * 1024 * 1024

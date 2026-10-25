@@ -1,9 +1,9 @@
 """The app's saved preferences, kept as JSON in the user's config dir.
 
 Loading never fails: a missing or unreadable file gives defaults, and any
-field that is missing or has the wrong type gives that field's default.
-Unknown keys are ignored. Saving is atomic, so a crash mid-write never leaves
-a half-written file.
+field that is missing, has the wrong type or is out of range gives that
+field's default. Unknown keys are ignored. Saving is atomic, so a crash
+mid-write never leaves a half-written file.
 """
 
 import json
@@ -14,6 +14,10 @@ from pathlib import Path
 
 import platformdirs
 
+from photosort.thresholds import (
+    EVENT_GAP_HOURS, EVENT_GAP_HOURS_RANGE, EVENT_MIN_FILES, EVENT_MIN_FILES_RANGE,
+)
+
 
 @dataclass
 class Settings:
@@ -21,6 +25,13 @@ class Settings:
     use_gpu: bool = True
     last_folder: str | None = None
     face_people: list[str] = field(default_factory=list)  # ids ticked on the Face setup page
+    event_gap_hours: int = EVENT_GAP_HOURS
+    event_min_files: int = EVENT_MIN_FILES
+
+
+def _int_in(low: int, high: int):
+    """A check that a value is an int (not a bool) from low to high."""
+    return lambda v: type(v) is int and low <= v <= high
 
 
 _VALID = {
@@ -28,6 +39,8 @@ _VALID = {
     "use_gpu": lambda v: isinstance(v, bool),
     "last_folder": lambda v: v is None or isinstance(v, str),
     "face_people": lambda v: isinstance(v, list) and all(isinstance(i, str) for i in v),
+    "event_gap_hours": _int_in(*EVENT_GAP_HOURS_RANGE),
+    "event_min_files": _int_in(*EVENT_MIN_FILES_RANGE),
 }
 
 

@@ -69,3 +69,26 @@ def test_bad_face_people_falls_back(tmp_path):
     for bad in ("ab12", ["ab12", 3], {"a": 1}, None):
         path.write_text(json.dumps({"face_people": bad}))
         assert load_settings(path).face_people == []
+
+
+def test_event_defaults_and_old_file(tmp_path):
+    assert (Settings().event_gap_hours, Settings().event_min_files) == (6, 10)
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"include_subfolders": True, "face_people": []}))  # before events
+    s = load_settings(path)
+    assert (s.event_gap_hours, s.event_min_files) == (6, 10)
+    save_settings(Settings(event_gap_hours=168, event_min_files=2), path)
+    s = load_settings(path)
+    assert (s.event_gap_hours, s.event_min_files) == (168, 2)
+
+
+def test_bad_event_settings_fall_back(tmp_path):
+    path = tmp_path / "settings.json"
+    for gap, minimum in ((0, 1), ("6", "10"), (169, 1001), (True, True), (6.0, 10.5),
+                         (None, [10])):
+        path.write_text(json.dumps({"event_gap_hours": gap, "event_min_files": minimum}))
+        s = load_settings(path)
+        assert (s.event_gap_hours, s.event_min_files) == (6, 10)
+    path.write_text(json.dumps({"event_gap_hours": 1, "event_min_files": 1000}))
+    s = load_settings(path)
+    assert (s.event_gap_hours, s.event_min_files) == (1, 1000)

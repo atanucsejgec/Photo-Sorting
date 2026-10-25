@@ -5,9 +5,12 @@ A mode of kind "plan" prepares a Plan straight away. A mode of kind
 set aside, flat, in set_aside_folder. A mode of kind "face" finds face
 matches to ask the owner about, then plans (see modes.face_mode); it needs
 the people picked and a face engine, so the main window runs it through
-modes.face_mode, never through prepare. Every prepare function is called as
-prepare(root, include_subfolders, progress=..., cancel=...) and returns None
-if cancelled. The mode modules are imported when a mode first runs.
+modes.face_mode, never through prepare. A mode of kind "events" finds
+events (see modes.events) for the owner to name, merge, split or skip, then
+plans. Every prepare function is called as prepare(root, include_subfolders,
+progress=..., cancel=...) and returns None if cancelled; the events one also
+takes gap_hours and min_files keywords, from Settings. The mode modules are
+imported when a mode first runs.
 """
 
 import threading
@@ -25,7 +28,7 @@ MODES: list[tuple[str, str, bool]] = [
     ("type", "Type / source", True),
     ("content", "Content", False),
     ("bad", "Bad photos", True),
-    ("events", "Events", False),
+    ("events", "Events", True),
     ("location", "Location", True),
     ("camera", "Camera", True),
 ]
@@ -35,11 +38,13 @@ Progress = Callable[[int, int], None] | None
 
 @dataclass(frozen=True)
 class ModeSpec:
-    kind: Literal["plan", "groups", "face", "bad"]
-    # -> Plan (kind "plan"), list[Group] or list[Candidate] (kind "bad"); None if cancelled
+    kind: Literal["plan", "groups", "face", "bad", "events"]
+    # -> Plan (kind "plan"), list[Group], list[Candidate] (kind "bad") or
+    # (list[Event], files in none) (kind "events"); None if cancelled
     prepare: Callable[..., object]
     set_aside_folder: str | None = None  # kinds "groups", "bad": where files set aside go
-    none_found: str | None = None  # kinds "groups", "bad": the summary when none is found
+    # kinds "groups", "bad", "events": the summary when none is found
+    none_found: str | None = None
 
 
 def _prepare_date(root: Path, include_subfolders: bool, progress: Progress = None,
@@ -98,6 +103,14 @@ def _find_bad(root: Path, include_subfolders: bool, progress: Progress = None,
                                       cancel=cancel)
 
 
+def _find_events(root: Path, include_subfolders: bool, *, gap_hours: int, min_files: int,
+                 progress: Progress = None, cancel: threading.Event | None = None):
+    from photosort.modes import events
+
+    return events.find_events(root, include_subfolders, gap_hours, min_files,
+                              progress=progress, cancel=cancel)
+
+
 def _find_faces(root: Path, include_subfolders: bool, progress: Progress = None,
                 cancel: threading.Event | None = None):
     # Face mode also needs the people picked and a face engine; the main
@@ -113,6 +126,7 @@ MODE_SPECS: dict[str, ModeSpec] = {
                          "No repeated shots found."),
     "type": ModeSpec("plan", _prepare_type),
     "bad": ModeSpec("bad", _find_bad, "Bad Photos", "No bad photos found."),
+    "events": ModeSpec("events", _find_events, None, "No events found."),
     "location": ModeSpec("plan", _prepare_location),
     "camera": ModeSpec("plan", _prepare_camera),
 }

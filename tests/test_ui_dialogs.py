@@ -220,14 +220,36 @@ def test_settings_dialog_saves_gpu(qtbot, tmp_path, dialog_errors):
     assert dialog_errors == []
 
 
+def test_settings_dialog_saves_the_event_settings(qtbot, tmp_path, dialog_errors):
+    path = tmp_path / "config" / "settings.json"
+    settings = Settings()
+    d = SettingsDialog(settings, path)
+    qtbot.addWidget(d)
+    assert (d.gap_label.text(), d.gap_unit_label.text()) == ("New event after a gap of", "hours")
+    assert (d.min_files_label.text(), d.min_files_unit_label.text()) == (
+        "An event needs at least", "files")
+    assert (d.gap_spin.minimum(), d.gap_spin.maximum(), d.gap_spin.value()) == (1, 168, 6)
+    assert (d.min_files_spin.minimum(), d.min_files_spin.maximum(),
+            d.min_files_spin.value()) == (2, 1000, 10)
+    d.gap_spin.setValue(12)
+    d.min_files_spin.setValue(25)
+    d.accept()
+    assert (settings.event_gap_hours, settings.event_min_files) == (12, 25)
+    saved = load_settings(path)
+    assert (saved.event_gap_hours, saved.event_min_files) == (12, 25)
+    assert dialog_errors == []
+
+
 def test_settings_dialog_cancel_changes_nothing(qtbot, tmp_path):
     path = tmp_path / "config" / "settings.json"
     settings = Settings(use_gpu=True)
     d = SettingsDialog(settings, path)
     qtbot.addWidget(d)
     d.gpu_check.setChecked(False)
+    d.gap_spin.setValue(30)
     d.reject()
     assert settings.use_gpu is True
+    assert settings.event_gap_hours == 6
     assert not path.exists()
 
 
