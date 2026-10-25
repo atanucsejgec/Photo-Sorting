@@ -440,6 +440,7 @@ class MainWindow(QMainWindow):
         self._plan = None  # a stale plan must never be executed
         self._groups = []
         self._bad = []
+        self._bad_ticked = set()
         self._face_scan = None
         root = self._folder()
         if root is None:

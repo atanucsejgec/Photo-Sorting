@@ -11,7 +11,7 @@ import numpy as np
 import pillow_heif
 from PIL import Image, ImageOps
 
-from photosort.thresholds import SHARPNESS_WIDTH, THUMB_PX
+from photosort.thresholds import SHARPNESS_MAX_ROWS, SHARPNESS_WIDTH, THUMB_PX
 
 pillow_heif.register_heif_opener()
 
@@ -42,9 +42,29 @@ def decode(path: Path, min_px: int | None) -> Image.Image:
         with Image.open(path) as img:
             if min_px is not None:
                 img.draft("RGB", (min_px, min_px))
-            return ImageOps.exif_transpose(img).convert("RGB")
+            return _to_8_bit(ImageOps.exif_transpose(img)).convert("RGB")
     except Exception as exc:
         raise UnreadableImage(f"{path}: {exc}") from exc
+
+
+def _to_8_bit(img: Image.Image) -> Image.Image:
+    """img with 16- and 32-bit integer and float greys scaled to 8-bit "L".
+
+    Pillow's own convert clips those at 255 instead of scaling them: a
+    16-bit PNG would come out nearly white, a 0..1 float image black.
+    Integer greys are taken as 16-bit (0..65535); float greys as 0..1 when
+    none is above 1, else as 0..255 (clipped). Other modes are left alone.
+    """
+    if img.mode == "I" or img.mode.startswith("I;16"):
+        pixels = np.clip(np.asarray(img).astype(np.int64), 0, 65535) >> 8
+    elif img.mode == "F":
+        pixels = np.nan_to_num(np.asarray(img, dtype=np.float64))
+        if pixels.size and pixels.max() <= 1:
+            pixels = pixels * 255
+        pixels = np.clip(pixels, 0, 255).round()
+    else:
+        return img
+    return Image.fromarray(pixels.astype(np.uint8))
 
 
 def image_size(path: Path) -> tuple[int, int]:
@@ -94,8 +114,8 @@ def _sharpness_of(img: Image.Image) -> float:
 
 def measuring_grey(img: Image.Image) -> np.ndarray:
     """img in greyscale (values 0-255, as float64), resized to SHARPNESS_WIDTH
-    wide and at least 3 rows high; img is left unchanged."""
-    height = max(3, round(img.height * SHARPNESS_WIDTH / img.width))
+    wide and 3 to SHARPNESS_MAX_ROWS rows high; img is left unchanged."""
+    height = min(max(3, round(img.height * SHARPNESS_WIDTH / img.width)), SHARPNESS_MAX_ROWS)
     return np.asarray(img.convert("L").resize((SHARPNESS_WIDTH, height)), dtype=np.float64)
 
 

@@ -62,6 +62,32 @@ def test_panorama(tmp_path, make_pattern_jpeg):
     assert q.std > 0
 
 
+def test_tall_narrow_strip(tmp_path):
+    q = measure_quality(_save(Image.new("RGB", (1, 10000), "grey"), tmp_path / "strip.png"))
+    assert q is not None and _finite(q)
+
+
+def _full_range_blocks(top: float) -> np.ndarray:
+    """A 480x640 grid of random blocks with values spread over 0..top (a sharp,
+    normally lit photo once scaled to 0-255)."""
+    fine = np.random.default_rng(1).random((48, 64)) * top
+    return np.kron(fine, np.ones((10, 10)))
+
+
+def test_16_bit_png_is_measured_on_its_full_range(tmp_path):
+    path = _save(Image.fromarray(_full_range_blocks(65535).astype(np.uint16)), tmp_path / "a.png")
+    q = measure_quality(path)
+    assert q.mean == pytest.approx(128, abs=8)
+    assert bad_reason(q) is None
+
+
+def test_float_tiff_is_measured_on_its_full_range(tmp_path):
+    path = _save(Image.fromarray(_full_range_blocks(1.0).astype(np.float32)), tmp_path / "a.tif")
+    q = measure_quality(path)
+    assert q.mean == pytest.approx(128, abs=8)
+    assert bad_reason(q) is None
+
+
 def test_stats_of_a_half_black_half_white_photo(tmp_path):
     pixels = np.zeros((100, 200), dtype=np.uint8)
     pixels[:, 100:] = 255

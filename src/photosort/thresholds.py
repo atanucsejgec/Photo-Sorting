@@ -18,6 +18,9 @@ REPEAT_HASH_MAX = 12  # max perceptual-hash Hamming distance (of 64 bits)
 SHARP_SLIGHTLY = 0.85  # below this fraction: "slightly blurry"
 SHARP_BLURRY = 0.6  # below this fraction: "blurry"
 SHARPNESS_WIDTH = 512  # images are resized to this width before measuring
+# ... and to at most this many rows, so a long thin strip (a 1x10000 banner)
+# can't take gigabytes; only shapes taller than 32:1 are squeezed.
+SHARPNESS_MAX_ROWS = 32 * SHARPNESS_WIDTH
 
 THUMB_PX = 240  # longest side of review thumbnails
 PREVIEW_PX = 1600  # longest side of a photo opened from a review grid

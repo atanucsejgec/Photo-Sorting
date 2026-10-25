@@ -5,13 +5,17 @@ from PIL import Image
 from photosort.imageinfo import (
     UnreadableImage,
     analyse,
+    decode,
     image_size,
+    measuring_grey,
     open_image,
     perceptual_hash,
     sharpness,
     thumbnail,
 )
-from photosort.thresholds import DUP_HASH_MAX, REPEAT_HASH_MAX, SHARPNESS_WIDTH, THUMB_PX
+from photosort.thresholds import (
+    DUP_HASH_MAX, REPEAT_HASH_MAX, SHARPNESS_MAX_ROWS, SHARPNESS_WIDTH, THUMB_PX,
+)
 
 
 def distance(a: int, b: int) -> int:
@@ -111,3 +115,37 @@ def test_analyse_unreadable_raises(tmp_path):
     empty.write_bytes(b"")
     with pytest.raises(UnreadableImage):
         analyse(empty)
+
+
+def test_measuring_grey_caps_the_rows_of_a_tall_narrow_image():
+    assert SHARPNESS_MAX_ROWS == 32 * SHARPNESS_WIDTH
+    grey = measuring_grey(Image.new("RGB", (1, 10000), "grey"))
+    assert grey.shape == (SHARPNESS_MAX_ROWS, SHARPNESS_WIDTH)  # (16384, 512), not 5 million rows
+    assert measuring_grey(Image.new("RGB", (5000, 1), "grey")).shape == (3, SHARPNESS_WIDTH)
+
+
+def _blocks(seed: int, top: float) -> np.ndarray:
+    """A 480x640 grid of random blocks, values spread over 0..top."""
+    fine = np.random.default_rng(seed).random((48, 64)) * top
+    return np.kron(fine, np.ones((10, 10)))
+
+
+def test_decode_scales_16_bit_greys_down(tmp_path):
+    path = tmp_path / "g16.png"
+    pixels = _blocks(1, 65535).astype(np.uint16)
+    Image.fromarray(pixels).save(path)
+    with Image.open(path) as img:
+        assert img.mode == "I;16"
+    grey = np.asarray(decode(path, None).convert("L"), dtype=np.float64)
+    assert np.abs(grey - (pixels >> 8)).max() <= 1  # not clipped at 255
+
+
+def test_decode_scales_float_images(tmp_path):
+    unit = _blocks(2, 1.0).astype(np.float32)  # 0..1
+    Image.fromarray(unit).save(tmp_path / "unit.tif")
+    grey = np.asarray(decode(tmp_path / "unit.tif", None).convert("L"), dtype=np.float64)
+    assert np.abs(grey - unit * 255).max() <= 1
+    wide = (unit * 400 - 50).astype(np.float32)  # -50..350: clipped to 0..255
+    Image.fromarray(wide).save(tmp_path / "wide.tif")
+    grey = np.asarray(decode(tmp_path / "wide.tif", None).convert("L"), dtype=np.float64)
+    assert np.abs(grey - np.clip(wide, 0, 255)).max() <= 1

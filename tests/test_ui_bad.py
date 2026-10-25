@@ -296,3 +296,16 @@ def test_cancelled_finder_returns_home(qtbot, make_window, photos, monkeypatch):
     w = make_window()
     _start_bad(qtbot, w, photos)
     assert w.current_page() is w.home
+
+
+def test_start_forgets_the_last_ticks(qtbot, make_window, photos):
+    w = make_window()
+    _start_bad(qtbot, w, photos)
+    w.bad_page.cards[0].move_check.setChecked(False)
+    w.bad_page.continue_button.click()
+    assert w._bad_ticked == {"pocket.jpg"}
+    w.back_button.click()
+    w.bad_page.back_button.click()  # home
+    w.mode_buttons["date"].setChecked(True)
+    w.start_button.click()
+    assert w._bad == [] and w._bad_ticked == set()  # no old ticks for a later Back
