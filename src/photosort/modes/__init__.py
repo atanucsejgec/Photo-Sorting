@@ -75,8 +75,8 @@ def _find_faces(root: Path, include_subfolders: bool, progress: Progress = None,
     raise NotImplementedError("Face mode is run through modes.face_mode")
 
 
-def _sort_by_clip(root: Path, include_subfolders: bool, progress: Progress = None,
-                  cancel: threading.Event | None = None):
+def _run_by_window(root: Path, include_subfolders: bool, progress: Progress = None,
+                   cancel: threading.Event | None = None):
     # Content and Notes & Pages also need a CLIP engine (and Content the
     # categories); the main window runs them through modes.content and modes.notes.
     raise NotImplementedError("Content and Notes & Pages are run by the main window")
@@ -88,6 +88,6 @@ MODE_SPECS: dict[str, ModeSpec] = {
     "duplicates": ModeSpec("groups", _find_duplicates, "Duplicates", "No duplicates found."),
     "repeated": ModeSpec("groups", _find_repeated, "Repeated Shots",
                          "No repeated shots found."),
-    "notes": ModeSpec("notes", _sort_by_clip),
-    "content": ModeSpec("content", _sort_by_clip),
+    "notes": ModeSpec("notes", _run_by_window),
+    "content": ModeSpec("content", _run_by_window),
 }

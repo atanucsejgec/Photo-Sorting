@@ -75,6 +75,15 @@ def test_review_cards_and_presets(qtbot, make_page, tmp_path, make_jpeg):
     qtbot.waitUntil(lambda: all(not c.thumb_label.pixmap().isNull() for c in page.cards))
 
 
+def test_review_title(make_page, tmp_path, make_jpeg):
+    page = make_page()
+    verdicts = _verdicts(tmp_path, make_jpeg)
+    page.load(tmp_path, verdicts, ["Food"], title="2 photos might be notes or pages")
+    assert page.heading_label.text() == "2 photos might be notes or pages"
+    page.load(tmp_path, verdicts[:1], ["Food"])
+    assert page.heading_label.text() == "1 photo to check"
+
+
 def test_review_presets_previous_answers(make_page, tmp_path, make_jpeg):
     page = make_page()
     page.load(tmp_path, _verdicts(tmp_path, make_jpeg), ["Food", "Vehicles", "Pets"],
@@ -397,6 +406,7 @@ def test_content_end_to_end(qtbot, make_window, photos, make_jpeg, errors, model
     qtbot.waitUntil(lambda: w.current_page() is w.category_review_page)
     assert w.engine_threads and w.engine_threads[0] is not threading.main_thread()
     page = w.category_review_page
+    assert page.heading_label.text() == "1 photo to check"
     [card] = page.cards
     assert card.verdict.rel == "street.jpg"
     assert card.guess_label.text() == "Vehicles? 60% sure"
@@ -449,6 +459,49 @@ def test_back_from_the_summary_keeps_the_answers(qtbot, make_window, photos, mak
     w.category_review_page.continue_button.click()
     assert w.current_page() is w.summary_page
     assert w.go_button.isEnabled()
+
+
+def test_changed_answer_after_back_is_planned(qtbot, make_window, photos, make_jpeg,
+                                              models_asked):
+    _make_content_photos(photos, make_jpeg)
+    w = make_window(_content_engine())
+    _start(w, photos, "content")
+    qtbot.waitUntil(lambda: w.current_page() is w.category_review_page)
+    w.category_review_page.continue_button.click()  # as suggested
+    assert ("street.jpg", "Vehicles/street.jpg") in [(m.src, m.dst) for m in w._plan.moves]
+    w.back_button.click()
+    w.category_review_page.cards[0].choice_combo.setCurrentText("Buildings & City")
+    w.category_review_page.continue_button.click()
+    assert w.current_page() is w.summary_page
+    assert [(m.src, m.dst) for m in w._plan.moves] == [
+        ("food.jpg", "Food/food.jpg"), ("street.jpg", "Buildings & City/street.jpg")]
+
+    w.back_button.click()
+    w.category_review_page.back_button.click()
+    assert w.current_page() is w.home
+    _start(w, photos, "content")  # a new sort starts from the suggestions
+    qtbot.waitUntil(lambda: w.current_page() is w.category_review_page)
+    assert _combo_texts(w.category_review_page) == ["Vehicles"]
+
+
+def test_cancel_after_the_photos_never_opens_the_text_model(qtbot, make_window, photos,
+                                                            make_jpeg, models_asked,
+                                                            monkeypatch):
+    _make_content_photos(photos, make_jpeg)
+    engine = _content_engine()
+    w = make_window(engine)
+    real_embed = main_window.embed_photos
+
+    def embed_then_cancel(*args, cancel=None, **kwargs):
+        scan = real_embed(*args, cancel=cancel, **kwargs)
+        cancel.set()  # Cancel pressed just after the last photo
+        return scan
+
+    monkeypatch.setattr(main_window, "embed_photos", embed_then_cancel)
+    _start(w, photos, "content")
+    qtbot.waitUntil(lambda: w.current_page() is w.home)
+    QThreadPool.globalInstance().waitForDone()
+    assert engine.texts_asked == []
 
 
 def test_review_back_goes_home(qtbot, make_window, photos, make_jpeg, models_asked):
@@ -505,6 +558,7 @@ def test_notes_review_offers_the_kinds(qtbot, make_window, photos, make_jpeg, mo
     w = make_window(engine)
     _start(w, photos, "notes")
     qtbot.waitUntil(lambda: w.current_page() is w.category_review_page)
+    assert w.category_review_page.heading_label.text() == "1 photo might be notes or pages"
     [card] = w.category_review_page.cards
     combo = card.choice_combo
     assert [combo.itemText(i) for i in range(combo.count())] == [*notes.KINDS, LEAVE]

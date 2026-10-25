@@ -317,15 +317,19 @@ def model_store(tmp_path, monkeypatch):
     monkeypatch.setattr(models, "MODELS", table)
     monkeypatch.setattr(models, "models_dir", lambda: tmp_path / "models")
     store = SimpleNamespace(answer=QMessageBox.StandardButton.Yes, asked=[], errors=[],
-                            sources={k: tmp_path / "src" / f"{k}.onnx" for k in table})
+                            titles=[], sources={k: tmp_path / "src" / f"{k}.onnx" for k in table})
 
     def question(parent, title, text, *args, **kwargs):
+        store.titles.append(title)
         store.asked.append(text)
         return store.answer
 
+    def show_error(parent, text, title=model_download.TITLE):
+        store.titles.append(title)
+        store.errors.append(text)
+
     monkeypatch.setattr(QMessageBox, "question", question)
-    monkeypatch.setattr(model_download, "show_error",
-                        lambda parent, text: store.errors.append(text))
+    monkeypatch.setattr(model_download, "show_error", show_error)
     yield store
     QThreadPool.globalInstance().waitForDone()
 
@@ -378,6 +382,83 @@ def test_ensure_models_reports_damaged_download(qtbot, model_store):
     assert len(model_store.errors) == 1
     assert "is damaged, please try again" in model_store.errors[0]
     assert models.missing(["a", "b"]) == ["a", "b"]  # stops at the first error
+
+
+@pytest.fixture
+def clip_store(tmp_path, monkeypatch, model_store):
+    """model_store with the CLIP keys: small files that claim the real sizes
+    in the question (the download itself is checked against the small ones)."""
+    table = {}
+    for key, data in (("clip_visual", os.urandom(1 << 20)), ("clip_textual", b"text"),
+                      ("clip_tokenizer", b"words")):
+        src = _write(tmp_path / "src" / f"{key}.onnx", data)
+        table[key] = models.Model(key, f"{key}/model.onnx", src.as_uri(), len(data),
+                                  hashlib.sha256(data).hexdigest())
+        model_store.sources[key] = src
+    monkeypatch.setattr(models, "MODELS", table)
+    return model_store
+
+
+def _clip_question(mb: int) -> str:
+    return (f"Photo Sorter needs to download the picture-understanding model once ({mb} MB). "
+            "Photos stay on this computer; only the model is downloaded. Download it now?")
+
+
+def test_clip_question_names_the_model_and_the_missing_size(qtbot, clip_store, monkeypatch):
+    sizes = {"clip_visual": 351_613_724, "clip_textual": 254_193_396,
+             "clip_tokenizer": 3_642_073}
+    real_missing = models.missing
+    monkeypatch.setattr(models, "missing", lambda keys: [
+        k for k in real_missing(keys) if k != "clip_tokenizer"])  # as if it were there
+    for key, size in sizes.items():
+        models.MODELS[key] = dataclasses.replace(models.MODELS[key], size=size)
+    clip_store.answer = QMessageBox.StandardButton.No
+    assert model_download.ensure_models(None, models.CLIP_MODELS) is False
+    assert clip_store.asked == [_clip_question(606)]  # 351.6 + 254.2 MB, not the tokenizer
+    assert all("face" not in title.casefold() for title in clip_store.titles)
+
+    monkeypatch.setattr(models, "missing", real_missing)
+    clip_store.asked.clear()
+    assert model_download.ensure_models(None, models.CLIP_MODELS) is False
+    assert clip_store.asked == [_clip_question(609)]
+
+
+def test_clip_download_never_says_face(qtbot, clip_store, monkeypatch):
+    shown = []
+    real_progress = model_download._Downloads._progress
+
+    def watch(self, done, total):
+        shown.append((self.dialog.windowTitle(), self.dialog.labelText()))
+        real_progress(self, done, total)
+
+    monkeypatch.setattr(model_download._Downloads, "_progress", watch)
+    assert model_download.ensure_models(None, models.CLIP_MODELS) is True
+    assert models.missing(models.CLIP_MODELS) == []
+    assert shown and all("face" not in " ".join(texts).casefold() for texts in shown)
+    assert shown[0][1] == "Downloading the picture-understanding model…"
+
+    for key in models.CLIP_MODELS:
+        models.model_path(key).unlink()
+    models.MODELS["clip_visual"] = dataclasses.replace(models.MODELS["clip_visual"],
+                                                       sha256="0" * 64)
+    assert model_download.ensure_models(None, models.CLIP_MODELS) is False
+    [error] = clip_store.errors
+    assert error.startswith("Could not download the picture-understanding model: ")
+    assert all("face" not in title.casefold() for title in clip_store.titles)
+
+
+def test_face_download_keeps_its_wording(qtbot, model_store, monkeypatch):
+    shown = []
+    real_progress = model_download._Downloads._progress
+
+    def watch(self, done, total):
+        shown.append((self.dialog.windowTitle(), self.dialog.labelText()))
+        real_progress(self, done, total)
+
+    monkeypatch.setattr(model_download._Downloads, "_progress", watch)
+    assert model_download.ensure_models(None, ["a", "b"]) is True
+    assert set(shown) == {("Face models", "Downloading the face models…")}
+    assert model_store.titles == ["Face models"]
 
 
 @pytest.fixture

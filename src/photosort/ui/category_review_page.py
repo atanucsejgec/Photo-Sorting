@@ -210,15 +210,18 @@ class CategoryReviewPage(QWidget):
         self.continue_button.clicked.connect(self._finish)
 
     def load(self, root: Path, verdicts: list[Verdict], choices: list[str],
-             answers: dict[str, str | None] | None = None) -> None:
-        """Show verdicts' photos in root, each picker offering choices and set
-        to the photo's answer in answers if it has one, else to its best."""
+             answers: dict[str, str | None] | None = None, title: str | None = None) -> None:
+        """Show verdicts' photos in root under title ("N photos to check" if
+        None), each picker offering choices and set to the photo's answer in
+        answers if it has one, else to its best."""
         self.stop_thumbnails()
         self._generation += 1
         root = Path(root)
         answers = answers or {}
         n = len(verdicts)
-        self.heading_label.setText(f"{n} photo{'' if n == 1 else 's'} to check")
+        if title is None:
+            title = f"{n} photo{'' if n == 1 else 's'} to check"
+        self.heading_label.setText(title)
         self.cards = []
         for i, verdict in enumerate(verdicts):
             card = CategoryCard(root, verdict, choices)

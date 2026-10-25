@@ -136,8 +136,8 @@ def _sort_by_clip(root: Path, include_subfolders: bool, mode: str, choices: list
     with AnalysisCache(root) as cache:
         scan = embed_photos(root, include_subfolders, engine.image_embedding,
                             progress=progress, cancel=cancel, cache=cache)
-    if scan is None:
-        return None
+    if scan is None or (cancel is not None and cancel.is_set()):
+        return None  # cancelled: the text model is never opened
     if not scan.embeddings:  # nothing to judge: the text model is never opened
         return _ClipSort(choices, scan, {}, [])
     text = engine.text_embeddings
@@ -683,8 +683,12 @@ class MainWindow(QMainWindow):
     def _ask_clip_questions(self) -> None:
         """Show the unsure photos, picked as last answered; the answers are then planned."""
         sort = self._clip
+        title = None  # "N photos to check"
+        if self._mode == "notes":
+            n = len(sort.unsure)
+            title = f"{n} photo{'' if n == 1 else 's'} might be notes or pages"
         self.category_review_page.load(self._root, sort.unsure, sort.choices,
-                                       self._clip_answers)
+                                       self._clip_answers, title)
         self._show(self.category_review_page)
 
     def _plan_clip_moves(self, answers: dict[str, str | None]) -> None:
