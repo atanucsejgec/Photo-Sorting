@@ -10,6 +10,25 @@ from PIL import Image, ImageFilter
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _gc_on_the_gui_thread(qapp):
+    """Collect garbage on the GUI thread only, as the app does (see gc_guard)."""
+    from photosort.ui import gc_guard
+
+    gc_guard.install(qapp)
+    yield
+    gc_guard.uninstall()
+
+
+@pytest.fixture(autouse=True)
+def _gc_check_after_each_test():
+    """A test that never runs the event loop gets its garbage checked too."""
+    yield
+    from photosort.ui import gc_guard
+
+    gc_guard.check()
+
+
 @pytest.fixture
 def case_sensitive_fs(tmp_path):
     """Skip unless tmp_path can hold names differing only in case."""

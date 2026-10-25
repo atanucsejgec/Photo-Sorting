@@ -6,7 +6,8 @@ queued to slots there: connect them to methods of a QObject that lives on the
 GUI thread (such as the main window).
 
 When the function raises, its traceback is logged to the "photosort" logger
-before the error signal carries the message.
+before the error signal carries the message. Once a Task's result or error
+has been delivered, the GUI thread's garbage check runs (see gc_guard).
 """
 
 import logging
@@ -15,6 +16,8 @@ import traceback
 from collections.abc import Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+
+from photosort.ui import gc_guard
 
 _log = logging.getLogger("photosort")
 
@@ -43,6 +46,9 @@ class Task(QRunnable):
         self.cancel_event = threading.Event()
 
     def start(self) -> None:
+        """Run on the pool. Connect to the signals first: the garbage check,
+        connected here, then runs after them."""
+        gc_guard.watch(self.signals)
         QThreadPool.globalInstance().start(self)
 
     def run(self) -> None:

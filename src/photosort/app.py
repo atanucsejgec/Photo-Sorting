@@ -9,6 +9,7 @@ import platformdirs
 from PySide6.QtWidgets import QApplication
 
 from photosort.settings import default_path, load_settings
+from photosort.ui import gc_guard
 from photosort.ui.main_window import TITLE, MainWindow
 
 LOG_MAX_BYTES = 1024 * 1024
@@ -48,6 +49,7 @@ def main() -> int:
     except OSError as e:
         print(f"Photo Sorter: could not open the log file: {e}", file=sys.stderr)
     app = QApplication.instance() or QApplication(sys.argv)
+    gc_guard.install(app)  # garbage is collected on this thread only, never on a worker
     QApplication.setApplicationName(TITLE)
     # Matches scripts/install-desktop-entry.sh, so the app menu entry's icon
     # and name are used for the window (the Wayland app id).
