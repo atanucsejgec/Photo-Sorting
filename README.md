@@ -13,9 +13,14 @@ Working now:
 - **Repeated shots** mode: finds burst shots taken seconds apart, with a full-screen
   compare (arrow keys, side by side, zoom), and moves the ones you don't keep into
   `Repeated Shots/`.
+- **Face** mode: give it one photo and type the names of the people in it. It remembers
+  them, finds them in every photo, and moves each photo into a folder named after the
+  person (`Atanu/`), or `Atanu & Zoe/` when several of them are in it. When it isn't
+  sure, it asks ("Is this Atanu? 72% sure"). Strangers are ignored. Face data stays on
+  this computer.
 
-Nothing is ever deleted. In progress: Face. Coming later: Notes & Pages, Type,
-Content, Bad photos, Events, Location, Camera.
+Nothing is ever deleted. Coming later: Notes & Pages, Type, Content, Bad photos,
+Events, Location, Camera.
 
 ## Set up on a new computer (Linux)
 
@@ -35,6 +40,11 @@ Content, Bad photos, Events, Location, Camera.
    cd Photo-Sorting
    uv sync                              # downloads Python 3.12 and the libraries
    ```
+
+   `uv sync` also downloads about 2 GB of NVIDIA CUDA libraries, so Face mode can use
+   the graphics card. On a computer without an NVIDIA card, use
+   `uv sync --no-group gpu` instead; Face mode then runs on the CPU (about half as
+   fast). The app menu launcher picks the right one by itself.
 
 3. Add it to the app menu:
 
@@ -57,6 +67,10 @@ uv sync
 
 ## Good to know
 
+- The first time you use Face mode it downloads its face models (about 190 MB) into
+  `~/.local/share/photo-sorter/models`, after asking. The people you name are kept in
+  `~/.local/share/photo-sorter/people`. Neither is part of this repository.
+- Settings → **Use GPU** switches Face mode between the graphics card and the CPU.
 - Undo records live in a hidden `.photosort` folder inside each folder you sort.
   Keep it if you want Undo to work later.
 - Settings and the log file are kept per computer, in `~/.config/photo-sorter`
