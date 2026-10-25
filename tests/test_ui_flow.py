@@ -77,11 +77,11 @@ def test_available_modes(make_window):
     enabled = [b for b in buttons if b.isEnabled()]
     disabled = [b for b in buttons if not b.isEnabled()]
     assert [b.text() for b in enabled] == [
-        "Date", "Face", "Duplicates", "Repeated shots", "Type / source", "Bad photos",
-        "Events", "Location", "Camera"]
+        "Date", "Face", "Duplicates", "Repeated shots", "Notes & Pages", "Type / source",
+        "Content", "Bad photos", "Events", "Location", "Camera"]
     assert enabled[0].isChecked()
-    assert len(disabled) == 2
-    assert all("coming soon" in b.text() for b in disabled)
+    assert len(disabled) == 0
+    assert not any("coming soon" in b.text() for b in buttons)
     assert all(key in MODE_SPECS for key, _, available in MODES if available)
 
 

@@ -38,6 +38,7 @@ class Model:
 
 
 _BUFFALO_L = "https://huggingface.co/immich-app/buffalo_l/resolve/main"
+_CLIP = "https://huggingface.co/immich-app/ViT-B-32__openai/resolve/main"
 
 MODELS: dict[str, Model] = {
     "face_detection": Model(
@@ -54,7 +55,31 @@ MODELS: dict[str, Model] = {
         174_383_860,
         "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43",
     ),
+    "clip_visual": Model(
+        "content image",
+        "ViT-B-32__openai/visual/model.onnx",
+        f"{_CLIP}/visual/model.onnx",
+        351_613_724,
+        "33a3df41ceef21acdf371af00f6dd0456ec1f9eba24d03a7720f9c3734e40859",
+    ),
+    "clip_textual": Model(
+        "content text",
+        "ViT-B-32__openai/textual/model.onnx",
+        f"{_CLIP}/textual/model.onnx",
+        254_193_396,
+        "b80cf0af751533a6712d92247f0ddc0c95208748bc59a1a27f33e67be6864e3b",
+    ),
+    "clip_tokenizer": Model(
+        "content word list",
+        "ViT-B-32__openai/textual/tokenizer.json",
+        f"{_CLIP}/textual/tokenizer.json",
+        3_642_073,
+        "6d9109cc838977f3ca94a379eec36aecc7c807e1785cd729660ca2fc0171fb35",
+    ),
 }
+
+# The files the Content and Notes & Pages modes need (OpenCLIP ViT-B/32).
+CLIP_MODELS = ["clip_visual", "clip_textual", "clip_tokenizer"]
 
 
 def models_dir() -> Path:

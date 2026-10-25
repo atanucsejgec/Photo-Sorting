@@ -14,8 +14,23 @@ from pathlib import Path
 
 import platformdirs
 
+from photosort.naming import fit_name, fold, safe_name
+from photosort.scanner import skipped_folder
 from photosort.thresholds import (
-    EVENT_GAP_HOURS, EVENT_GAP_HOURS_RANGE, EVENT_MIN_FILES, EVENT_MIN_FILES_RANGE,
+    CATEGORY_NAME_MAX,
+    CONTENT_CATEGORIES_MAX,
+    EVENT_GAP_HOURS,
+    EVENT_GAP_HOURS_RANGE,
+    EVENT_MIN_FILES,
+    EVENT_MIN_FILES_RANGE,
+    FOLDER_NAME_MAX,
+    FOLDER_NAME_MAX_BYTES,
+)
+
+# The Content mode's categories until the owner edits them, in this order.
+DEFAULT_CONTENT_CATEGORIES: tuple[str, ...] = (
+    "Food", "Pets & Animals", "Nature & Landscapes", "Selfies & People",
+    "Buildings & City", "Vehicles", "Events & Celebrations", "Text & Documents",
 )
 
 
@@ -29,11 +44,58 @@ class Settings:
     face_people: list[str] = field(default_factory=list)
     event_gap_hours: int = EVENT_GAP_HOURS
     event_min_files: int = EVENT_MIN_FILES
+    content_categories: list[str] = field(
+        default_factory=lambda: list(DEFAULT_CONTENT_CATEGORIES))
 
 
 def _int_in(low: int, high: int):
     """A check that a value is an int (not a bool) from low to high."""
     return lambda v: type(v) is int and low <= v <= high
+
+
+def _empty(name: str) -> bool:
+    """Whether nothing is left of name as a folder name (safe_name gives "_" then)."""
+    return safe_name(name) == "_"
+
+
+def _folder_key(name: str) -> str:
+    """The Content folder of category name, as folders are matched."""
+    return fold(fit_name(name, FOLDER_NAME_MAX, FOLDER_NAME_MAX_BYTES))
+
+
+def category_problem(name: str, others: list[str]) -> str | None:
+    """What is wrong with name as a new or renamed category beside others
+    (the rest of the list), for the owner; None if nothing is."""
+    if not name.strip():
+        return "Type a name."
+    if not any(c.isalnum() for c in name):  # "_" or "?" would make a folder of nothing
+        return "Use at least one letter or number."
+    if len(name) > CATEGORY_NAME_MAX:
+        return "That name is too long."
+    if skipped_folder(safe_name(name)):
+        return "Photo Sorter uses that name for its own folder. Pick another name."
+    key = _folder_key(name)
+    for other in others:
+        if _folder_key(other) == key:
+            return f"There's already a category called {other}."
+    return None
+
+
+def valid_category_list(names) -> bool:
+    """Whether names (as loaded) is a usable category list: a list of 1 to
+    CONTENT_CATEGORIES_MAX strings, none empty as a folder name, and no two
+    going to the same folder.
+
+    Looser than category_problem: a name the editor would refuse as too long
+    or as one of the app's own folders still makes a valid folder (fit_name
+    cuts it short or prefixes "_"), so a list holding one is kept.
+    """
+    if not (isinstance(names, list) and 1 <= len(names) <= CONTENT_CATEGORIES_MAX
+            and all(isinstance(n, str) for n in names)):
+        return False
+    if any(_empty(n) for n in names):
+        return False
+    return len({_folder_key(n) for n in names}) == len(names)
 
 
 _VALID = {
@@ -43,6 +105,7 @@ _VALID = {
     "face_people": lambda v: isinstance(v, list) and all(isinstance(i, str) for i in v),
     "event_gap_hours": _int_in(*EVENT_GAP_HOURS_RANGE),
     "event_min_files": _int_in(*EVENT_MIN_FILES_RANGE),
+    "content_categories": valid_category_list,
 }
 
 

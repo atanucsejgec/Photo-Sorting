@@ -6,10 +6,12 @@ reviews first; the files not kept are then planned to be set aside (see
 photosort.modes.MODE_SPECS). Bad photos mode finds bad photos that the owner
 ticks; the ticked ones are planned to be set aside. Events mode finds events
 (with the gap and minimum from Settings) that the owner names, merges, splits
-or skips before they are planned. Face mode first makes
-sure the face models are there, then shows the remembered people to pick
-from (or to add to); the photos are then searched for those people, the
-owner is asked about the unsure matches, and the moves planned.
+or skips before they are planned. Face mode first makes sure the face models
+are there, then shows the remembered people to pick from (or to add to); the
+photos are then searched for those people, the owner is asked about the
+unsure matches, and the moves planned. Content and Notes & Pages first make
+sure the CLIP models are there, then describe every photo with CLIP and judge
+it; the owner picks a folder for each unsure photo, and the moves are planned.
 
 The window owns the one PeopleStore of the app: the Face setup page, the
 naming dialog and Settings all use it.
@@ -22,6 +24,7 @@ using it, and closing the window cancels it and waits for the pool to finish.
 
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -34,19 +37,24 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from photosort.ai.models import CLIP_MODELS
 from photosort.cache import AnalysisCache
+from photosort.clip import ClipEngine
 from photosort.executor import ExecResult, execute
 from photosort.faces import FaceEngine
 from photosort.journal import RunJournal
 from photosort.groups import Candidate, Group, plan_set_aside
-from photosort.modes import MODE_SPECS, MODES
+from photosort.modes import MODE_SPECS, MODES, content, notes
+from photosort.modes._clip_scan import ClipScan, embed_photos
 from photosort.modes.bad_photos import plan_bad
+from photosort.modes.content import Verdict
 from photosort.modes.events import Event, plan_events
 from photosort.modes.face_mode import Answer, FaceScan, find_face_matches, plan_faces
 from photosort.people import PeopleError, PeopleStore, Person
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
 from photosort.ui.bad_photos_page import BadPhotosPage
+from photosort.ui.category_review_page import CategoryReviewPage
 from photosort.ui.events_page import EventsPage
 from photosort.ui.face_naming_dialog import FaceNamingDialog, pick_photo
 from photosort.ui.face_question_page import FaceQuestionPage
@@ -116,6 +124,39 @@ def _scan_faces(root: Path, include_subfolders: bool, people: list[Person],
                                  progress=progress, cancel=cancel, cache=cache)
 
 
+@dataclass
+class _ClipSort:
+    """A Content or Notes & Pages sort, judged and waiting for its unsure answers."""
+
+    choices: list[str]  # the categories (or kinds of paper) to pick from
+    scan: ClipScan
+    sure: dict[str, str]  # rel -> category
+    unsure: list[Verdict]
+
+
+def _sort_by_clip(root: Path, include_subfolders: bool, mode: str, choices: list[str],
+                  engine_factory: Callable[[bool], ClipEngine], use_gpu: bool,
+                  progress=None, cancel=None) -> _ClipSort | None:
+    """Describe every photo with a CLIP engine made here, on the worker
+    thread, through root's analysis cache; then judge them for mode
+    ("content", choices being the categories, or "notes")."""
+    engine = engine_factory(use_gpu)
+    with AnalysisCache(root) as cache:
+        scan = embed_photos(root, include_subfolders, engine.image_embedding,
+                            progress=progress, cancel=cancel, cache=cache)
+    if scan is None or (cancel is not None and cancel.is_set()):
+        return None  # cancelled: the text model is never opened
+    if not scan.embeddings:  # nothing to judge: the text model is never opened
+        return _ClipSort(choices, scan, {}, [])
+    text = engine.text_embeddings
+    if mode == "content":
+        sure, unsure = content.judge(scan, choices, content.category_embeddings(text, choices),
+                                     text(content.background_prompts()))
+    else:
+        sure, unsure = notes.judge(scan, text(notes.PAPER_PROMPTS), text(notes.OTHER_PROMPTS))
+    return _ClipSort(choices, scan, sure, unsure)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: Settings, settings_path: Path | None = None,
                  people_store: PeopleStore | None = None) -> None:
@@ -128,6 +169,10 @@ class MainWindow(QMainWindow):
         self.engine_factory: Callable[[bool], FaceEngine] = FaceEngine
         self._face_scan: FaceScan | None = None  # kept for Back on the summary
         self._face_people: list[Person] = []  # the people the scan looked for
+        # Makes the CLIP engine, given Settings' use_gpu; the models open on first use.
+        self.clip_engine_factory: Callable[[bool], ClipEngine] = ClipEngine
+        self._clip: _ClipSort | None = None  # kept for Back on the summary
+        self._clip_answers: dict[str, str | None] = {}  # the unsure ones, as last answered
         self._task: Task | None = None
         self._busy = False  # a Task is running
         self._root: Path | None = None
@@ -156,11 +201,12 @@ class MainWindow(QMainWindow):
         self.events_page = self._build_events()
         self.face_setup_page = self._build_face_setup()
         self.face_question_page = self._build_face_questions()
+        self.category_review_page = self._build_category_review()
         self.summary_page = self._build_summary()
         self.done_page = self._build_done()
         for page in (self.home, self.progress_page, self.review_page, self.bad_page,
                      self.events_page, self.face_setup_page, self.face_question_page,
-                     self.summary_page, self.done_page):
+                     self.category_review_page, self.summary_page, self.done_page):
             self.stack.addWidget(page)
         self._show(self.home)
 
@@ -274,6 +320,12 @@ class MainWindow(QMainWindow):
         page = FaceQuestionPage()
         page.finished.connect(self._plan_face_moves)
         page.cancelled.connect(self._back_to_face_setup)
+        return page
+
+    def _build_category_review(self) -> CategoryReviewPage:
+        page = CategoryReviewPage()
+        page.finished.connect(self._plan_clip_moves)
+        page.cancelled.connect(lambda: self._show(self.home))
         return page
 
     def _build_summary(self) -> QWidget:
@@ -456,6 +508,7 @@ class MainWindow(QMainWindow):
         self._bad_ticked = set()
         self._events = []
         self._face_scan = None
+        self._clip = None
         root = self._folder()
         if root is None:
             self.show_error("This folder doesn't exist any more.")
@@ -472,6 +525,9 @@ class MainWindow(QMainWindow):
         if spec.kind == "face" and not ensure_models(self, FACE_MODELS):
             self._show(self.home)
             return
+        if spec.kind in ("content", "notes") and not ensure_models(self, CLIP_MODELS):
+            self._show(self.home)
+            return
         self._root = root
         self._mode = mode
         self._include_subfolders = self.subfolders_check.isChecked()
@@ -481,6 +537,9 @@ class MainWindow(QMainWindow):
 
         if spec.kind == "face":
             self._show_face_setup()
+            return
+        if spec.kind in ("content", "notes"):
+            self._start_clip_sort()
             return
         prepare = spec.prepare
         if spec.kind == "bad":
@@ -693,6 +752,57 @@ class MainWindow(QMainWindow):
         self._show(self.home)
         self.show_error(f"Could not look for faces: {message}")
 
+    # ----- content and notes & pages ---------------------------------------
+
+    def _start_clip_sort(self) -> None:
+        choices = (list(self.settings.content_categories) if self._mode == "content"
+                   else list(notes.KINDS))
+        self._clip_answers = {}
+        self._begin_progress("Looking at photos…", joiner="of")
+        self._run(
+            Task(_sort_by_clip, self._root, self._include_subfolders, self._mode, choices,
+                 self.clip_engine_factory, self.settings.use_gpu),
+            self._on_clip_sort, self._on_clip_sort_error,
+        )
+
+    def _on_clip_sort(self, sort: _ClipSort | None) -> None:
+        if sort is None or self._cancel_pressed():
+            self._show(self.home)
+            return
+        self._clip = sort
+        if sort.unsure:
+            self._ask_clip_questions()
+        else:
+            self._plan_clip_moves({})
+
+    def _ask_clip_questions(self) -> None:
+        """Show the unsure photos, picked as last answered; the answers are then planned."""
+        sort = self._clip
+        title = None  # "N photos to check"
+        if self._mode == "notes":
+            n = len(sort.unsure)
+            title = f"{n} photo{'' if n == 1 else 's'} might be notes or pages"
+        self.category_review_page.load(self._root, sort.unsure, sort.choices,
+                                       self._clip_answers, title)
+        self._show(self.category_review_page)
+
+    def _plan_clip_moves(self, answers: dict[str, str | None]) -> None:
+        self._clip_answers = dict(answers)
+        planner = content.plan_content if self._mode == "content" else notes.plan_notes
+        sort = self._clip
+        try:
+            plan = planner(self._root, sort.scan, sort.sure, answers)
+        except OSError as e:  # e.g. the drive was unplugged during the review
+            self._clip = None
+            self._show(self.home)
+            self.show_error(f"Could not plan the moves: {e}")
+            return
+        self._on_plan(plan)
+
+    def _on_clip_sort_error(self, message: str) -> None:
+        self._show(self.home)
+        self.show_error(f"Could not look at the photos: {message}")
+
     # ----- summary ---------------------------------------------------------
 
     def _on_plan(self, plan: Plan | None) -> None:
@@ -715,10 +825,13 @@ class MainWindow(QMainWindow):
         self._show(self.summary_page)
 
     def _back_from_summary(self) -> None:
-        """Back to the review, the bad photos, the events or the face
-        questions, every answer intact, if there was one; to the people
-        picked for a face sort; else Home."""
-        if self._events:
+        """Back to the unsure photos, the events, the bad photos, the review or
+        the face questions, every answer intact, if there was one; to the
+        people picked for a face sort; else Home."""
+        if self._clip is not None and self._clip.unsure:
+            self._plan = None  # the answers make a fresh one
+            self._ask_clip_questions()
+        elif self._events:
             self._plan = None  # the page, as the owner left it, makes a fresh one
             self._show(self.events_page)
         elif self._bad:
@@ -773,6 +886,7 @@ class MainWindow(QMainWindow):
         self._events = []
         self.events_page.stop_thumbnails()
         self._face_scan = None
+        self._clip = None
         self._begin_progress("Moving…", len(plan.moves))
         self._run(Task(execute, root, plan, journal), self._on_executed, self._on_execute_error)
 
@@ -838,6 +952,7 @@ class MainWindow(QMainWindow):
         self.review_page.stop_thumbnails()
         self.bad_page.stop_thumbnails()
         self.events_page.stop_thumbnails()
+        self.category_review_page.stop_thumbnails()
         self.face_question_page.stop_loading()
         QThreadPool.globalInstance().waitForDone()
         super().closeEvent(event)
