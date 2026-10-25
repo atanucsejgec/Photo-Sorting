@@ -12,6 +12,7 @@ from photosort.modes import MODE_SPECS, MODES, date_mode
 from photosort.people import PeopleStore
 from photosort.settings import Settings, load_settings
 from photosort.ui import main_window
+from photosort.ui.flows import groups as groups_flow
 from photosort.ui.main_window import MainWindow
 
 EXIF = "2025:02:20 10:00:00"
@@ -575,7 +576,7 @@ def test_planning_error_goes_home(qtbot, make_window, photos, make_pattern_jpeg,
     def unplugged(*args, **kwargs):
         raise OSError("drive gone")
 
-    monkeypatch.setattr(main_window, "plan_set_aside", unplugged)
+    monkeypatch.setattr(groups_flow, "plan_set_aside", unplugged)
     _burst(photos, make_pattern_jpeg)
     w = make_window()
     _start_mode(qtbot, w, photos, "repeated")
@@ -585,6 +586,50 @@ def test_planning_error_goes_home(qtbot, make_window, photos, make_pattern_jpeg,
     assert errors == ["Could not plan the moves: drive gone"]
     # the analysis cache is in .photosort; no photo moved
     assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == ["a.jpg", "b.jpg"]
+
+
+def test_back_to_cleared_on_start_and_go(qtbot, make_window, photos, make_pattern_jpeg,
+                                         errors, monkeypatch):
+    _burst(photos, make_pattern_jpeg)
+    w = make_window()
+    _start_mode(qtbot, w, photos, "date")
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    assert w.back_to is None  # a plain mode has nothing to go back to
+
+    def to_summary(start=True):
+        if start:
+            w.start_button.click()
+        qtbot.waitUntil(lambda: w.current_page() is w.review_page)
+        w.review_page.keep_one_button.click()
+        assert w.current_page() is w.summary_page
+        assert w.back_to is not None  # the flow set it at the summary
+
+    w.mode_buttons["repeated"].setChecked(True)
+    to_summary()
+    w.back_button.click()
+    w.review_page.cancel_button.click()  # home
+    w.start_button.click()
+    assert w.back_to is None and w.flow_state is None
+
+    to_summary(start=False)
+    w.go_button.click()
+    assert w.back_to is None and w.flow_state is None
+    qtbot.waitUntil(lambda: w.current_page() is w.done_page)
+    w.undo_button.click()
+    qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
+    w.home_button.click()
+
+    to_summary()
+    w.back_button.click()  # the review again; its planning then fails
+
+    def unplugged(*args, **kwargs):
+        raise OSError("drive gone")
+
+    monkeypatch.setattr(groups_flow, "plan_set_aside", unplugged)
+    w.review_page.keep_one_button.click()
+    assert w.current_page() is w.home
+    assert w.back_to is None and w.flow_state is None
+    assert errors == ["Could not plan the moves: drive gone"]
 
 
 def _stubborn(result, started: threading.Event):

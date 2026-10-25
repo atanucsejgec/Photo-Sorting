@@ -8,8 +8,8 @@ from PySide6.QtGui import QImage
 from photosort.groups import Candidate
 from photosort.people import PeopleStore
 from photosort.settings import Settings
-from photosort.ui import main_window
 from photosort.ui.bad_photos_page import BadPhotosPage
+from photosort.ui.flows import bad as bad_flow
 from photosort.ui.main_window import MainWindow
 from photosort.ui.photo_preview import PhotoPreview
 
@@ -278,7 +278,7 @@ def test_planning_error_goes_home(qtbot, make_window, photos, errors, monkeypatc
     def unplugged(*args, **kwargs):
         raise OSError("drive gone")
 
-    monkeypatch.setattr(main_window, "plan_bad", unplugged)
+    monkeypatch.setattr(bad_flow, "plan_bad", unplugged)
     w = make_window()
     _start_bad(qtbot, w, photos)
     w.bad_page.continue_button.click()
@@ -303,9 +303,9 @@ def test_start_forgets_the_last_ticks(qtbot, make_window, photos):
     _start_bad(qtbot, w, photos)
     w.bad_page.cards[0].move_check.setChecked(False)
     w.bad_page.continue_button.click()
-    assert w._bad_ticked == {"pocket.jpg"}
+    assert w.back_to is not None
     w.back_button.click()
     w.bad_page.back_button.click()  # home
     w.mode_buttons["date"].setChecked(True)
     w.start_button.click()
-    assert w._bad == [] and w._bad_ticked == set()  # no old ticks for a later Back
+    assert w.back_to is None and w.flow_state is None  # no old ticks for a later Back

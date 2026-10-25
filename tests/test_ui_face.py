@@ -19,6 +19,7 @@ from photosort.ui import face_question_page
 from photosort.ui.face_naming_dialog import FaceNamingDialog
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage, RememberedPeopleDialog
+from photosort.ui.flows import face as face_flow
 from photosort.ui.main_window import MainWindow
 from photosort.ui.settings_dialog import SettingsDialog
 
@@ -1031,7 +1032,7 @@ def test_planning_error_after_questions_goes_home(qtbot, make_window, photos, st
     def unplugged(*args, **kwargs):
         raise OSError("the drive is gone")
 
-    monkeypatch.setattr(main_window, "plan_faces", unplugged)
+    monkeypatch.setattr(face_flow, "plan_faces", unplugged)
     w = make_window(engine)
     _to_setup(w, photos)
     _tick(w.face_setup_page, "Atanu")

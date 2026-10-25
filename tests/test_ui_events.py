@@ -10,8 +10,8 @@ from photosort.modes import events
 from photosort.modes.events import Event
 from photosort.people import PeopleStore
 from photosort.settings import Settings
-from photosort.ui import main_window
 from photosort.ui.events_page import EventsPage
+from photosort.ui.flows import events as events_flow
 from photosort.ui.main_window import MainWindow
 
 GOA = datetime(2025, 1, 10, 9, 0)
@@ -340,7 +340,7 @@ def test_planning_error_goes_home(qtbot, make_window, photos, errors, monkeypatc
     def unplugged(*args, **kwargs):
         raise OSError("drive gone")
 
-    monkeypatch.setattr(main_window, "plan_events", unplugged)
+    monkeypatch.setattr(events_flow, "plan_events", unplugged)
     w = make_window()
     _start_events(qtbot, w, photos)
     w.events_page.continue_button.click()
@@ -354,9 +354,9 @@ def test_start_forgets_the_last_events(qtbot, make_window, photos):
     w = make_window()
     _start_events(qtbot, w, photos)
     w.events_page.continue_button.click()
-    assert w._events
+    assert w.back_to is not None
     w.back_button.click()
     w.events_page.back_button.click()  # home
     w.mode_buttons["date"].setChecked(True)
     w.start_button.click()
-    assert w._events == []  # no old events for a later Back
+    assert w.back_to is None and w.flow_state is None  # no old events for a later Back

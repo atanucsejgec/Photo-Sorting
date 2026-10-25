@@ -19,6 +19,7 @@ from photosort.settings import DEFAULT_CONTENT_CATEGORIES, Settings
 from photosort.ui import main_window
 from photosort.ui.category_editor import CategoryEditor, CategoryNameDialog
 from photosort.ui.category_review_page import LEAVE, CategoryReviewPage
+from photosort.ui.flows import clip as clip_flow
 from photosort.ui.main_window import MainWindow
 
 CATEGORIES = list(DEFAULT_CONTENT_CATEGORIES)
@@ -495,14 +496,14 @@ def test_cancel_after_the_photos_never_opens_the_text_model(qtbot, make_window, 
     _make_content_photos(photos, make_jpeg)
     engine = _content_engine()
     w = make_window(engine)
-    real_embed = main_window.embed_photos
+    real_embed = clip_flow.embed_photos
 
     def embed_then_cancel(*args, cancel=None, **kwargs):
         scan = real_embed(*args, cancel=cancel, **kwargs)
         cancel.set()  # Cancel pressed just after the last photo
         return scan
 
-    monkeypatch.setattr(main_window, "embed_photos", embed_then_cancel)
+    monkeypatch.setattr(clip_flow, "embed_photos", embed_then_cancel)
     _start(w, photos, "content")
     qtbot.waitUntil(lambda: w.current_page() is w.home)
     QThreadPool.globalInstance().waitForDone()
@@ -518,8 +519,8 @@ def test_sort_by_clip_judges_a_category_by_the_mean_of_its_parts(tmp_path):
                     "a photo of something else"],
                    {"cat.jpg": {"a photo of animals": 0.3, "a photo of food": food}})
     choices = ["Pets & Animals", "Food"]
-    result = main_window._sort_by_clip(tmp_path, False, "content", choices,
-                                       lambda use_gpu: engine, False)
+    result = clip_flow._sort_by_clip(tmp_path, False, "content", choices,
+                                    lambda use_gpu: engine, False)
     assert engine.texts_asked == ["a photo of pets", "a photo of animals", "a photo of food",
                                   "a photo of something else"]
     assert result.sure == {}

@@ -1,22 +1,17 @@
 """The main window: Home, Progress, Review, Bad photos, Events, Face setup,
 Face questions, Summary and Done pages for a sort.
 
-A mode either plans its moves straight away, or finds groups that the owner
-reviews first; the files not kept are then planned to be set aside (see
-photosort.modes.MODE_SPECS). Bad photos mode finds bad photos that the owner
-ticks; the ticked ones are planned to be set aside. Events mode finds events
-(with the gap and minimum from Settings) that the owner names, merges, splits
-or skips before they are planned. Face mode first makes sure the face models
-are there, then shows the remembered people to pick from (or to add to); the
-photos are then searched for those people, the owner is asked about the
-unsure matches, and the moves planned. Content and Notes & Pages first make
-sure the CLIP models are there, then describe every photo with CLIP and judge
-it; the owner picks a folder for each unsure photo, and the moves are planned.
+A sort runs as one of the flows in photosort.ui.flows, chosen by the mode's
+kind (see photosort.modes.MODE_SPECS). The window is their shell: it checks
+the folder and the mode, then hands over to the flow, which plans the moves
+(after the owner's review, for some) and shows them on the Summary; Go then
+moves them, and Undo puts them back. Back on the Summary calls the flow's
+back_to, if it set one, else goes Home.
 
 The window owns the one PeopleStore of the app: the Face setup page, the
 naming dialog and Settings all use it.
 
-Slow work runs in a worker.Task. Only one Task runs at a time (self._busy
+Slow work runs in a worker.Task. Only one Task runs at a time (self.busy
 guards every way of starting one); the window keeps a reference to the last
 Task (self._task) so it is not garbage-collected while its thread may still be
 using it, and closing the window cancels it and waits for the pool to finish.
@@ -24,41 +19,31 @@ using it, and closing the window cancels it and waits for the pool to finish.
 
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 
 from PySide6.QtCore import QThreadPool, QUrl
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QCheckBox, QDialog, QFileDialog, QHBoxLayout,
+    QAbstractItemView, QButtonGroup, QCheckBox, QFileDialog, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressBar,
     QPushButton, QRadioButton, QStackedWidget, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
-from photosort.ai.models import CLIP_MODELS
-from photosort.cache import AnalysisCache
 from photosort.clip import ClipEngine
 from photosort.executor import ExecResult, execute
 from photosort.faces import FaceEngine
 from photosort.journal import RunJournal
-from photosort.groups import Candidate, Group, plan_set_aside
-from photosort.modes import MODE_SPECS, MODES, content, notes
-from photosort.modes._clip_scan import ClipScan, embed_photos
-from photosort.modes.bad_photos import plan_bad
-from photosort.modes.content import Verdict
-from photosort.modes.events import Event, plan_events
-from photosort.modes.face_mode import Answer, FaceScan, find_face_matches, plan_faces
-from photosort.people import PeopleError, PeopleStore, Person
+from photosort.modes import MODE_SPECS, MODES
+from photosort.people import PeopleStore
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
 from photosort.ui.bad_photos_page import BadPhotosPage
 from photosort.ui.category_review_page import CategoryReviewPage
 from photosort.ui.events_page import EventsPage
-from photosort.ui.face_naming_dialog import FaceNamingDialog, pick_photo
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
+from photosort.ui.flows import bad, clip, events, face, groups, plain
 from photosort.ui.history_dialog import HistoryDialog, undo_summary
 from photosort.ui.model_download import ensure_models
 from photosort.ui.review_page import ReviewPage
@@ -67,7 +52,10 @@ from photosort.ui.worker import Task
 from photosort.undo import UndoBlocked, UndoResult, undo_run
 
 TITLE = "Photo Sorter"
-FACE_MODELS = ("face_detection", "face_recognition")
+
+# The flow that runs each kind of mode.
+_FLOWS = {"plan": plain, "groups": groups, "bad": bad, "events": events, "face": face,
+          "content": clip, "notes": clip}
 
 
 def _heading(text: str) -> QLabel:
@@ -113,50 +101,6 @@ def _undo_with_message(root: Path, run_id: str, progress=None) -> UndoResult:
         raise RuntimeError(f"Undo the newer run(s) first: {runs}") from e
 
 
-def _scan_faces(root: Path, include_subfolders: bool, people: list[Person],
-                engine_factory: Callable[[bool], FaceEngine], use_gpu: bool,
-                progress=None, cancel=None) -> FaceScan | None:
-    """find_face_matches with a face engine made here, on the worker thread,
-    and root's analysis cache."""
-    engine = engine_factory(use_gpu)
-    with AnalysisCache(root) as cache:
-        return find_face_matches(root, include_subfolders, people, engine.analyse,
-                                 progress=progress, cancel=cancel, cache=cache)
-
-
-@dataclass
-class _ClipSort:
-    """A Content or Notes & Pages sort, judged and waiting for its unsure answers."""
-
-    choices: list[str]  # the categories (or kinds of paper) to pick from
-    scan: ClipScan
-    sure: dict[str, str]  # rel -> category
-    unsure: list[Verdict]
-
-
-def _sort_by_clip(root: Path, include_subfolders: bool, mode: str, choices: list[str],
-                  engine_factory: Callable[[bool], ClipEngine], use_gpu: bool,
-                  progress=None, cancel=None) -> _ClipSort | None:
-    """Describe every photo with a CLIP engine made here, on the worker
-    thread, through root's analysis cache; then judge them for mode
-    ("content", choices being the categories, or "notes")."""
-    engine = engine_factory(use_gpu)
-    with AnalysisCache(root) as cache:
-        scan = embed_photos(root, include_subfolders, engine.image_embedding,
-                            progress=progress, cancel=cancel, cache=cache)
-    if scan is None or (cancel is not None and cancel.is_set()):
-        return None  # cancelled: the text model is never opened
-    if not scan.embeddings:  # nothing to judge: the text model is never opened
-        return _ClipSort(choices, scan, {}, [])
-    text = engine.text_embeddings
-    if mode == "content":
-        sure, unsure = content.judge(scan, choices, content.category_embeddings(text, choices),
-                                     text(content.background_prompts()))
-    else:
-        sure, unsure = notes.judge(scan, text(notes.PAPER_PROMPTS), text(notes.OTHER_PROMPTS))
-    return _ClipSort(choices, scan, sure, unsure)
-
-
 class MainWindow(QMainWindow):
     def __init__(self, settings: Settings, settings_path: Path | None = None,
                  people_store: PeopleStore | None = None) -> None:
@@ -167,22 +111,18 @@ class MainWindow(QMainWindow):
         self.people_store = PeopleStore() if people_store is None else people_store
         # Makes the face engine, given Settings' use_gpu; the models open on first use.
         self.engine_factory: Callable[[bool], FaceEngine] = FaceEngine
-        self._face_scan: FaceScan | None = None  # kept for Back on the summary
-        self._face_people: list[Person] = []  # the people the scan looked for
         # Makes the CLIP engine, given Settings' use_gpu; the models open on first use.
         self.clip_engine_factory: Callable[[bool], ClipEngine] = ClipEngine
-        self._clip: _ClipSort | None = None  # kept for Back on the summary
-        self._clip_answers: dict[str, str | None] = {}  # the unsure ones, as last answered
         self._task: Task | None = None
-        self._busy = False  # a Task is running
-        self._root: Path | None = None
-        self._include_subfolders = False
-        self._mode: str | None = None
-        self._groups: list[Group] = []  # being reviewed; kept for Back on the summary
-        self._bad: list[Candidate] = []  # bad photos shown; kept for Back on the summary
-        self._bad_ticked: set[str] = set()  # the bad photos last ticked to move
-        self._events: list[Event] = []  # as last named; kept for Back on the summary
-        self._events_left_out = 0  # files in no event
+        self._on_result: Callable[[object], None] | None = None  # the Task's handlers
+        self._on_error: Callable[[str], None] | None = None
+        self.busy = False  # a Task is running
+        # The sort being set up or run.
+        self.root: Path | None = None
+        self.include_subfolders = False
+        self.mode: str | None = None
+        self.flow_state: object = None  # the flow's working data (see photosort.ui.flows)
+        self.back_to: Callable[[], None] | None = None  # where Back on the summary goes
         self._plan: Plan | None = None
         self._run_id: str | None = None
         self._progress_prefix = ""
@@ -208,7 +148,7 @@ class MainWindow(QMainWindow):
                      self.events_page, self.face_setup_page, self.face_question_page,
                      self.category_review_page, self.summary_page, self.done_page):
             self.stack.addWidget(page)
-        self._show(self.home)
+        self.show_page(self.home)
 
     # ----- pages -----------------------------------------------------------
 
@@ -291,41 +231,42 @@ class MainWindow(QMainWindow):
 
     def _build_review(self) -> ReviewPage:
         page = ReviewPage()
-        page.finished.connect(self._on_reviewed)
-        page.cancelled.connect(lambda: self._show(self.home))
+        page.finished.connect(lambda keep: groups.on_reviewed(self, keep))
+        page.cancelled.connect(lambda: self.show_page(self.home))
         return page
 
     def _build_bad(self) -> BadPhotosPage:
         page = BadPhotosPage()
-        page.finished.connect(self._on_bad_ticked)
-        page.cancelled.connect(lambda: self._show(self.home))
+        page.finished.connect(lambda move: bad.on_ticked(self, move))
+        page.cancelled.connect(lambda: self.show_page(self.home))
         return page
 
     def _build_events(self) -> EventsPage:
         page = EventsPage()
-        page.finished.connect(self._on_events_named)
-        page.cancelled.connect(lambda: self._show(self.home))
+        page.finished.connect(
+            lambda named, names, skipped: events.on_named(self, named, names, skipped))
+        page.cancelled.connect(lambda: self.show_page(self.home))
         return page
 
     def _build_face_setup(self) -> FaceSetupPage:
         page = FaceSetupPage()
-        page.start.connect(self._start_face_sort)
-        page.add_requested.connect(self._add_person)
-        page.photo_dropped.connect(self._add_person)
-        page.more_requested.connect(self._add_photos)
-        page.back_button.clicked.connect(lambda: self._show(self.home))
+        page.start.connect(lambda person_ids: face.start_sort(self, person_ids))
+        page.add_requested.connect(lambda: face.add_person(self))
+        page.photo_dropped.connect(lambda path: face.add_person(self, path))
+        page.more_requested.connect(lambda person_id: face.add_photos(self, person_id))
+        page.back_button.clicked.connect(lambda: self.show_page(self.home))
         return page
 
     def _build_face_questions(self) -> FaceQuestionPage:
         page = FaceQuestionPage()
-        page.finished.connect(self._plan_face_moves)
-        page.cancelled.connect(self._back_to_face_setup)
+        page.finished.connect(lambda answers: face.plan_moves(self, answers))
+        page.cancelled.connect(lambda: face.back_to_setup(self))
         return page
 
     def _build_category_review(self) -> CategoryReviewPage:
         page = CategoryReviewPage()
-        page.finished.connect(self._plan_clip_moves)
-        page.cancelled.connect(lambda: self._show(self.home))
+        page.finished.connect(lambda answers: clip.plan_moves(self, answers))
+        page.cancelled.connect(lambda: self.show_page(self.home))
         return page
 
     def _build_summary(self) -> QWidget:
@@ -365,7 +306,7 @@ class MainWindow(QMainWindow):
         self.open_folder_button = QPushButton("Open folder")
         self.open_folder_button.clicked.connect(self._open_folder)
         self.home_button = QPushButton("Home")
-        self.home_button.clicked.connect(lambda: self._show(self.home))
+        self.home_button.clicked.connect(lambda: self.show_page(self.home))
         _buttons(layout, self.undo_button, self.open_folder_button, self.home_button)
         return page
 
@@ -374,7 +315,7 @@ class MainWindow(QMainWindow):
     def current_page(self) -> QWidget:
         return self.stack.currentWidget()
 
-    def _show(self, page: QWidget) -> None:
+    def show_page(self, page: QWidget) -> None:
         self.stack.setCurrentWidget(page)
 
     def show_error(self, text: str) -> None:
@@ -403,26 +344,34 @@ class MainWindow(QMainWindow):
                 return key
         return None
 
-    def _run(self, task: Task, on_result, on_error) -> bool:
-        """Start task unless one is already running; return whether it started."""
-        if self._busy:
+    def run_task(self, task: Task, on_result: Callable[[object], None],
+                 on_error: Callable[[str], None]) -> bool:
+        """Start task unless one is already running; return whether it started.
+
+        Its signals go to the window's own slots (so on the GUI thread), which
+        free the window, then pass the result or error to on_result or on_error.
+        """
+        if self.busy:
             return False
-        self._busy = True
+        self.busy = True
+        self._on_result, self._on_error = on_result, on_error
         task.signals.progress.connect(self._on_progress)
-        # Connected first, so the window is free again before on_result/on_error run.
-        task.signals.result.connect(self._task_finished)
-        task.signals.error.connect(self._task_finished)
-        task.signals.result.connect(on_result)
-        task.signals.error.connect(on_error)
+        task.signals.result.connect(self._task_result)
+        task.signals.error.connect(self._task_error)
         self._task = task
         task.start()
         return True
 
-    def _task_finished(self, _value: object = None) -> None:
-        self._busy = False
+    def _task_result(self, value: object) -> None:
+        self.busy = False
+        self._on_result(value)
 
-    def _begin_progress(self, prefix: str, total: int | None = None,
-                        joiner: str = "/") -> None:
+    def _task_error(self, message: str) -> None:
+        self.busy = False
+        self._on_error(message)
+
+    def begin_progress(self, prefix: str, total: int | None = None,
+                       joiner: str = "/") -> None:
         """Show the progress page: "<prefix> <i> <joiner> <total>"."""
         self._progress_prefix = prefix
         self._progress_joiner = joiner
@@ -432,7 +381,7 @@ class MainWindow(QMainWindow):
         else:
             self._on_progress(0, total)
         self.cancel_button.setEnabled(True)
-        self._show(self.progress_page)
+        self.show_page(self.progress_page)
 
     def _on_progress(self, i: int, total: int) -> None:
         self.progress_bar.setRange(0, max(total, 1))
@@ -482,7 +431,7 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
 
     def _open_history(self) -> None:
-        if self._busy:
+        if self.busy:
             return
         root = self._folder()
         if root is None:
@@ -500,15 +449,9 @@ class MainWindow(QMainWindow):
         self._save_settings()
 
     def _start(self) -> None:
-        if self._busy:
+        if self.busy:
             return
-        self._plan = None  # a stale plan must never be executed
-        self._groups = []
-        self._bad = []
-        self._bad_ticked = set()
-        self._events = []
-        self._face_scan = None
-        self._clip = None
+        self.begin_sort()
         root = self._folder()
         if root is None:
             self.show_error("This folder doesn't exist any more.")
@@ -522,38 +465,17 @@ class MainWindow(QMainWindow):
         if spec is None:
             self.show_error("This way of sorting isn't ready yet.")
             return
-        if spec.kind == "face" and not ensure_models(self, FACE_MODELS):
-            self._show(self.home)
+        flow = _FLOWS[spec.kind]
+        if flow.MODELS and not ensure_models(self, flow.MODELS):
+            self.show_page(self.home)
             return
-        if spec.kind in ("content", "notes") and not ensure_models(self, CLIP_MODELS):
-            self._show(self.home)
-            return
-        self._root = root
-        self._mode = mode
-        self._include_subfolders = self.subfolders_check.isChecked()
+        self.root = root
+        self.mode = mode
+        self.include_subfolders = self.subfolders_check.isChecked()
         self.settings.last_folder = str(root)
-        self.settings.include_subfolders = self._include_subfolders
+        self.settings.include_subfolders = self.include_subfolders
         self._save_settings()
-
-        if spec.kind == "face":
-            self._show_face_setup()
-            return
-        if spec.kind in ("content", "notes"):
-            self._start_clip_sort()
-            return
-        prepare = spec.prepare
-        if spec.kind == "bad":
-            self._begin_progress("Checking photos…", joiner="of")
-            on_result = self._on_bad
-        elif spec.kind == "events":
-            self._begin_progress("Dating files…", joiner="of")
-            prepare = partial(prepare, gap_hours=self.settings.event_gap_hours,
-                              min_files=self.settings.event_min_files)
-            on_result = self._on_events
-        else:
-            self._begin_progress("Checking files…")
-            on_result = self._on_plan if spec.kind == "plan" else self._on_groups
-        self._run(Task(prepare, root, self._include_subfolders), on_result, self._on_plan_error)
+        flow.start(self, root, self.include_subfolders, spec)
 
     def _cancel(self) -> None:
         if self._task is not None:
@@ -561,300 +483,49 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(False)
         self.progress_label.setText("Stopping…")
 
-    def _cancel_pressed(self) -> bool:
+    def cancel_pressed(self) -> bool:
         """Whether Cancel was pressed for the last Task, which may have finished anyway."""
         return self._task is not None and self._task.cancel_event.is_set()
 
-    # ----- review ----------------------------------------------------------
-
-    def _on_groups(self, groups: list[Group] | None) -> None:
-        if groups is None or self._cancel_pressed():
-            self._show(self.home)
-            return
-        if not groups:
-            self._show_summary([MODE_SPECS[self._mode].none_found], can_go=False)
-            return
-        self._groups = groups
-        self.review_page.load(self._root, self._mode, groups)
-        self._show(self.review_page)
-
-    def _on_reviewed(self, keep: dict[int, set[str]]) -> None:
-        folder = MODE_SPECS[self._mode].set_aside_folder
-        try:
-            plan = plan_set_aside(self._root, self._mode, folder, self._groups, keep)
-        except OSError as e:  # e.g. the drive was unplugged during the review
-            self._groups = []
-            self._show(self.home)
-            self.show_error(f"Could not plan the moves: {e}")
-            return
-        self._on_plan(plan)
-
-    # ----- bad photos ------------------------------------------------------
-
-    def _on_bad(self, bad: list[Candidate] | None) -> None:
-        if bad is None or self._cancel_pressed():
-            self._show(self.home)
-            return
-        if not bad:
-            self._show_summary([MODE_SPECS["bad"].none_found], can_go=False)
-            return
-        self._bad = bad
-        self.bad_page.load(self._root, bad)
-        self._show(self.bad_page)
-
-    def _on_bad_ticked(self, move: set[str]) -> None:
-        self._bad_ticked = move
-        try:
-            plan = plan_bad(self._root, self._bad, move)
-        except OSError as e:  # e.g. the drive was unplugged while ticking
-            self._bad = []
-            self._show(self.home)
-            self.show_error(f"Could not plan the moves: {e}")
-            return
-        self._on_plan(plan)
-
-    # ----- events ----------------------------------------------------------
-
-    def _on_events(self, found: tuple[list[Event], int] | None) -> None:
-        if found is None or self._cancel_pressed():
-            self._show(self.home)
-            return
-        events, self._events_left_out = found
-        if not events:
-            self._show_summary([MODE_SPECS["events"].none_found], can_go=False)
-            return
-        self.events_page.load(self._root, events, self._events_left_out)
-        self._show(self.events_page)
-
-    def _on_events_named(self, events: list[Event], names: list[str],
-                         skipped: set[int]) -> None:
-        try:
-            plan = plan_events(self._root, events, names, skipped, self._events_left_out)
-        except OSError as e:  # e.g. the drive was unplugged while naming
-            self._events = []
-            self._show(self.home)
-            self.show_error(f"Could not plan the moves: {e}")
-            return
-        self._events = events
-        self._on_plan(plan)
-
-    # ----- face ------------------------------------------------------------
-
-    def _show_face_setup(self) -> None:
-        """Open the Face setup page, everyone unticked."""
-        self.face_setup_page.load(self.people_store)
-        self._show(self.face_setup_page)
-
-    def _back_to_face_setup(self) -> None:
-        """Back to the Face setup page from a sort, with the people ticked for it."""
-        self.face_setup_page.load(self.people_store, self.face_setup_page.ticked_ids())
-        self._show(self.face_setup_page)
-
-    def _name_faces(self, path: Path, name: str = "") -> tuple[list[Person], bool]:
-        """Let the owner name the faces in path. Return the people saved and
-        whether the owner finished with Save. The people new to the store come
-        back ticked; the ticks of the others stay as they were.
-
-        The dialog has a face engine of its own, let go when it closes, so
-        the models are not held in memory twice for the life of the app.
-        """
-        try:
-            known = {p.id for p in self.people_store.people()}
-        except PeopleError:
-            known = set()
-        engine = self.engine_factory(self.settings.use_gpu)
-        dialog = FaceNamingDialog(path, engine, self.people_store, self, name=name)
-        finished = dialog.exec() == QDialog.DialogCode.Accepted
-        saved = dialog.added()
-        dialog.deleteLater()
-        ticked = [*self.face_setup_page.ticked_ids(),
-                  *(p.id for p in saved if p.id not in known)]
-        self.face_setup_page.load(self.people_store, ticked)
-        return saved, finished
-
-    def _add_person(self, path: Path | None = None) -> None:
-        """Name the faces in path, or in a photo the owner picks."""
-        if self._busy:
-            return
-        if path is None:
-            path = pick_photo(self, "Choose a photo of the person")
-        if path is None:
-            return
-        nobody_yet = not self.face_setup_page.has_people()
-        saved, finished = self._name_faces(path)
-        # §5.2: sorting starts after naming. Not for two or more people: that
-        # would be a sort of group photos only, which the owner should choose.
-        if len(saved) == 1 and finished and nobody_yet:
-            self._start_face_sort(self.face_setup_page.ticked_ids())
-
-    def _add_photos(self, person_id: str) -> None:
-        if self._busy:
-            return
-        try:
-            person = next((p for p in self.people_store.people() if p.id == person_id), None)
-        except PeopleError as e:
-            self.show_error(str(e))
-            return
-        if person is None:
-            self.face_setup_page.load(self.people_store)
-            return
-        path = pick_photo(self, f"Choose a photo of {person.name}")
-        if path is not None:
-            self._name_faces(path, person.name)
-
-    def _start_face_sort(self, person_ids: list[str]) -> None:
-        if self._busy or self._root is None:
-            return
-        try:
-            people = [p for p in self.people_store.people() if p.id in set(person_ids)]
-        except PeopleError as e:
-            self.show_error(str(e))
-            return
-        if not people:
-            self.face_setup_page.load(self.people_store)
-            return
-        self._plan = None
-        self._face_scan = None
-        self._face_people = people
-        self._begin_progress("Looking for faces…", joiner="of")
-        self._run(
-            Task(_scan_faces, self._root, self._include_subfolders, people,
-                 self.engine_factory, self.settings.use_gpu),
-            self._on_face_scan, self._on_face_scan_error,
-        )
-
-    def _on_face_scan(self, scan: FaceScan | None) -> None:
-        if scan is None or self._cancel_pressed():
-            self._back_to_face_setup()
-            return
-        self._face_scan = scan
-        if scan.questions:
-            self._ask_face_questions()
-        else:
-            self._plan_face_moves({})
-
-    def _ask_face_questions(self) -> None:
-        """Ask the owner about the unsure matches; the page's answers are then planned."""
-        self.face_question_page.load(self._root, self._face_scan, self._face_people)
-        self._show(self.face_question_page)
-
-    def _plan_face_moves(self, answers: dict[tuple[str, str], Answer]) -> None:
-        try:
-            plan = plan_faces(self._root, self._face_scan, self._face_people, answers)
-        except OSError as e:  # e.g. the drive was unplugged
-            self._face_scan = None
-            self._show(self.home)
-            self.show_error(f"Could not plan the moves: {e}")
-            return
-        self._on_plan(plan)
-
-    def _on_face_scan_error(self, message: str) -> None:
-        self._show(self.home)
-        self.show_error(f"Could not look for faces: {message}")
-
-    # ----- content and notes & pages ---------------------------------------
-
-    def _start_clip_sort(self) -> None:
-        choices = (list(self.settings.content_categories) if self._mode == "content"
-                   else list(notes.KINDS))
-        self._clip_answers = {}
-        self._begin_progress("Looking at photos…", joiner="of")
-        self._run(
-            Task(_sort_by_clip, self._root, self._include_subfolders, self._mode, choices,
-                 self.clip_engine_factory, self.settings.use_gpu),
-            self._on_clip_sort, self._on_clip_sort_error,
-        )
-
-    def _on_clip_sort(self, sort: _ClipSort | None) -> None:
-        if sort is None or self._cancel_pressed():
-            self._show(self.home)
-            return
-        self._clip = sort
-        if sort.unsure:
-            self._ask_clip_questions()
-        else:
-            self._plan_clip_moves({})
-
-    def _ask_clip_questions(self) -> None:
-        """Show the unsure photos, picked as last answered; the answers are then planned."""
-        sort = self._clip
-        title = None  # "N photos to check"
-        if self._mode == "notes":
-            n = len(sort.unsure)
-            title = f"{n} photo{'' if n == 1 else 's'} might be notes or pages"
-        self.category_review_page.load(self._root, sort.unsure, sort.choices,
-                                       self._clip_answers, title)
-        self._show(self.category_review_page)
-
-    def _plan_clip_moves(self, answers: dict[str, str | None]) -> None:
-        self._clip_answers = dict(answers)
-        planner = content.plan_content if self._mode == "content" else notes.plan_notes
-        sort = self._clip
-        try:
-            plan = planner(self._root, sort.scan, sort.sure, answers)
-        except OSError as e:  # e.g. the drive was unplugged during the review
-            self._clip = None
-            self._show(self.home)
-            self.show_error(f"Could not plan the moves: {e}")
-            return
-        self._on_plan(plan)
-
-    def _on_clip_sort_error(self, message: str) -> None:
-        self._show(self.home)
-        self.show_error(f"Could not look at the photos: {message}")
-
     # ----- summary ---------------------------------------------------------
 
-    def _on_plan(self, plan: Plan | None) -> None:
-        if plan is None or self._cancel_pressed():
-            self._show(self.home)
+    def begin_sort(self) -> None:
+        """Forget the last sort before a new one: a stale plan must never be executed."""
+        self._plan = None
+        self.end_flow()
+
+    def end_flow(self) -> None:
+        """Forget the flow's working data, and its way back from the summary."""
+        self.flow_state = None
+        self.back_to = None
+
+    def show_plan(self, plan: Plan | None) -> None:
+        """Show plan on the summary; Home if there is none or Cancel was pressed."""
+        if plan is None or self.cancel_pressed():
+            self.show_page(self.home)
             return
         self._plan = plan
         lines = list(plan.summary)
         if not plan.moves:
             lines.insert(0, "Nothing to move.")
-        self._show_summary(lines, can_go=bool(plan.moves))
+        self.show_summary(lines, can_go=bool(plan.moves))
 
-    def _show_summary(self, lines: list[str], can_go: bool) -> None:
+    def show_summary(self, lines: list[str], can_go: bool) -> None:
         self.summary_label.setText("\n".join(lines))
         self.go_button.setEnabled(can_go)
         self.show_moves_button.setEnabled(can_go)
         self.moves_table.setRowCount(0)
         self.show_moves_button.setChecked(False)
         self.moves_table.hide()
-        self._show(self.summary_page)
+        self.show_page(self.summary_page)
 
     def _back_from_summary(self) -> None:
-        """Back to the unsure photos, the events, the bad photos, the review or
-        the face questions, every answer intact, if there was one; to the
-        people picked for a face sort; else Home."""
-        if self._clip is not None and self._clip.unsure:
-            self._plan = None  # the answers make a fresh one
-            self._ask_clip_questions()
-        elif self._events:
-            self._plan = None  # the page, as the owner left it, makes a fresh one
-            self._show(self.events_page)
-        elif self._bad:
-            self._plan = None  # the ticks make a fresh one
-            self.bad_page.load(self._root, self._bad, self._bad_ticked)
-            self._show(self.bad_page)
-        elif self._groups:
-            self._plan = None  # the review makes a fresh one
-            self.review_page.resume()
-            self._show(self.review_page)
-        elif self._face_scan is not None and self._face_scan.questions:
-            self._plan = None  # the answers make a fresh one
-            self.face_question_page.resume()
-            self._show(self.face_question_page)
-        elif self._face_scan is not None:
-            self._plan = None
-            self._back_to_face_setup()
-        else:
-            self._show(self.home)
-
-    def _on_plan_error(self, message: str) -> None:
-        self._show(self.home)
-        self.show_error(f"Could not check the files: {message}")
+        """Back where the flow says (its review, every answer intact), else Home."""
+        if self.back_to is None:
+            self.show_page(self.home)
+            return
+        self._plan = None  # going back makes a fresh one
+        self.back_to()
 
     def _toggle_moves(self, checked: bool) -> None:
         if checked and self._plan is not None and self.moves_table.rowCount() == 0:
@@ -868,38 +539,35 @@ class MainWindow(QMainWindow):
     # ----- moving ----------------------------------------------------------
 
     def _go(self) -> None:
-        if self._busy:
+        if self.busy:
             return
-        plan, root = self._plan, self._root
+        plan, root = self._plan, self.root
         if plan is None or root is None or not plan.moves:
             return
         try:
             journal = RunJournal.create(
-                root, plan.mode, self._include_subfolders, planned=len(plan.moves)
+                root, plan.mode, self.include_subfolders, planned=len(plan.moves)
             )
         except OSError as e:
             self.show_error(f"Could not start: {e}")
             return
         self._run_id = journal.run_id
-        self._groups = []
-        self._bad = []
-        self._events = []
+        self.end_flow()
         self.events_page.stop_thumbnails()
-        self._face_scan = None
-        self._clip = None
-        self._begin_progress("Moving…", len(plan.moves))
-        self._run(Task(execute, root, plan, journal), self._on_executed, self._on_execute_error)
+        self.begin_progress("Moving…", len(plan.moves))
+        self.run_task(Task(execute, root, plan, journal), self._on_executed,
+                      self._on_execute_error)
 
     def _show_done(self, lines: list[str], can_undo: bool) -> None:
         self.done_label.setText("\n".join(lines))
         self.undo_label.setText("")
         self.undo_button.setEnabled(can_undo)
         self.home_button.setEnabled(True)
-        self._show(self.done_page)
+        self.show_page(self.done_page)
 
     def _open_folder(self) -> None:
         """Show the sorted folder in the system's file manager."""
-        url = QUrl.fromLocalFile(str(self._root)) if self._root is not None else None
+        url = QUrl.fromLocalFile(str(self.root)) if self.root is not None else None
         if url is None or not QDesktopServices.openUrl(url):
             self.show_error("Couldn't open the folder.")
 
@@ -923,13 +591,13 @@ class MainWindow(QMainWindow):
     # ----- undo ------------------------------------------------------------
 
     def _undo(self) -> None:
-        if self._busy or self._root is None or self._run_id is None:
+        if self.busy or self.root is None or self._run_id is None:
             return
         self.undo_button.setEnabled(False)
         self.home_button.setEnabled(False)
         self.undo_label.setText("Putting files back…")
-        self._run(
-            Task(_undo_with_message, self._root, self._run_id, cancellable=False),
+        self.run_task(
+            Task(_undo_with_message, self.root, self._run_id, cancellable=False),
             self._on_undone, self._on_undo_error,
         )
 
