@@ -127,31 +127,6 @@ def test_together_folder_fits_in_bytes(tmp_path):
     _usable_folder(tmp_path, folder)
 
 
-def test_long_name_cut_by_bytes(tmp_path):
-    folder = together_folder(["অ" * 100])
-    assert folder == "অ" * (FACE_FOLDER_MAX_BYTES // 3)
-    _usable_folder(tmp_path, folder)
-
-
-def test_cut_never_leaves_a_dangling_vowel_sign(tmp_path):
-    # "কা" is KA + the vowel sign AA (a combining mark): cut between them, the
-    # vowel sign goes too, rather than ending the name on it.
-    name = "ক" * 65 + "া" + "ক" * 10  # 198 bytes fit: the cut falls just after the sign
-    folder = together_folder([name])
-    assert folder == "ক" * 65
-    _usable_folder(tmp_path, folder)
-
-
-@pytest.mark.parametrize("name, cut", [
-    ("Duplicates" + " " * 95 + "x" * 20, "_Duplicates"),  # would be skipped by scans
-    ("CON" + " " * 100 + "y", "_CON"),  # reserved on Windows
-])
-def test_cut_name_still_a_valid_scanned_folder(tmp_path, name, cut):
-    folder = together_folder([name])
-    assert folder == cut
-    _usable_folder(tmp_path, folder)
-
-
 def test_stranger_ignored(tmp_path):
     touch(tmp_path, "x.jpg")
     scan, plan = sort(tmp_path, {"x.jpg": [face({0: 0.9}), face({STRANGER_AXIS: 0.95}),

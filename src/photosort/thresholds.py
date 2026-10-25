@@ -1,4 +1,4 @@
-"""Tunable limits for the duplicate, repeated-shot and face finders, in one place.
+"""Tunable limits for the finders, folder names and metadata readers, in one place.
 
 All values are the builder's defaults (design section 9) and can be tuned.
 """
@@ -24,10 +24,13 @@ THUMB_PX = 240  # longest side of review thumbnails
 # Faces: matching a face to a remembered person by embedding similarity.
 FACE_SURE = 0.45  # at or above: surely that person
 FACE_UNSURE = 0.30  # from here up to FACE_SURE: ask the owner; below: a stranger
-# Person and together folder names: at most this many characters and UTF-8
-# bytes (Linux file systems allow 255 bytes; Bengali takes 3 per character).
-FACE_FOLDER_MAX = 100
-FACE_FOLDER_MAX_BYTES = 200
+# Folder names made from data (people, cameras, places, events): at most this
+# many characters and UTF-8 bytes (Linux file systems allow 255 bytes;
+# Bengali takes 3 per character).
+FOLDER_NAME_MAX = 100
+FOLDER_NAME_MAX_BYTES = 200
+FACE_FOLDER_MAX = FOLDER_NAME_MAX  # person and together folders
+FACE_FOLDER_MAX_BYTES = FOLDER_NAME_MAX_BYTES
 PERSON_NAME_MAX = 50  # longest name of a remembered person, in characters
 PERSON_NAME_MAX_BYTES = 120  # ... and in UTF-8 bytes
 # Face detection (SCRFD).
@@ -42,3 +45,7 @@ FACE_EMBED_BATCH = 32  # faces described in one recognition run (about 11 MB eac
 FACE_ENGINE_FAILS = 5
 FACE_CROP_MARGIN = 0.3  # face pictures for the UI add this fraction of the face on each side
 PERSON_THUMB_PX = 160  # longest side of a remembered person's face picture
+
+# Video metadata: the most box payload read from one video, in bytes (box
+# headers are read by seeking; the video data itself is never read).
+MP4_META_MAX = 4 * 1024 * 1024

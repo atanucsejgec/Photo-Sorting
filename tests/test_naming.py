@@ -2,7 +2,8 @@ import os
 
 import pytest
 
-from photosort.naming import TargetAllocator, fold, resolve_existing_dir, safe_name
+from photosort.naming import TargetAllocator, fit_name, fold, resolve_existing_dir, safe_name
+from photosort.thresholds import FOLDER_NAME_MAX, FOLDER_NAME_MAX_BYTES
 
 
 def _touch(p):
@@ -133,3 +134,52 @@ def test_resolve_existing_dir_matches_another_unicode_form(tmp_path):
     assert resolve_existing_dir(tmp_path, "\u099c\u09af\u09bc/x") == "\u099c\u09df/x"
     alloc = TargetAllocator(tmp_path)
     assert alloc.allocate("\u099c\u09af\u09bc/x.jpg") == "\u099c\u09df/x.jpg"
+
+
+def _fit(name):
+    return fit_name(name, FOLDER_NAME_MAX, FOLDER_NAME_MAX_BYTES)
+
+
+def _usable_folder(tmp_path, folder):
+    assert len(folder) <= FOLDER_NAME_MAX
+    assert len(folder.encode()) <= FOLDER_NAME_MAX_BYTES
+    assert safe_name(folder) == folder
+    (tmp_path / folder).mkdir()  # a Linux file system takes it
+
+
+def test_fit_name_keeps_a_name_that_fits():
+    assert _fit("OPPO CPH2581") == "OPPO CPH2581"
+    assert _fit("x" * FOLDER_NAME_MAX) == "x" * FOLDER_NAME_MAX
+
+
+def test_fit_name_cuts_by_characters():
+    assert _fit("A" * 98 + ". " + "b" * 50) == "A" * 98  # no trailing ". " left
+    assert fit_name("abcdef", 3, 200) == "abc"
+
+
+def test_fit_name_cuts_by_bytes(tmp_path):
+    folder = _fit("অ" * 100)
+    assert folder == "অ" * (FOLDER_NAME_MAX_BYTES // 3)
+    _usable_folder(tmp_path, folder)
+
+
+def test_fit_name_never_leaves_a_dangling_vowel_sign(tmp_path):
+    # "কা" is KA + the vowel sign AA (a combining mark): cut between them, the
+    # vowel sign goes too, rather than ending the name on it.
+    name = "ক" * 65 + "া" + "ক" * 10  # 198 bytes fit: the cut falls just after the sign
+    folder = _fit(name)
+    assert folder == "ক" * 65
+    _usable_folder(tmp_path, folder)
+
+
+@pytest.mark.parametrize("name, cut", [
+    ("Duplicates" + " " * 95 + "x" * 20, "_Duplicates"),  # would be skipped by scans
+    ("CON" + " " * 100 + "y", "_CON"),  # reserved on Windows
+    ("Bad Photos", "_Bad Photos"),
+    (".hidden", "_.hidden"),
+    ("a:b", "a_b"),
+])
+def test_fit_name_gives_a_valid_scanned_folder(tmp_path, name, cut):
+    folder = _fit(name)
+    assert folder == cut
+    _usable_folder(tmp_path, folder)

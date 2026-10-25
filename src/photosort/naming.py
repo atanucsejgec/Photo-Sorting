@@ -12,6 +12,8 @@ import re
 import unicodedata
 from pathlib import Path
 
+from photosort.scanner import skipped_folder
+
 _BAD_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 RESERVED_NAMES: frozenset[str] = frozenset(
@@ -37,6 +39,38 @@ def safe_name(name: str) -> str:
     if stem.casefold() in RESERVED_NAMES:
         name = "_" + name
     return name
+
+
+def fits(name: str, max_chars: int, max_bytes: int) -> bool:
+    """Whether name is at most max_chars characters and max_bytes UTF-8 bytes."""
+    return len(name) <= max_chars and len(name.encode("utf-8", "surrogatepass")) <= max_bytes
+
+
+def fit_name(name: str, max_chars: int, max_bytes: int) -> str:
+    """name as a folder name of at most max_chars characters and max_bytes
+    UTF-8 bytes, cut short if need be.
+
+    The cut never splits a character, and leaves no dangling dot, space or
+    combining mark (a vowel sign cut off from its letter, say). The result
+    is Windows-valid (safe_name) and not a folder the scanner skips (such a
+    name gets a "_" prefix).
+    """
+    end = min(len(name), max_chars)
+    while True:
+        folder = _clean_cut(name[:end])
+        if fits(folder, max_chars, max_bytes):
+            return folder
+        end -= 1
+
+
+def _clean_cut(part: str) -> str:
+    """A cut-off part of a name as a folder name: no dangling dot, space,
+    joiner or combining mark, Windows-valid, and not one the scanner skips."""
+    while part and (part[-1] in ". \u200c\u200d"
+                    or unicodedata.category(part[-1]).startswith("M")):
+        part = part[:-1]
+    part = safe_name(part)
+    return "_" + part if skipped_folder(part) else part
 
 
 def fold(name: str) -> str:
