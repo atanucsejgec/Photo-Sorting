@@ -46,6 +46,10 @@ FACE_ENGINE_FAILS = 5
 FACE_CROP_MARGIN = 0.3  # face pictures for the UI add this fraction of the face on each side
 PERSON_THUMB_PX = 160  # longest side of a remembered person's face picture
 
+# Location: a position farther than this from the nearest city in the list
+# (at sea, at the poles) has no place.
+GEO_MAX_CITY_KM = 200
+
 # Video metadata: the most box payload read from one video, in bytes (box
 # headers are read by seeking; the video data itself is never read).
 MP4_META_MAX = 4 * 1024 * 1024
