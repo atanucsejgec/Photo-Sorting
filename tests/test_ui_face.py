@@ -111,51 +111,63 @@ def _item(page: FaceSetupPage, name: str):
     raise AssertionError(name)
 
 
-def _make_page(qtbot, settings: Settings) -> FaceSetupPage:
-    page = FaceSetupPage(settings)
+def _make_page(qtbot) -> FaceSetupPage:
+    page = FaceSetupPage()
     qtbot.addWidget(page)
     return page
 
 
-def test_setup_page_lists_people_all_ticked_first_time(qtbot, store):
+def _tick(page: FaceSetupPage, *names: str) -> None:
+    for name in names:
+        _item(page, name).setCheckState(Qt.CheckState.Checked)
+
+
+def test_setup_page_lists_people_unticked(qtbot, store):
     zoe = _remember(store, "Zoe", 2)
     atanu = _remember(store, "Atanu", 1)
-    page = _make_page(qtbot, Settings())
+    page = _make_page(qtbot)
     page.load(store)
-    assert _rows(page) == [("Atanu", True), ("Zoe", True)]
+    assert _rows(page) == [("Atanu", False), ("Zoe", False)]
     assert not _item(page, "Atanu").icon().isNull()  # the remembered face picture
     assert page.add_button.text() == "Add person…"
     assert page.start_button.text() == "Start sorting"
-    assert page.start_button.isEnabled()
+    assert not page.start_button.isEnabled()  # nobody ticked yet
     started = []
     page.start.connect(started.append)
+    _tick(page, "Zoe", "Atanu")
+    assert page.start_button.isEnabled()
     page.start_button.click()
     assert started == [[atanu.id, zoe.id]]
 
 
-def test_setup_page_ticks_persist_and_start_needs_a_tick(qtbot, store):
-    atanu = _remember(store, "Atanu", 1)
+def test_setup_page_comes_up_unticked_every_time(qtbot, store):
+    _remember(store, "Atanu", 1)
     _remember(store, "Zoe", 2)
-    settings = Settings()
-    page = _make_page(qtbot, settings)
+    page = _make_page(qtbot)
     page.load(store)
-    changed = []
-    page.selection_changed.connect(lambda: changed.append(True))
+    _tick(page, "Atanu")
+    assert page.start_button.isEnabled()
+    page.load(store)  # opened again
+    assert _rows(page) == [("Atanu", False), ("Zoe", False)]
+    assert not page.start_button.isEnabled()
+    _tick(page, "Zoe")
     _item(page, "Zoe").setCheckState(Qt.CheckState.Unchecked)
-    assert changed
-    assert settings.face_people == [atanu.id]
+    assert not page.start_button.isEnabled()
 
-    again = _make_page(qtbot, settings)
-    again.load(store)
-    assert _rows(again) == [("Atanu", True), ("Zoe", False)]
-    _item(again, "Atanu").setCheckState(Qt.CheckState.Unchecked)
-    assert not again.start_button.isEnabled()
+
+def test_setup_page_ticks_the_people_asked_for(qtbot, store):
+    _remember(store, "Atanu", 1)
+    zoe = _remember(store, "Zoe", 2)
+    page = _make_page(qtbot)
+    page.load(store, ticked=[zoe.id, "f" * 32])  # someone not remembered is no row
+    assert _rows(page) == [("Atanu", False), ("Zoe", True)]
+    assert page.start_button.isEnabled()
 
 
 def test_setup_page_buttons_name_the_selected_person(qtbot, store):
     atanu = _remember(store, "Atanu", 1)
     _remember(store, "Zoe", 2)
-    page = _make_page(qtbot, Settings())
+    page = _make_page(qtbot)
     page.load(store)
     page.people_list.setCurrentItem(_item(page, "Zoe"))
     assert page.more_button.text() == "Add photos to Zoe…"
@@ -169,7 +181,7 @@ def test_setup_page_buttons_name_the_selected_person(qtbot, store):
 
 
 def test_setup_page_with_nobody_remembered(qtbot, store):
-    page = _make_page(qtbot, Settings())
+    page = _make_page(qtbot)
     page.load(store)
     assert page.people_list.count() == 0
     assert not page.start_button.isEnabled()
@@ -194,7 +206,7 @@ def _drop_events(path: Path) -> tuple[QDropEvent, QDropEvent, QMimeData]:
 
 
 def test_setup_page_takes_a_dropped_photo(qtbot, store, photo, tmp_path):
-    page = _make_page(qtbot, Settings())
+    page = _make_page(qtbot)
     page.load(store)
     assert page.acceptDrops()
     dropped = []
@@ -223,20 +235,22 @@ def test_remembered_people_list_takes_no_drops(qtbot, store):
 
 def test_forget_asks_first_then_removes(qtbot, store, asked):
     _remember(store, "Atanu", 1)
+    _remember(store, "Bob", 3)
     _remember(store, "Zoe", 2)
-    page = _make_page(qtbot, Settings())
+    page = _make_page(qtbot)
     page.load(store)
+    _tick(page, "Atanu", "Zoe")
     page.people_list.setCurrentItem(_item(page, "Zoe"))
 
     asked.answer = QMessageBox.StandardButton.No
     page.delete_button.click()
     assert len(asked.texts) == 1 and "Zoe" in asked.texts[0]
-    assert [p.name for p in store.people()] == ["Atanu", "Zoe"]
+    assert [p.name for p in store.people()] == ["Atanu", "Bob", "Zoe"]
 
     asked.answer = QMessageBox.StandardButton.Yes
     page.delete_button.click()
-    assert [p.name for p in store.people()] == ["Atanu"]
-    assert _rows(page) == [("Atanu", True)]
+    assert [p.name for p in store.people()] == ["Atanu", "Bob"]
+    assert _rows(page) == [("Atanu", True), ("Bob", False)]  # the other ticks kept
 
 
 def test_remembered_people_dialog_is_delete_only(qtbot, store, asked):
@@ -821,9 +835,21 @@ def test_face_start_with_models_present_shows_setup(make_window, photos, store,
     _to_setup(w, photos)
     assert asked == [["face_detection", "face_recognition"]]
     assert w.current_page() is w.face_setup_page
-    assert _rows(w.face_setup_page) == [("Atanu", True)]
+    assert _rows(w.face_setup_page) == [("Atanu", False)]
+    assert not w.face_setup_page.start_button.isEnabled()
     w.face_setup_page.back_button.click()
     assert w.current_page() is w.home
+
+
+def test_ticks_saved_by_an_older_version_are_ignored(qtbot, photos, store, settings_path,
+                                                   models_present):
+    atanu = _remember(store, "Atanu", 1)
+    w = MainWindow(Settings(face_people=[atanu.id]), settings_path, people_store=store)
+    qtbot.addWidget(w)
+    _to_setup(w, photos)
+    assert _rows(w.face_setup_page) == [("Atanu", False)]
+    assert not w.face_setup_page.start_button.isEnabled()
+    w.close()
 
 
 def test_face_start_with_models_missing_stays_home(make_window, photos, monkeypatch,
@@ -857,38 +883,68 @@ def test_face_sort_runs_and_plans(qtbot, make_window, photos, store, make_jpeg,
     w = make_window()
     w.engine_factory = lambda use_gpu: gpu.append(use_gpu) or engine
     _to_setup(w, photos)
+    _tick(w.face_setup_page, "Atanu", "Zoe")
     w.face_setup_page.start_button.click()
     assert w.current_page() is w.progress_page
     qtbot.waitUntil(lambda: w.progress_label.text() == "Looking for faces… 1 of 3")
     engine.hold["b.jpg"].set()
     qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
     assert gpu == [w.settings.use_gpu]
+    # Two ticked: only their group photo is sorted; Atanu alone in a.jpg stays.
     assert w.summary_label.text().splitlines() == [
-        "2 photos → 1 person folders, 1 together folders",
-        "1 photos stay where they are",
+        "1 photos → 0 person folders, 1 together folders",
+        "2 photos stay where they are",
     ]
-    assert sorted((m.src, m.dst) for m in w._plan.moves) == [
-        ("a.jpg", "Atanu/a.jpg"), ("b.jpg", "Atanu & Zoe/b.jpg")]
+    assert [(m.src, m.dst) for m in w._plan.moves] == [("b.jpg", "Atanu & Zoe/b.jpg")]
     assert (photos / ".photosort" / "cache.db").is_file()  # the analysis cache was used
     assert errors == []
 
     w.back_button.click()
     assert w.current_page() is w.face_setup_page
+    assert _rows(w.face_setup_page) == [("Atanu", True), ("Zoe", True)]  # back, not anew
 
 
-def test_face_sort_with_only_ticked_people(qtbot, make_window, photos, store, make_jpeg,
-                                           models_present, settings_path):
+def test_face_sort_with_one_ticked_person(qtbot, make_window, photos, store, make_jpeg,
+                                          models_present, settings_path):
     _remember(store, "Atanu", 1)
-    zoe = _remember(store, "Zoe", 2)
+    _remember(store, "Zoe", 2)
+    make_jpeg(photos / "a.jpg")
     make_jpeg(photos / "b.jpg")
-    engine = FakeEngine({"b.jpg": [_face(_unit(1)), _face(_unit(2), 110)]})
+    engine = FakeEngine({"a.jpg": [_face(_unit(2))],
+                         "b.jpg": [_face(_unit(1)), _face(_unit(2), 110)]})
     w = make_window(engine)
     _to_setup(w, photos)
-    _item(w.face_setup_page, "Atanu").setCheckState(Qt.CheckState.Unchecked)
-    assert load_settings(settings_path).face_people == [zoe.id]
+    _tick(w.face_setup_page, "Zoe")
     w.face_setup_page.start_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
-    assert [(m.src, m.dst) for m in w._plan.moves] == [("b.jpg", "Zoe/b.jpg")]
+    assert sorted((m.src, m.dst) for m in w._plan.moves) == [
+        ("a.jpg", "Zoe/a.jpg"), ("b.jpg", "Zoe/b.jpg")]
+    assert load_settings(settings_path).face_people == []  # the ticks are not remembered
+
+
+def test_face_sort_asks_only_about_possible_group_photos(qtbot, make_window, photos,
+                                                         store, make_jpeg, models_present):
+    atanu = _remember(store, "Atanu", 1)
+    zoe = _remember(store, "Zoe", 2)
+    make_jpeg(photos / "a.jpg", size=(200, 200))
+    make_jpeg(photos / "b.jpg", size=(200, 200))
+    rather_zoe = _towards(zoe.embeddings[0], _unit(7), 0.7)
+    engine = FakeEngine({"a.jpg": [_face(rather_zoe)],  # Zoe alone could be no group
+                         "b.jpg": [_face(atanu.embeddings[0]), _face(rather_zoe, 110)]})
+    w = make_window(engine)
+    _to_setup(w, photos)
+    _tick(w.face_setup_page, "Atanu", "Zoe")
+    w.face_setup_page.start_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
+    page = w.face_question_page
+    assert page.heading_label.text().startswith("Is this Zoe? ")
+    assert page.counter_label.text() == "1 of 1"
+    page.no_button.click()
+    assert w.current_page() is w.summary_page
+    assert w._plan.moves == []  # Atanu alone in b.jpg: it stays
+    w.back_button.click()
+    page.yes_button.click()
+    assert [(m.src, m.dst) for m in w._plan.moves] == [("b.jpg", "Atanu & Zoe/b.jpg")]
 
 
 def _one_unsure(store, photos, make_jpeg):
@@ -904,6 +960,7 @@ def test_unsure_match_is_asked_before_planning(qtbot, make_window, photos, store
     atanu, engine = _one_unsure(store, photos, make_jpeg)
     w = make_window(engine)
     _to_setup(w, photos)
+    _tick(w.face_setup_page, "Atanu")
     w.face_setup_page.start_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
     page = w.face_question_page
@@ -923,6 +980,7 @@ def test_stop_asking_leaves_unanswered_photos(qtbot, make_window, photos, store,
     engine.faces["b.jpg"] = [_face(atanu.embeddings[0])]  # surely Atanu
     w = make_window(engine)
     _to_setup(w, photos)
+    _tick(w.face_setup_page, "Atanu")
     w.face_setup_page.start_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
     w.face_question_page.stop_button.click()
@@ -937,6 +995,7 @@ def test_back_from_summary_returns_to_the_questions(qtbot, make_window, photos, 
     _, engine = _one_unsure(store, photos, make_jpeg)
     w = make_window(engine)
     _to_setup(w, photos)
+    _tick(w.face_setup_page, "Atanu")
     w.face_setup_page.start_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
     page = w.face_question_page
@@ -955,10 +1014,12 @@ def test_cancel_questions_returns_to_setup(qtbot, make_window, photos, store, ma
     _, engine = _one_unsure(store, photos, make_jpeg)
     w = make_window(engine)
     _to_setup(w, photos)
+    _tick(w.face_setup_page, "Atanu")
     w.face_setup_page.start_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
     w.face_question_page.cancel_button.click()
     assert w.current_page() is w.face_setup_page
+    assert _rows(w.face_setup_page) == [("Atanu", True)]
     assert w._plan is None
 
 
@@ -973,6 +1034,7 @@ def test_planning_error_after_questions_goes_home(qtbot, make_window, photos, st
     monkeypatch.setattr(main_window, "plan_faces", unplugged)
     w = make_window(engine)
     _to_setup(w, photos)
+    _tick(w.face_setup_page, "Atanu")
     w.face_setup_page.start_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
     w.face_question_page.yes_button.click()
@@ -1013,11 +1075,13 @@ def test_cancel_face_scan_returns_to_setup(qtbot, make_window, photos, store, ma
     engine.hold["a.jpg"] = threading.Event()
     w = make_window(engine)
     _to_setup(w, photos)
+    _tick(w.face_setup_page, "Atanu")
     w.face_setup_page.start_button.click()
     qtbot.waitUntil(lambda: engine.calls == ["a.jpg"])
     w.cancel_button.click()
     engine.hold["a.jpg"].set()
     qtbot.waitUntil(lambda: w.current_page() is w.face_setup_page)
+    assert _rows(w.face_setup_page) == [("Atanu", True)]
     assert w._plan is None
 
 
@@ -1034,6 +1098,7 @@ def test_face_scan_error_goes_home(qtbot, make_window, photos, store, make_jpeg,
     w = make_window()
     w.engine_factory = lambda use_gpu: Broken()
     _to_setup(w, photos)
+    _tick(w.face_setup_page, "Atanu")
     w.face_setup_page.start_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.home)
     assert errors == ["Could not look for faces: model trouble"]
@@ -1074,8 +1139,28 @@ def test_naming_with_nobody_remembered_starts_sorting(qtbot, make_window, photos
     qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
     (atanu,) = store.people()
     assert atanu.name == "Atanu"
-    assert load_settings(settings_path).face_people == [atanu.id]
+    assert _rows(w.face_setup_page) == [("Atanu", True)]  # just named: ticked
     assert [(m.src, m.dst) for m in w._plan.moves] == [("a.jpg", "Atanu/a.jpg")]
+
+
+def test_first_naming_of_several_people_waits_for_start(qtbot, make_window, photos, store,
+                                                       make_jpeg, tmp_path, models_present,
+                                                       monkeypatch):
+    # Two or more ticked sorts group photos only: that is the owner's to start.
+    me = make_jpeg(tmp_path / "faces" / "two.jpg", size=(200, 200))
+    make_jpeg(photos / "a.jpg")
+    engine = _two_faces(me)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(me), ""))
+    _name_in_dialog(monkeypatch, qtbot, "Atanu", "Zoe")
+    w = make_window(engine)
+    _to_setup(w, photos)
+    w.face_setup_page.add_button.click()
+    assert [p.name for p in store.people()] == ["Atanu", "Zoe"]
+    assert w.current_page() is w.face_setup_page
+    assert _rows(w.face_setup_page) == [("Atanu", True), ("Zoe", True)]
+    assert w.face_setup_page.start_button.isEnabled()
+    assert w._task is None
+    assert engine.calls == ["two.jpg"]  # no photo looked at for a sort
 
 
 def test_photo_dropped_on_setup_names_its_faces(qtbot, make_window, photos, store,
@@ -1104,20 +1189,22 @@ def test_photo_dropped_on_setup_names_its_faces(qtbot, make_window, photos, stor
 def test_naming_with_people_listed_waits_for_start(qtbot, make_window, photos, store,
                                                    make_jpeg, tmp_path, models_present,
                                                    monkeypatch, settings_path):
-    atanu = _remember(store, "Atanu", 1)
+    _remember(store, "Atanu", 1)
+    _remember(store, "Bob", 3)
     me = make_jpeg(tmp_path / "faces" / "zoe.jpg", size=(200, 200))
     engine = FakeEngine({"zoe.jpg": [_face(_unit(2))]})
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(me), ""))
     _name_in_dialog(monkeypatch, qtbot, "Zoe")
     w = make_window(engine)
     _to_setup(w, photos)
-    _item(w.face_setup_page, "Atanu").setCheckState(Qt.CheckState.Unchecked)
+    assert _rows(w.face_setup_page) == [("Atanu", False), ("Bob", False)]
+    _tick(w.face_setup_page, "Bob")
     w.face_setup_page.add_button.click()
     assert w.current_page() is w.face_setup_page
-    assert _rows(w.face_setup_page) == [("Atanu", False), ("Zoe", True)]
-    zoe = store.people()[1]
-    assert load_settings(settings_path).face_people == [zoe.id]
-    assert atanu.id not in load_settings(settings_path).face_people
+    # The new person comes back ticked; the ticks made before are kept.
+    assert _rows(w.face_setup_page) == [("Atanu", False), ("Bob", True), ("Zoe", True)]
+    assert w.face_setup_page.start_button.isEnabled()
+    assert load_settings(settings_path).face_people == []
 
 
 def test_add_photos_to_a_person(qtbot, make_window, photos, store, make_jpeg, tmp_path,
@@ -1135,13 +1222,16 @@ def test_add_photos_to_a_person(qtbot, make_window, photos, store, make_jpeg, tm
         return self.result()
 
     monkeypatch.setattr(FaceNamingDialog, "exec", fake_exec)
+    _remember(store, "Bob", 3)
     w = make_window(engine)
     _to_setup(w, photos)
-    w.face_setup_page.people_list.setCurrentRow(0)
+    _tick(w.face_setup_page, "Bob")
+    w.face_setup_page.people_list.setCurrentItem(_item(w.face_setup_page, "Atanu"))
     w.face_setup_page.more_button.click()
     assert len(opened) == 1
     assert len(store.people()[0].embeddings) == 2
     assert w.current_page() is w.face_setup_page  # no sort started
+    assert _rows(w.face_setup_page) == [("Atanu", False), ("Bob", True)]  # ticks unchanged
 
 
 def test_settings_gets_the_windows_people_store(make_window, monkeypatch, store):

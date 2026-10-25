@@ -25,6 +25,7 @@ from photosort.thresholds import FACE_FOLDER_MAX, FACE_FOLDER_MAX_BYTES
 ATANU = Person("a" * 32, "Atanu", np.eye(512, dtype=np.float32)[[0]], Path("a.jpg"))
 ZOE = Person("b" * 32, "Zoe", np.eye(512, dtype=np.float32)[[1]], Path("b.jpg"))
 LOWER = Person("c" * 32, "atanu", np.eye(512, dtype=np.float32)[[0]], Path("c.jpg"))
+BOB = Person("f" * 32, "bob", np.eye(512, dtype=np.float32)[[3]], Path("f.jpg"))
 STRANGER_AXIS = 2
 _SPARE = 511  # takes up the rest of each face's length
 
@@ -61,16 +62,18 @@ def touch(root: Path, *rels: str) -> None:
 
 
 def sort(root, faces, people=(ATANU, ZOE), answers=None, subfolders=False):
+    """Sort root for people, the ones ticked: with two or more, group photos only."""
     scan = find_face_matches(root, subfolders, list(people), FakeEngine(faces))
     return scan, plan_faces(root, scan, list(people), answers or {})
 
 
 def test_single_person_sure_goes_to_name_folder(tmp_path):
     touch(tmp_path, "x.jpg")
-    scan, plan = sort(tmp_path, {"x.jpg": [face({0: 0.9})]})
+    scan, plan = sort(tmp_path, {"x.jpg": [face({0: 0.9})]}, people=(ATANU,))
     assert scan.sure == {"x.jpg": {ATANU.id}}
     assert scan.questions == []
     assert (scan.photos, scan.unreadable) == (1, 0)
+    assert not scan.groups_only
     assert plan.mode == "face"
     assert plan.moves == [Move("x.jpg", "Atanu/x.jpg")]
     assert plan.summary == ["1 photos → 1 person folders, 0 together folders",
@@ -130,7 +133,7 @@ def test_together_folder_fits_in_bytes(tmp_path):
 def test_stranger_ignored(tmp_path):
     touch(tmp_path, "x.jpg")
     scan, plan = sort(tmp_path, {"x.jpg": [face({0: 0.9}), face({STRANGER_AXIS: 0.95}),
-                                           face({1: 0.2})]})
+                                           face({1: 0.2})]}, people=(ATANU,))
     assert scan.sure == {"x.jpg": {ATANU.id}}
     assert scan.questions == []
     assert plan.moves == [Move("x.jpg", "Atanu/x.jpg")]
@@ -166,39 +169,113 @@ def test_confidence_percent():
 
 
 def test_questions_ordered_by_rel_then_name(tmp_path):
-    bob = Person("f" * 32, "bob", np.eye(512, dtype=np.float32)[[3]], Path("f.jpg"))
     touch(tmp_path, "b.jpg", "a.jpg")
     scan, _ = sort(tmp_path, {"b.jpg": [face({1: 0.4}), face({3: 0.35})],
-                              "a.jpg": [face({0: 0.32})]}, people=(ZOE, ATANU, bob))
+                              "a.jpg": [face({0: 0.32}), face({3: 0.4})]},
+                   people=(ZOE, ATANU, BOB))
     assert [(q.rel, q.name) for q in scan.questions] == [
-        ("a.jpg", "Atanu"), ("b.jpg", "bob"), ("b.jpg", "Zoe")]
+        ("a.jpg", "Atanu"), ("a.jpg", "bob"), ("b.jpg", "bob"), ("b.jpg", "Zoe")]
     assert scan.sure == {}
 
 
 def test_answers_yes_no_skip(tmp_path):
-    touch(tmp_path, "yes.jpg", "no.jpg", "skip.jpg", "open.jpg", "both.jpg")
-    faces = {
-        "yes.jpg": [face({1: 0.4})],
-        "no.jpg": [face({1: 0.4})],
-        "skip.jpg": [face({0: 0.9}), face({1: 0.4})],
-        "open.jpg": [face({0: 0.9}), face({1: 0.4})],
-        "both.jpg": [face({0: 0.9}), face({1: 0.4})],
-    }
+    touch(tmp_path, "yes.jpg", "no.jpg", "skip.jpg", "open.jpg")
+    faces = {name: [face({1: 0.4})] for name in ("yes.jpg", "no.jpg", "skip.jpg", "open.jpg")}
     answers = {("yes.jpg", ZOE.id): "yes", ("no.jpg", ZOE.id): "no",
-               ("skip.jpg", ZOE.id): "skip", ("both.jpg", ZOE.id): "yes"}
-    scan, plan = sort(tmp_path, faces, answers=answers)
-    assert len(scan.questions) == 5
-    assert plan.moves == [Move("both.jpg", "Atanu & Zoe/both.jpg"),
-                          Move("yes.jpg", "Zoe/yes.jpg")]
-    assert plan.summary == ["2 photos → 1 person folders, 1 together folders",
+               ("skip.jpg", ZOE.id): "skip"}
+    scan, plan = sort(tmp_path, faces, people=(ZOE,), answers=answers)
+    assert len(scan.questions) == 4
+    assert plan.moves == [Move("yes.jpg", "Zoe/yes.jpg")]
+    assert plan.summary == ["1 photos → 1 person folders, 0 together folders",
                             "3 photos stay where they are"]
 
 
-def test_no_keeps_sure_persons(tmp_path):
+def test_one_ticked_sorts_every_photo_of_them(tmp_path):
+    # One person ticked: as before, any photo with them goes to their folder,
+    # with strangers or not, and a lone unsure match is asked about.
+    touch(tmp_path, "alone.jpg", "with_zoe.jpg", "unsure.jpg")
+    faces = {"alone.jpg": [face({0: 0.9})],
+             "with_zoe.jpg": [face({0: 0.9}), face({1: 0.9})],  # Zoe not ticked
+             "unsure.jpg": [face({0: 0.4})]}
+    scan, plan = sort(tmp_path, faces, people=(ATANU,),
+                      answers={("unsure.jpg", ATANU.id): "yes"})
+    assert not scan.groups_only
+    assert [(q.rel, q.name) for q in scan.questions] == [("unsure.jpg", "Atanu")]
+    assert plan.moves == [Move("alone.jpg", "Atanu/alone.jpg"),
+                          Move("unsure.jpg", "Atanu/unsure.jpg"),
+                          Move("with_zoe.jpg", "Atanu/with_zoe.jpg")]
+
+
+def test_two_ticked_sorts_only_their_group_photos(tmp_path):
+    touch(tmp_path, "atanu.jpg", "zoe.jpg", "both.jpg", "crowd.jpg", "nobody.jpg")
+    faces = {"atanu.jpg": [face({0: 0.9})],
+             "zoe.jpg": [face({1: 0.9}), face({STRANGER_AXIS: 0.9})],
+             "both.jpg": [face({0: 0.9}), face({1: 0.9})],
+             "crowd.jpg": [face({0: 0.9}), face({STRANGER_AXIS: 0.9}), face({1: 0.9})],
+             "nobody.jpg": [face({STRANGER_AXIS: 0.9})]}
+    scan, plan = sort(tmp_path, faces, people=(ATANU, ZOE))
+    assert scan.groups_only
+    assert plan.moves == [Move("both.jpg", "Atanu & Zoe/both.jpg"),
+                          Move("crowd.jpg", "Atanu & Zoe/crowd.jpg")]
+    assert plan.summary == ["2 photos → 0 person folders, 1 together folders",
+                            "3 photos stay where they are"]
+
+
+def test_three_ticked_sorts_photos_of_any_two_of_them(tmp_path):
+    touch(tmp_path, "a_b.jpg", "a_z.jpg", "all.jpg", "a.jpg", "b_stranger.jpg")
+    faces = {"a_b.jpg": [face({0: 0.9}), face({3: 0.9})],
+             "a_z.jpg": [face({0: 0.9}), face({1: 0.9})],
+             "all.jpg": [face({0: 0.9}), face({1: 0.9}), face({3: 0.9})],
+             "a.jpg": [face({0: 0.9})],
+             "b_stranger.jpg": [face({3: 0.9}), face({STRANGER_AXIS: 0.9})]}
+    _, plan = sort(tmp_path, faces, people=(ATANU, ZOE, BOB))
+    assert plan.moves == [Move("a_b.jpg", "Atanu & bob/a_b.jpg"),
+                          Move("a_z.jpg", "Atanu & Zoe/a_z.jpg"),
+                          Move("all.jpg", "Atanu & bob & Zoe/all.jpg")]
+    assert plan.summary == ["3 photos → 0 person folders, 3 together folders",
+                            "2 photos stay where they are"]
+
+
+def test_groups_only_asks_only_what_can_make_a_group_photo(tmp_path):
+    touch(tmp_path, "sure_alone.jpg", "unsure_alone.jpg", "sure_and_unsure.jpg",
+          "two_unsure.jpg", "unsure_with_stranger.jpg")
+    faces = {"sure_alone.jpg": [face({0: 0.9})],
+             "unsure_alone.jpg": [face({1: 0.4})],
+             "sure_and_unsure.jpg": [face({0: 0.9}), face({1: 0.4})],
+             "two_unsure.jpg": [face({0: 0.4}), face({1: 0.35})],
+             "unsure_with_stranger.jpg": [face({0: 0.4}), face({STRANGER_AXIS: 0.9})]}
+    scan, plan = sort(tmp_path, faces, people=(ATANU, ZOE))
+    assert [(q.rel, q.name) for q in scan.questions] == [
+        ("sure_and_unsure.jpg", "Zoe"),
+        ("two_unsure.jpg", "Atanu"), ("two_unsure.jpg", "Zoe")]
+    assert scan.sure == {"sure_alone.jpg": {ATANU.id}, "sure_and_unsure.jpg": {ATANU.id}}
+    assert plan.moves == []  # nothing answered yet
+
+
+@pytest.mark.parametrize("answer, moves", [
+    ("yes", [Move("x.jpg", "Atanu & Zoe/x.jpg")]),
+    ("no", []),
+    ("skip", []),
+])
+def test_groups_only_answer_decides_the_group_photo(tmp_path, answer, moves):
     touch(tmp_path, "x.jpg")
     _, plan = sort(tmp_path, {"x.jpg": [face({0: 0.9}), face({1: 0.4})]},
-                   answers={("x.jpg", ZOE.id): "no"})
-    assert plan.moves == [Move("x.jpg", "Atanu/x.jpg")]
+                   people=(ATANU, ZOE), answers={("x.jpg", ZOE.id): answer})
+    assert plan.moves == moves
+    assert plan.summary[1] == f"{1 - len(moves)} photos stay where they are"
+
+
+def test_groups_only_needs_two_after_the_answers(tmp_path):
+    touch(tmp_path, "one_yes.jpg", "both_yes.jpg", "three.jpg")
+    faces = {"one_yes.jpg": [face({0: 0.4}), face({1: 0.35})],
+             "both_yes.jpg": [face({0: 0.4}), face({1: 0.35})],
+             "three.jpg": [face({0: 0.9}), face({1: 0.4}), face({3: 0.4})]}
+    answers = {("one_yes.jpg", ATANU.id): "yes", ("one_yes.jpg", ZOE.id): "no",
+               ("both_yes.jpg", ATANU.id): "yes", ("both_yes.jpg", ZOE.id): "yes",
+               ("three.jpg", ZOE.id): "no", ("three.jpg", BOB.id): "yes"}
+    _, plan = sort(tmp_path, faces, people=(ATANU, ZOE, BOB), answers=answers)
+    assert plan.moves == [Move("both_yes.jpg", "Atanu & Zoe/both_yes.jpg"),
+                          Move("three.jpg", "Atanu & bob/three.jpg")]
 
 
 def test_one_face_one_person(tmp_path):
@@ -212,8 +289,7 @@ def test_one_face_one_person(tmp_path):
     scan, plan = sort(tmp_path, faces)
     assert scan.sure == {"pair.jpg": {ATANU.id, ZOE.id}, "twice.jpg": {ATANU.id}}
     assert scan.questions == []
-    assert plan.moves == [Move("pair.jpg", "Atanu & Zoe/pair.jpg"),
-                          Move("twice.jpg", "Atanu/twice.jpg")]
+    assert plan.moves == [Move("pair.jpg", "Atanu & Zoe/pair.jpg")]  # twice.jpg: Atanu alone
 
 
 def test_one_person_one_face(tmp_path):
@@ -242,7 +318,7 @@ def test_videos_skipped(tmp_path):
 def test_unreadable_counted(tmp_path):
     touch(tmp_path, "bad.jpg", "x.jpg")
     scan, plan = sort(tmp_path, {"bad.jpg": UnreadableImage("bad"),
-                                 "x.jpg": [face({0: 0.9})]})
+                                 "x.jpg": [face({0: 0.9})]}, people=(ATANU,))
     assert (scan.photos, scan.unreadable) == (2, 1)
     assert plan.moves == [Move("x.jpg", "Atanu/x.jpg")]
     assert plan.summary == ["1 photos → 1 person folders, 0 together folders",
@@ -251,10 +327,10 @@ def test_unreadable_counted(tmp_path):
 
 
 def test_already_in_person_folder_unchanged(tmp_path):
-    touch(tmp_path, "Atanu/x.jpg", "atanu & zoe/y.jpg", "Old/Atanu/z.jpg")
+    touch(tmp_path, "Atanu/x.jpg", "Atanu/y.jpg", "Old/Atanu/z.jpg")
     faces = {"x.jpg": [face({0: 0.9})], "y.jpg": [face({0: 0.9}), face({1: 0.9})],
              "z.jpg": [face({0: 0.9})]}
-    _, plan = sort(tmp_path, faces, subfolders=True)
+    _, plan = sort(tmp_path, faces, people=(ATANU,), subfolders=True)
     # Only a photo directly inside its folder (at the root) is in place.
     assert plan.moves == [Move("Old/Atanu/z.jpg", "Atanu/z.jpg")]
     assert plan.unchanged == 2
@@ -263,11 +339,24 @@ def test_already_in_person_folder_unchanged(tmp_path):
                             "2 photos are already in their folders"]
 
 
+def test_groups_only_rerun_moves_group_photos_out_of_person_folders(tmp_path):
+    touch(tmp_path, "atanu & zoe/in.jpg", "Atanu/pair.jpg", "Atanu/alone.jpg")
+    faces = {"in.jpg": [face({0: 0.9}), face({1: 0.9})],
+             "pair.jpg": [face({0: 0.9}), face({1: 0.9})],
+             "alone.jpg": [face({0: 0.9})]}
+    _, plan = sort(tmp_path, faces, people=(ATANU, ZOE), subfolders=True)
+    assert plan.moves == [Move("Atanu/pair.jpg", "atanu & zoe/pair.jpg")]
+    assert plan.unchanged == 1
+    assert plan.summary == ["1 photos → 0 person folders, 1 together folders",
+                            "1 photos stay where they are",
+                            "1 photos are already in their folders"]
+
+
 def test_summary_counts_add_up_to_the_photos(tmp_path):
     touch(tmp_path, "Atanu/in.jpg", "move.jpg", "nobody.jpg", "bad.jpg")
     faces = {"in.jpg": [face({0: 0.9})], "move.jpg": [face({0: 0.9})],
              "bad.jpg": UnreadableImage("bad")}
-    _, plan = sort(tmp_path, faces, subfolders=True)
+    _, plan = sort(tmp_path, faces, people=(ATANU,), subfolders=True)
     assert plan.summary == ["1 photos → 1 person folders, 0 together folders",
                             "1 photos stay where they are",
                             "1 photos are already in their folders",
@@ -276,23 +365,25 @@ def test_summary_counts_add_up_to_the_photos(tmp_path):
 
 def test_move_clashes_get_numbered(tmp_path):
     touch(tmp_path, "Atanu/x.jpg", "x.jpg")
-    _, plan = sort(tmp_path, {"x.jpg": [face({0: 0.9})]})  # Atanu/x.jpg not scanned
+    _, plan = sort(tmp_path, {"x.jpg": [face({0: 0.9})]}, people=(ATANU,))  # Atanu/x.jpg not scanned
     assert plan.moves == [Move("x.jpg", "Atanu/x (1).jpg")]
 
 
 def test_existing_folder_case_reused(tmp_path):
     (tmp_path / "atanu").mkdir()
     touch(tmp_path, "x.jpg")
-    _, plan = sort(tmp_path, {"x.jpg": [face({0: 0.9})]})
+    _, plan = sort(tmp_path, {"x.jpg": [face({0: 0.9})]}, people=(ATANU,))
     assert plan.moves == [Move("x.jpg", "atanu/x.jpg")]
 
 
 def test_unknown_person_ignored_when_planning(tmp_path):
-    touch(tmp_path, "x.jpg")
-    scan = find_face_matches(tmp_path, False, [ATANU, ZOE],
-                             FakeEngine({"x.jpg": [face({0: 0.9}), face({1: 0.9})]}))
-    plan = plan_faces(tmp_path, scan, [ZOE], {})  # Atanu forgotten meanwhile
-    assert plan.moves == [Move("x.jpg", "Zoe/x.jpg")]
+    touch(tmp_path, "all.jpg", "pair.jpg")
+    faces = {"all.jpg": [face({0: 0.9}), face({1: 0.9}), face({3: 0.9})],
+             "pair.jpg": [face({0: 0.9}), face({1: 0.9})]}
+    scan = find_face_matches(tmp_path, False, [ATANU, ZOE, BOB], FakeEngine(faces))
+    plan = plan_faces(tmp_path, scan, [ZOE, BOB], {})  # Atanu forgotten meanwhile
+    # Still group photos only, as the scan was: pair.jpg is now Zoe's alone.
+    assert plan.moves == [Move("all.jpg", "bob & Zoe/all.jpg")]
 
 
 @pytest.mark.parametrize("name", ["Duplicates", "repeated shots", "BAD PHOTOS",
@@ -303,8 +394,10 @@ def test_names_of_skipped_folders_never_planned(tmp_path, name):
     touch(tmp_path, "both.jpg", "alone.jpg")
     _, plan = sort(tmp_path, {"both.jpg": [face({0: 0.9}), face({1: 0.9})],
                               "alone.jpg": [face({1: 0.9})]}, people=(ATANU, odd))
-    assert plan.moves == [Move("both.jpg", "Atanu/both.jpg")]
-    assert plan.summary[1] == "1 photos stay where they are"
+    assert plan.moves == []  # never "Atanu & <name>/"; Atanu alone is no group photo
+    assert plan.summary[1] == "2 photos stay where they are"
+    _, plan = sort(tmp_path, {"alone.jpg": [face({1: 0.9})]}, people=(odd,))
+    assert plan.moves == []
 
 
 def test_cancel_returns_none(tmp_path):
@@ -333,17 +426,18 @@ def test_progress_called_per_photo(tmp_path):
 
 def test_cache_used_on_second_scan(tmp_path):
     touch(tmp_path, "x.jpg", "y.jpg", "bad.jpg")
-    faces = {"x.jpg": [face({0: 0.9})], "y.jpg": [face({1: 0.375})],
+    faces = {"x.jpg": [face({0: 0.9})], "y.jpg": [face({0: 0.375})],
              "bad.jpg": UnreadableImage("bad")}
     with AnalysisCache(tmp_path) as cache:
-        first = find_face_matches(tmp_path, False, [ATANU, ZOE], FakeEngine(faces),
+        first = find_face_matches(tmp_path, False, [ATANU], FakeEngine(faces),
                                   cache=cache)
     engine = FakeEngine(faces)
     with AnalysisCache(tmp_path) as cache:
-        second = find_face_matches(tmp_path, False, [ATANU, ZOE], engine, cache=cache)
+        second = find_face_matches(tmp_path, False, [ATANU], engine, cache=cache)
     assert engine.calls == ["bad.jpg"]  # unreadable photos are not cached
     assert second.sure == first.sure == {"x.jpg": {ATANU.id}}
     assert second.questions == first.questions
+    assert len(second.questions) == 1
     assert second.unreadable == 1
 
 

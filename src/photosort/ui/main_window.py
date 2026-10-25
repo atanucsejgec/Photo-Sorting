@@ -262,19 +262,18 @@ class MainWindow(QMainWindow):
         return page
 
     def _build_face_setup(self) -> FaceSetupPage:
-        page = FaceSetupPage(self.settings)
+        page = FaceSetupPage()
         page.start.connect(self._start_face_sort)
         page.add_requested.connect(self._add_person)
         page.photo_dropped.connect(self._add_person)
         page.more_requested.connect(self._add_photos)
-        page.selection_changed.connect(self._save_settings)
         page.back_button.clicked.connect(lambda: self._show(self.home))
         return page
 
     def _build_face_questions(self) -> FaceQuestionPage:
         page = FaceQuestionPage()
         page.finished.connect(self._plan_face_moves)
-        page.cancelled.connect(self._show_face_setup)
+        page.cancelled.connect(self._back_to_face_setup)
         return page
 
     def _build_summary(self) -> QWidget:
@@ -583,26 +582,35 @@ class MainWindow(QMainWindow):
     # ----- face ------------------------------------------------------------
 
     def _show_face_setup(self) -> None:
+        """Open the Face setup page, everyone unticked."""
         self.face_setup_page.load(self.people_store)
         self._show(self.face_setup_page)
 
+    def _back_to_face_setup(self) -> None:
+        """Back to the Face setup page from a sort, with the people ticked for it."""
+        self.face_setup_page.load(self.people_store, self.face_setup_page.ticked_ids())
+        self._show(self.face_setup_page)
+
     def _name_faces(self, path: Path, name: str = "") -> tuple[list[Person], bool]:
-        """Let the owner name the faces in path. Return the people saved (now
-        ticked) and whether the owner finished with Save.
+        """Let the owner name the faces in path. Return the people saved and
+        whether the owner finished with Save. The people new to the store come
+        back ticked; the ticks of the others stay as they were.
 
         The dialog has a face engine of its own, let go when it closes, so
         the models are not held in memory twice for the life of the app.
         """
+        try:
+            known = {p.id for p in self.people_store.people()}
+        except PeopleError:
+            known = set()
         engine = self.engine_factory(self.settings.use_gpu)
         dialog = FaceNamingDialog(path, engine, self.people_store, self, name=name)
         finished = dialog.exec() == QDialog.DialogCode.Accepted
         saved = dialog.added()
         dialog.deleteLater()
-        if saved:
-            ids = [*self.settings.face_people, *(p.id for p in saved)]
-            self.settings.face_people = list(dict.fromkeys(ids))
-            self._save_settings()
-        self.face_setup_page.load(self.people_store)
+        ticked = [*self.face_setup_page.ticked_ids(),
+                  *(p.id for p in saved if p.id not in known)]
+        self.face_setup_page.load(self.people_store, ticked)
         return saved, finished
 
     def _add_person(self, path: Path | None = None) -> None:
@@ -615,7 +623,9 @@ class MainWindow(QMainWindow):
             return
         nobody_yet = not self.face_setup_page.has_people()
         saved, finished = self._name_faces(path)
-        if saved and finished and nobody_yet:  # §5.2: sorting starts after naming
+        # §5.2: sorting starts after naming. Not for two or more people: that
+        # would be a sort of group photos only, which the owner should choose.
+        if len(saved) == 1 and finished and nobody_yet:
             self._start_face_sort(self.face_setup_page.ticked_ids())
 
     def _add_photos(self, person_id: str) -> None:
@@ -644,7 +654,6 @@ class MainWindow(QMainWindow):
         if not people:
             self.face_setup_page.load(self.people_store)
             return
-        self._save_settings()  # the ticks, also when left as they first came up
         self._plan = None
         self._face_scan = None
         self._face_people = people
@@ -657,7 +666,7 @@ class MainWindow(QMainWindow):
 
     def _on_face_scan(self, scan: FaceScan | None) -> None:
         if scan is None or self._cancel_pressed():
-            self._show_face_setup()
+            self._back_to_face_setup()
             return
         self._face_scan = scan
         if scan.questions:
@@ -726,7 +735,7 @@ class MainWindow(QMainWindow):
             self._show(self.face_question_page)
         elif self._face_scan is not None:
             self._plan = None
-            self._show_face_setup()
+            self._back_to_face_setup()
         else:
             self._show(self.home)
 
