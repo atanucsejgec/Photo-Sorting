@@ -607,11 +607,65 @@ def test_buttons_answer_too(qtbot, asking):
     page = _question_page(qtbot, asking)
     done = []
     page.finished.connect(done.append)
+    page.yes_button.click()
     page.no_button.click()
     page.skip_button.click()
-    page.yes_button.click()
     a, b_atanu, b_zoe = _keys(scan)
-    assert done == [{a: "no", b_atanu: "skip", b_zoe: "yes"}]
+    assert done == [{a: "yes", b_atanu: "no", b_zoe: "skip"}]
+
+
+def test_skip_passes_over_the_photos_other_questions(qtbot, asking, make_jpeg):
+    root, scan, people = asking
+    make_jpeg(root / "c.jpg", size=(200, 200))
+    scan.questions.append(Question("c.jpg", people[1].id, "Zoe", (20.0, 20.0, 80.0, 80.0),
+                                   (200, 200), 0.40, 63))
+    a, b_atanu, b_zoe, c = _keys(scan)
+    page = _question_page(qtbot, asking)
+    done = []
+    page.finished.connect(done.append)
+    qtbot.keyClick(page, Qt.Key.Key_Y)
+    qtbot.keyClick(page, Qt.Key.Key_S)  # b.jpg stays put: Zoe in it needn't be asked
+    assert page.counter_label.text() == "4 of 4"
+    assert page.photo_view.toolTip() == "c.jpg"
+    page.back_button.click()  # back onto the question passed over
+    assert page.counter_label.text() == "3 of 4"
+    assert page.answer_label.text() == ""
+    page.back_button.click()
+    assert page.answer_label.text() == "Your answer: Skip"
+    qtbot.keyClick(page, Qt.Key.Key_N)  # not skipped after all: Zoe is asked
+    assert page.counter_label.text() == "3 of 4"
+    qtbot.keyClick(page, Qt.Key.Key_Y)
+    qtbot.keyClick(page, Qt.Key.Key_Y)
+    assert done == [{a: "yes", b_atanu: "no", b_zoe: "yes", c: "yes"}]
+
+
+def test_skip_on_the_last_photo_finishes(qtbot, asking):
+    root, scan, _ = asking
+    page = _question_page(qtbot, asking)
+    done = []
+    page.finished.connect(done.append)
+    qtbot.keyClick(page, Qt.Key.Key_N)
+    qtbot.keyClick(page, Qt.Key.Key_S)
+    a, b_atanu, _ = _keys(scan)
+    assert done == [{a: "no", b_atanu: "skip"}]
+
+
+def test_keys_with_a_modifier_do_nothing(qtbot, asking):
+    page = _question_page(qtbot, asking)
+    done = []
+    page.finished.connect(done.append)
+    qtbot.keyClick(page, Qt.Key.Key_Y)
+    for key, modifier in ((Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier),
+                          (Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier),
+                          (Qt.Key.Key_N, Qt.KeyboardModifier.AltModifier),
+                          (Qt.Key.Key_S, Qt.KeyboardModifier.ShiftModifier),
+                          (Qt.Key.Key_Left, Qt.KeyboardModifier.ControlModifier)):
+        qtbot.keyClick(page, key, modifier)
+        assert page.counter_label.text() == "2 of 3"
+        assert page.answer_label.text() == ""
+    qtbot.keyClick(page, Qt.Key.Key_Left, Qt.KeyboardModifier.KeypadModifier)
+    assert page.counter_label.text() == "1 of 3"  # the keypad's arrow works
+    assert done == []
 
 
 def test_previous_lets_an_answer_be_changed(qtbot, asking):
@@ -864,15 +918,18 @@ def test_unsure_match_is_asked_before_planning(qtbot, make_window, photos, store
 
 def test_stop_asking_leaves_unanswered_photos(qtbot, make_window, photos, store,
                                               make_jpeg, models_present):
-    _, engine = _one_unsure(store, photos, make_jpeg)
+    atanu, engine = _one_unsure(store, photos, make_jpeg)
+    make_jpeg(photos / "b.jpg")
+    engine.faces["b.jpg"] = [_face(atanu.embeddings[0])]  # surely Atanu
     w = make_window(engine)
     _to_setup(w, photos)
     w.face_setup_page.start_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
     w.face_question_page.stop_button.click()
     assert w.current_page() is w.summary_page
-    assert w._plan.moves == []
-    assert not w.go_button.isEnabled()
+    assert [(m.src, m.dst) for m in w._plan.moves] == [("b.jpg", "Atanu/b.jpg")]
+    assert w.summary_label.text().splitlines()[1] == "1 photos stay where they are"
+    assert w.go_button.isEnabled()
 
 
 def test_back_from_summary_returns_to_the_questions(qtbot, make_window, photos, store,

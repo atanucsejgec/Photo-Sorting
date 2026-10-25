@@ -3,8 +3,10 @@
 Each question shows the photo with the face in question boxed, beside the
 person's remembered face picture: "Is this Atanu? 63% sure". Yes adds that
 person to the photo, No leaves them out, Skip leaves the whole photo where
-it is (face_mode.plan_faces). Stop asking finishes with the answers so far;
-the photos with a question left unanswered stay where they are.
+it is (face_mode.plan_faces), so the photo's other questions are passed
+over (Previous still goes back to them). Stop asking finishes with the
+answers so far; the photos with a question left unanswered stay where they
+are.
 
 Photos are decoded on pool threads (a big HEIC takes long enough to freeze
 the window) and arrive at FaceQuestionPage._photo_ready tagged with the
@@ -14,7 +16,8 @@ does, so the face box (in the decoded photo's pixels, Question.image_size)
 lands on the face whatever size the photo is decoded at.
 
 None of the page's buttons takes the keyboard focus, so Y, N, S and Left
-reach FaceQuestionPage.keyPressEvent whatever was clicked last.
+reach FaceQuestionPage.keyPressEvent whatever was clicked last. They count
+only pressed alone (Ctrl+S is not Skip).
 """
 
 import logging
@@ -309,10 +312,20 @@ class FaceQuestionPage(QWidget):
     def _answer(self, answer: Answer) -> None:
         """Record answer for the current question and move on."""
         self._answers[self._key(self._questions[self._index])] = answer
-        if self._index + 1 < len(self._questions):
-            self._show_question(self._index + 1)
+        following = self._next_question(self._index)
+        if following is not None:
+            self._show_question(following)
         else:
             self._finish()
+
+    def _next_question(self, index: int) -> int | None:
+        """The first question after index whose photo is not skipped, if any:
+        a skipped photo stays put whatever the answers to its other questions."""
+        skipped = {rel for (rel, _), answer in self._answers.items() if answer == "skip"}
+        for n in range(index + 1, len(self._questions)):
+            if self._questions[n].rel not in skipped:
+                return n
+        return None
 
     def _previous(self) -> None:
         if self._index > 0:
@@ -330,7 +343,9 @@ class FaceQuestionPage(QWidget):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         key = event.key()
-        if not self._questions:
+        modifiers = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
+        alone = modifiers == Qt.KeyboardModifier.NoModifier
+        if not self._questions or not alone:
             super().keyPressEvent(event)
         elif key == Qt.Key.Key_Y:
             self._answer("yes")
