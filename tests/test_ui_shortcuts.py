@@ -1,0 +1,192 @@
+"""Shortcuts are bound and recorded in one call; the strip shows the records;
+the themed dialogs answer by keyboard."""
+
+import pytest
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QVBoxLayout, QWidget
+
+from photosort.ui import dialogs, shortcuts
+from photosort.ui.shortcuts import ShortcutStrip
+
+
+@pytest.fixture
+def screen(qtbot):
+    """A shown screen: a name field with keys of its own, a plain button and a strip.
+
+    The screen binds Esc and describes its arrows.
+    """
+    page = QWidget()
+    layout = QVBoxLayout(page)
+    page.edit = QLineEdit()
+    page.button = QPushButton("Plain")
+    page.strip = ShortcutStrip()
+    for widget in (page.edit, page.button, page.strip):
+        layout.addWidget(widget)
+    page.pressed = []
+    shortcuts.bind(page, "Esc", "Esc", "back", lambda: page.pressed.append("Esc"))
+    shortcuts.describe(page, "←→", "move")
+    shortcuts.describe(page.edit, "Enter", "done")
+    shortcuts.describe(page.edit, "Esc", "stop editing")
+    qtbot.addWidget(page)
+    page.show()
+    qtbot.waitExposed(page)
+    page.activateWindow()
+    return page
+
+
+def _focus(qtbot, widget):
+    widget.setFocus()
+    qtbot.waitUntil(lambda: QApplication.focusWidget() is widget)
+
+
+def test_bind_makes_a_working_shortcut_and_records_it(qtbot, screen):
+    shortcuts.bind(screen, "Ctrl+Return", "Ctrl+Enter", "continue",
+                   lambda: screen.pressed.append("Ctrl+Enter"))
+    _focus(qtbot, screen.button)
+    qtbot.keyClick(screen.button, Qt.Key.Key_Escape)
+    qtbot.keyClick(screen.button, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    qtbot.keyClick(screen.button, Qt.Key.Key_Enter,  # the keypad's Enter too
+                   Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.KeypadModifier)
+    assert screen.pressed == ["Esc", "Ctrl+Enter", "Ctrl+Enter"]
+    assert shortcuts.keys_for(screen.button, screen) == [
+        ("Esc", "back"), ("←→", "move"), ("Ctrl+Enter", "continue")]
+
+
+def test_a_disabled_shortcut_is_not_listed(qtbot, screen):
+    shortcut = shortcuts.bind(screen, "F2", "F2", "rename", lambda: None)
+    assert ("F2", "rename") in shortcuts.keys_for(None, screen)
+    shortcut.setEnabled(False)
+    assert ("F2", "rename") not in shortcuts.keys_for(None, screen)
+
+
+def test_the_focused_controls_keys_come_first_and_leave_with_focus(qtbot, screen):
+    assert shortcuts.keys_for(screen.edit, screen) == [
+        ("Enter", "done"), ("Esc", "stop editing"), ("←→", "move")]  # one Esc, the field's
+    assert shortcuts.keys_for(screen.button, screen) == [("Esc", "back"), ("←→", "move")]
+    assert shortcuts.keys_for(None, screen) == [("Esc", "back"), ("←→", "move")]
+
+
+def test_the_nearest_recorded_ancestor_speaks_for_the_focus(qtbot, screen):
+    box = QWidget(screen)
+    inner = QPushButton("Inner", box)
+    shortcuts.describe(box, "Space", "tick")
+    assert shortcuts.keys_for(inner, screen) == [
+        ("Space", "tick"), ("Esc", "back"), ("←→", "move")]
+
+
+def test_focus_outside_the_screen_adds_nothing(qtbot, screen):
+    other = QLineEdit()
+    qtbot.addWidget(other)
+    shortcuts.describe(other, "Enter", "elsewhere")
+    assert shortcuts.keys_for(other, screen) == [("Esc", "back"), ("←→", "move")]
+
+
+def test_the_strip_follows_focus(qtbot, screen):
+    screen.strip.show_for(screen)
+    _focus(qtbot, screen.edit)
+    qtbot.waitUntil(lambda: screen.strip.text() == "Enter done · Esc stop editing · ←→ move")
+    _focus(qtbot, screen.button)
+    qtbot.waitUntil(lambda: screen.strip.text() == "Esc back · ←→ move")
+
+
+def test_the_strip_wraps_rather_than_clips(qtbot, screen):
+    for n in range(8):
+        shortcuts.describe(screen, f"F{n + 1}", f"word{n}")
+    screen.strip.show_for(screen)
+    assert screen.strip.objectName() == "shortcutStrip"
+    assert screen.strip.hasHeightForWidth()
+    assert screen.strip.heightForWidth(120) > screen.strip.heightForWidth(4000)
+
+
+def test_the_strip_is_smaller_than_the_body_text(qtbot, screen):
+    body = QApplication.font().pointSizeF()
+    assert screen.strip.font().pointSizeF() == pytest.approx(body * 0.85, abs=0.05)
+
+
+def test_a_deleted_strip_ignores_focus_changes(qtbot, screen):
+    strip = ShortcutStrip(screen)
+    strip.show_for(screen)
+    strip.deleteLater()
+    qtbot.wait(10)
+    _focus(qtbot, screen.edit)
+    _focus(qtbot, screen.button)  # no error from the strip's slot
+
+
+# ----- dialogs -----------------------------------------------------------------
+
+def _answer(qtbot, *keys):
+    """Press keys in the next modal dialog, once it shows; return what it showed."""
+    seen = {}
+
+    def press():
+        dialog = QApplication.activeModalWidget()
+        if dialog is None or dialog.focusWidget() is None:
+            QTimer.singleShot(10, press)
+            return
+        seen["focus"] = dialog.focusWidget().text()
+        seen["strip"] = dialog.findChild(ShortcutStrip).text()
+        seen["primary"] = [b.text() for b in dialog.findChildren(QPushButton)
+                           if b.objectName() == "primaryButton"]
+        for key in keys:
+            qtbot.keyClick(dialog.focusWidget(), key)
+
+    QTimer.singleShot(0, press)
+    return seen
+
+
+def test_ask_enter_takes_the_default_no(qtbot):
+    seen = _answer(qtbot, Qt.Key.Key_Return)
+    assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep") is False
+    assert seen["focus"] == "Keep"
+    assert seen["primary"] == ["Keep"]  # the default carries the accent
+    assert seen["strip"] == "←→ choose · Enter pick · Esc no/close"
+
+
+def test_ask_arrows_then_enter_picks_yes(qtbot):
+    seen = _answer(qtbot, Qt.Key.Key_Right, Qt.Key.Key_Return)
+    assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep") is True
+    assert seen["focus"] == "Keep"
+    seen = _answer(qtbot, Qt.Key.Key_Left, Qt.Key.Key_Return)  # either way round
+    assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep") is True
+
+
+def test_ask_escape_is_no(qtbot):
+    _answer(qtbot, Qt.Key.Key_Escape)
+    assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep",
+                       default="yes") is False
+
+
+def test_ask_default_yes_starts_on_yes(qtbot):
+    seen = _answer(qtbot, Qt.Key.Key_Return)
+    assert dialogs.ask(None, "Download", "Download now?", yes="Download", no="Not now",
+                       default="yes") is True
+    assert seen["focus"] == "Download"
+
+
+def test_ask_shows_the_title_and_text(qtbot):
+    texts = {}
+
+    def look():
+        dialog = QApplication.activeModalWidget()
+        if dialog is None:
+            QTimer.singleShot(10, look)
+            return
+        texts["title"] = dialog.windowTitle()
+        texts["labels"] = [label.text() for label in dialog.findChildren(type(dialog.text_label))]
+        dialog.reject()
+
+    QTimer.singleShot(0, look)
+    dialogs.ask(None, "Leave this review?", "Your answers so far will be lost.",
+                yes="Leave", no="Stay")
+    assert texts["title"] == "Leave this review?"
+    assert "Your answers so far will be lost." in texts["labels"]
+
+
+@pytest.mark.parametrize("show", [dialogs.warn, dialogs.info])
+@pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Escape])
+def test_warn_and_info_close_with_enter_or_esc(qtbot, show, key):
+    seen = _answer(qtbot, key)
+    assert show(None, "Settings", "Could not save settings: disk full") is None
+    assert seen["focus"] == "OK"
+    assert seen["strip"] == "Enter OK · Esc close"
+    assert QApplication.activeModalWidget() is None

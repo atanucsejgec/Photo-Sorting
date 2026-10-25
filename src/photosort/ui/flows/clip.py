@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from photosort.ai.models import CLIP_MODELS
 from photosort.cache import AnalysisCache
@@ -80,7 +80,7 @@ def _on_sorted(window: "MainWindow", sort: _ClipSort | None) -> None:
 
 def _ask(window: "MainWindow", answers: dict[str, str | None]) -> None:
     """Show the unsure photos, picked as in answers; the answers are then planned."""
-    sort: _ClipSort = window.flow_state
+    sort = cast(_ClipSort, window.flow_state)
     title = None  # "N photos to check"
     if window.mode == "notes":
         n = len(sort.unsure)
@@ -92,7 +92,7 @@ def _ask(window: "MainWindow", answers: dict[str, str | None]) -> None:
 def plan_moves(window: "MainWindow", answers: dict[str, str | None]) -> None:
     """Plan the moves, with the owner's answers for the unsure photos."""
     planner = content.plan_content if window.mode == "content" else notes.plan_notes
-    sort: _ClipSort = window.flow_state
+    sort = cast(_ClipSort, window.flow_state)
     try:
         plan = planner(window.root, sort.scan, sort.sure, answers)
     except OSError as e:  # e.g. the drive was unplugged during the review

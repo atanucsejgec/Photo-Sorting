@@ -15,8 +15,6 @@ from PySide6.QtWidgets import (
 from photosort.settings import DEFAULT_CONTENT_CATEGORIES, category_problem
 from photosort.thresholds import CONTENT_CATEGORIES_MAX
 
-_PROBLEM_STYLE = "color: #b00020;"
-
 
 class CategoryNameDialog(QDialog):
     """Asks for a category name; OK is only possible for a name that is fine
@@ -30,7 +28,7 @@ class CategoryNameDialog(QDialog):
         self.name_edit = QLineEdit(name)
         self.message_label = QLabel()
         self.message_label.setWordWrap(True)
-        self.message_label.setStyleSheet(_PROBLEM_STYLE)
+        self.message_label.setObjectName("error")  # see theme
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
@@ -72,7 +70,7 @@ class CategoryEditor(QDialog):
         self.list_widget.addItems(categories)
         self.message_label = QLabel()
         self.message_label.setWordWrap(True)
-        self.message_label.setStyleSheet(_PROBLEM_STYLE)
+        self.message_label.setObjectName("error")  # see theme
 
         self.add_button = QPushButton("Add…")
         self.rename_button = QPushButton("Rename…")

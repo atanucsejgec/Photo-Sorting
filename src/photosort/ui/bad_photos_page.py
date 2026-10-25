@@ -49,7 +49,7 @@ class BadPhotoCard(QFrame):
         self.thumb_label = _Thumbnail(LOADING)
         self.thumb_label.setFixedSize(THUMB_PX, THUMB_PX)
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.thumb_label.setStyleSheet("background: #d8d8d8; color: #555;")
+        self.thumb_label.setObjectName("thumb")  # see theme
         self.thumb_label.setToolTip("Double-click to see it larger")
 
         folder, _, name = candidate.rel.rpartition("/")

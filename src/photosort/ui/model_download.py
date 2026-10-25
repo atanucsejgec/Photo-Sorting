@@ -10,9 +10,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from PySide6.QtCore import QEventLoop, QObject, Qt
-from PySide6.QtWidgets import QMessageBox, QProgressDialog, QWidget
+from PySide6.QtWidgets import QProgressDialog, QWidget
 
 from photosort.ai import models
+from photosort.ui import dialogs
 from photosort.ui.worker import Task
 
 QUESTION = "Photo Sorter needs to download the face models once (180 MB). Download now?"
@@ -43,19 +44,20 @@ def _wording(keys: list[str]) -> _Wording:
 
 
 def show_error(parent: QWidget | None, text: str, title: str = TITLE) -> None:
-    QMessageBox.warning(parent, title, text)
+    dialogs.warn(parent, title, text)
 
 
 def ensure_models(parent: QWidget | None, keys: Iterable[str]) -> bool:
-    """True when every model in keys is present, downloading after a Yes."""
+    """True when every model in keys is present, downloading after a yes."""
     keys = list(keys)
     todo = models.missing(keys)
     if not todo:
         return True
     wording = _wording(keys)
     mb = round(sum(models.MODELS[k].size for k in todo) / 1_000_000)
-    answer = QMessageBox.question(parent, wording.title, wording.question.format(mb=mb))
-    if answer != QMessageBox.StandardButton.Yes:
+    # A big download wants a deliberate yes: Enter alone answers no.
+    if not dialogs.ask(parent, wording.title, wording.question.format(mb=mb),
+                       yes="Download", no="Not now", default="no"):
         return False
     _Downloads(parent, todo, wording).run()
     return not models.missing(keys)

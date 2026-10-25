@@ -7,15 +7,14 @@ import numpy as np
 import pytest
 from PIL import Image
 from PySide6.QtCore import QMimeData, QPointF, Qt, QThreadPool, QUrl
-from PySide6.QtGui import QDropEvent
-from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
+from PySide6.QtGui import QDropEvent, QKeySequence
+from PySide6.QtWidgets import QDialog, QFileDialog
 
 from photosort.faces import Face
 from photosort.modes.face_mode import FaceScan, Question
 from photosort.people import PeopleStore
 from photosort.settings import Settings, load_settings
-from photosort.ui import main_window
-from photosort.ui import face_question_page
+from photosort.ui import dialogs, face_question_page, main_window
 from photosort.ui.face_naming_dialog import FaceNamingDialog
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage, RememberedPeopleDialog
@@ -78,20 +77,24 @@ def wait_for_pool():
 
 @pytest.fixture
 def asked(monkeypatch):
-    """QMessageBox.question answers with asked.answer; the texts go in asked.texts."""
+    """dialogs.ask answers with asked.answer; the texts go in asked.texts, the
+    defaults in asked.defaults."""
 
     class Asked:
-        answer = QMessageBox.StandardButton.Yes
+        answer = True
         texts: list[str] = []
+        defaults: list[str] = []
 
     record = Asked()
     record.texts = []
+    record.defaults = []
 
-    def question(parent, title, text, *args, **kwargs):
+    def ask(parent, title, text, yes, no, default="no"):
         record.texts.append(text)
+        record.defaults.append(default)
         return record.answer
 
-    monkeypatch.setattr(QMessageBox, "question", question)
+    monkeypatch.setattr(dialogs, "ask", ask)
     return record
 
 
@@ -181,6 +184,16 @@ def test_setup_page_buttons_name_the_selected_person(qtbot, store):
     assert asked_for == [atanu.id]
 
 
+def test_setup_page_buttons_show_an_ampersand_in_a_name(qtbot, store):
+    _remember(store, "Ben&Jo", 1)  # " & " is refused; "&" alone is not
+    page = _make_page(qtbot)
+    page.load(store)
+    page.people_list.setCurrentItem(_item(page, "Ben&Jo"))
+    for button in (page.more_button, page.delete_button):
+        assert "Ben&Jo" in button.text().replace("&&", "&")
+        assert QKeySequence.mnemonic(button.text()).isEmpty()
+
+
 def test_setup_page_with_nobody_remembered(qtbot, store):
     page = _make_page(qtbot)
     page.load(store)
@@ -243,12 +256,13 @@ def test_forget_asks_first_then_removes(qtbot, store, asked):
     _tick(page, "Atanu", "Zoe")
     page.people_list.setCurrentItem(_item(page, "Zoe"))
 
-    asked.answer = QMessageBox.StandardButton.No
+    asked.answer = False
     page.delete_button.click()
     assert len(asked.texts) == 1 and "Zoe" in asked.texts[0]
+    assert asked.defaults == ["no"]  # Enter alone forgets nobody
     assert [p.name for p in store.people()] == ["Atanu", "Bob", "Zoe"]
 
-    asked.answer = QMessageBox.StandardButton.Yes
+    asked.answer = True
     page.delete_button.click()
     assert [p.name for p in store.people()] == ["Atanu", "Bob"]
     assert _rows(page) == [("Atanu", True), ("Bob", False)]  # the other ticks kept

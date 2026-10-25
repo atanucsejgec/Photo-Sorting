@@ -10,11 +10,12 @@ from pathlib import Path
 from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QDialogButtonBox, QHBoxLayout, QHeaderView, QLabel,
-    QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
 from photosort.journal import RunInfo, load_moves, load_runs
 from photosort.modes import MODES
+from photosort.ui import dialogs
 from photosort.ui.worker import Task
 from photosort.undo import UndoResult, blocking_runs, related_folders, undo_run
 
@@ -124,7 +125,7 @@ class HistoryDialog(QDialog):
         self.refresh()
 
     def show_error(self, text: str) -> None:
-        QMessageBox.warning(self, "Undo history", text)
+        dialogs.warn(self, "Undo history", text)
 
     def refresh(self) -> None:
         """Reload the runs from disk, keeping the selected run selected."""

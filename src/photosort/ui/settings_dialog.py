@@ -11,14 +11,15 @@ where they can be forgotten straight away.
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
-    QSpinBox, QVBoxLayout,
+    QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QPushButton, QSpinBox,
+    QVBoxLayout,
 )
 
 from photosort.ai.runtime import runtime_status
 from photosort.people import PeopleStore
 from photosort.settings import Settings, save_settings
 from photosort.thresholds import EVENT_GAP_HOURS_RANGE, EVENT_MIN_FILES_RANGE
+from photosort.ui import dialogs
 from photosort.ui.category_editor import CategoryEditor
 from photosort.ui.face_setup_page import RememberedPeopleDialog
 
@@ -100,7 +101,7 @@ class SettingsDialog(QDialog):
         editor.deleteLater()
 
     def show_error(self, text: str) -> None:
-        QMessageBox.warning(self, "Settings", text)
+        dialogs.warn(self, "Settings", text)
 
     def accept(self) -> None:
         self.settings.use_gpu = self.gpu_check.isChecked()

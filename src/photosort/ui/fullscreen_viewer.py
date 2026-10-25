@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from photosort.groups import Group, sharpness_label
 from photosort.imageinfo import UnreadableImage, open_image
 from photosort.ui.qimage import pil_to_qimage
+from photosort.ui.theme import COLORS
 from photosort.ui.worker import Task
 
 _log = logging.getLogger("photosort")
@@ -95,12 +96,12 @@ class FullscreenViewer(QDialog):
         self._dispose_when_idle = False
 
         self.setWindowTitle("Repeated shots")
-        self.setStyleSheet("QDialog { background: #111; } QLabel, QCheckBox { color: #eee; }")
+        self.setObjectName("viewer")  # see theme
 
         self.scene = QGraphicsScene(self)
         self.view = _View(self.scene)
         self.view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.view.setBackgroundBrush(QColor("#111"))
+        self.view.setBackgroundBrush(QColor(COLORS["deep"]))
         self.view.setFrameShape(QGraphicsView.Shape.NoFrame)
         self.view.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)  # pans when zoomed
@@ -112,9 +113,7 @@ class FullscreenViewer(QDialog):
 
         self.overlay_label = QLabel(self.view)
         self.overlay_label.move(16, 16)
-        self.overlay_label.setStyleSheet(
-            "background: rgba(0, 0, 0, 160); color: #fff; padding: 6px 10px;"
-        )
+        self.overlay_label.setObjectName("viewerOverlay")
         self._flash_timer = QTimer(self)
         self._flash_timer.setSingleShot(True)
         self._flash_timer.setInterval(FLASH_MS)
@@ -202,13 +201,13 @@ class FullscreenViewer(QDialog):
         width, height = c.width or 4, c.height or 3
         scale = min(1.0, VIEW_PX / max(width, height))  # as open_image will shrink it
         box = QGraphicsRectItem(QRectF(0, 0, width * scale, height * scale))
-        box.setBrush(QBrush(QColor("#2a2a2a")))
+        box.setBrush(QBrush(QColor(COLORS["thumb_bg"])))
         box.setPen(Qt.PenStyle.NoPen)
         text = QGraphicsSimpleTextItem(value, box)
         font = QFont()
         font.setPixelSize(round(VIEW_PX / 30))
         text.setFont(font)
-        text.setBrush(QBrush(QColor("#bbb")))
+        text.setBrush(QBrush(QColor(COLORS["muted"])))
         bounds = text.boundingRect()
         text.setPos((width * scale - bounds.width()) / 2, (height * scale - bounds.height()) / 2)
         return box

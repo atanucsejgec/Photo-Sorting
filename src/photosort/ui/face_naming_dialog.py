@@ -112,7 +112,7 @@ class FaceRow(QFrame):
         self.skip_check = QCheckBox("Skip this face")
         self.error_label = QLabel()
         self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet("color: #b00020;")
+        self.error_label.setObjectName("error")  # see theme
         self.error_label.hide()
         self.skip_check.toggled.connect(lambda skip: self.name_edit.setEnabled(not skip))
 

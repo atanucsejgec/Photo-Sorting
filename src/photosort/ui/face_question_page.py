@@ -33,13 +33,14 @@ from photosort.modes.face_mode import Answer, FaceScan, Question
 from photosort.people import Person
 from photosort.thresholds import PERSON_THUMB_PX
 from photosort.ui.qimage import pil_to_qimage
+from photosort.ui.theme import COLORS
 from photosort.ui.worker import Task
 
 _log = logging.getLogger("photosort")
 
 PHOTO_PX = 1600  # photos are shown at most this many pixels on their longest side
 BOX_PEN_PX = 3
-BOX_COLOUR = "#ffd400"
+BOX_COLOUR = COLORS["face_box"]
 LOADING = "Loading…"
 CANT_LOAD = "Couldn't load this photo"
 ANSWER_TEXT = {"yes": "Yes", "no": "No", "skip": "Skip"}
@@ -139,9 +140,9 @@ class PhotoView(QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#2a2a2a"))
+        painter.fillRect(self.rect(), QColor(COLORS["thumb_bg"]))
         if self._pixmap is None:
-            painter.setPen(QColor("#bbb"))
+            painter.setPen(QColor(COLORS["muted"]))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._message)
             return
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
@@ -195,7 +196,7 @@ class FaceQuestionPage(QWidget):
         self.person_label = QLabel()
         self.person_label.setFixedSize(PERSON_THUMB_PX, PERSON_THUMB_PX)
         self.person_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.person_label.setStyleSheet("background: #d8d8d8; color: #555;")
+        self.person_label.setObjectName("thumb")  # see theme
         self.name_label = QLabel()
         self.name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.name_label.setWordWrap(True)

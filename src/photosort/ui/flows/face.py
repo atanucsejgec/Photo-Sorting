@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from PySide6.QtWidgets import QDialog
 
@@ -148,7 +148,7 @@ def _on_scan(window: "MainWindow", people: list[Person], scan: FaceScan | None) 
 
 def plan_moves(window: "MainWindow", answers: dict[tuple[str, str], Answer]) -> None:
     """Plan the moves, with the owner's answers to the unsure matches."""
-    sort: _FaceSort = window.flow_state
+    sort = cast(_FaceSort, window.flow_state)
     try:
         plan = plan_faces(window.root, sort.scan, sort.people, answers)
     except OSError as e:  # e.g. the drive was unplugged

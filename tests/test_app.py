@@ -66,3 +66,30 @@ def test_main_collects_garbage_on_the_gui_thread_only(qapp, tmp_path, monkeypatc
         qapp.setApplicationName(name)
         qapp.setDesktopFileName(desktop)
         qapp.setFont(font)
+
+
+def test_main_applies_the_theme_before_the_window_shows(qapp, tmp_path, monkeypatch):
+    from photosort.ui import theme
+
+    events = []
+
+    class Window:
+        def __init__(self, settings, path):
+            pass
+
+        def show(self):
+            events.append("show")
+
+    monkeypatch.setattr(app_module, "configure_logging", lambda path: None)
+    monkeypatch.setattr(app_module, "default_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr(app_module, "MainWindow", Window)
+    monkeypatch.setattr(QApplication, "exec", lambda self: 0)
+    monkeypatch.setattr(theme, "apply", lambda app: events.append(("theme", app)))
+    name, desktop, font = qapp.applicationName(), qapp.desktopFileName(), qapp.font()
+    try:
+        assert app_module.main() == 0
+        assert events == [("theme", qapp), "show"]
+    finally:
+        qapp.setApplicationName(name)
+        qapp.setDesktopFileName(desktop)
+        qapp.setFont(font)

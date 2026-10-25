@@ -25,7 +25,7 @@ from PySide6.QtCore import QThreadPool, QUrl
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QFileDialog, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressBar,
+    QHeaderView, QLabel, QLineEdit, QMainWindow, QProgressBar,
     QPushButton, QRadioButton, QStackedWidget, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
@@ -38,6 +38,7 @@ from photosort.modes import MODE_SPECS, MODES
 from photosort.people import PeopleStore
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
+from photosort.ui import dialogs
 from photosort.ui.bad_photos_page import BadPhotosPage
 from photosort.ui.category_review_page import CategoryReviewPage
 from photosort.ui.events_page import EventsPage
@@ -45,6 +46,7 @@ from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
 from photosort.ui.flows import bad, clip, events, face, groups, plain
 from photosort.ui.history_dialog import HistoryDialog, undo_summary
+from photosort.ui.labels import literal
 from photosort.ui.model_download import ensure_models
 from photosort.ui.review_page import ReviewPage
 from photosort.ui.settings_dialog import SettingsDialog
@@ -172,7 +174,7 @@ class MainWindow(QMainWindow):
         grid = QHBoxLayout()
         columns = [QVBoxLayout(), QVBoxLayout()]
         for n, (key, label, available) in enumerate(MODES):
-            button = QRadioButton(label if available else f"{label} (coming soon)")
+            button = QRadioButton(literal(label if available else f"{label} (coming soon)"))
             button.setEnabled(available)
             self.mode_group.addButton(button)
             self.mode_buttons[key] = button
@@ -319,7 +321,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(page)
 
     def show_error(self, text: str) -> None:
-        QMessageBox.warning(self, TITLE, text)
+        dialogs.warn(self, TITLE, text)
 
     def _save_settings(self) -> None:
         try:
@@ -350,6 +352,10 @@ class MainWindow(QMainWindow):
 
         Its signals go to the window's own slots (so on the GUI thread), which
         free the window, then pass the result or error to on_result or on_error.
+
+        Only one Task runs at a time (busy guards it), so one pair of handlers
+        is kept; a slot takes them and clears them before calling one, so a
+        handler that starts the next Task routes that Task's signals afresh.
         """
         if self.busy:
             return False
@@ -363,12 +369,14 @@ class MainWindow(QMainWindow):
         return True
 
     def _task_result(self, value: object) -> None:
+        handler, self._on_result, self._on_error = self._on_result, None, None
         self.busy = False
-        self._on_result(value)
+        handler(value)
 
     def _task_error(self, message: str) -> None:
+        handler, self._on_result, self._on_error = self._on_error, None, None
         self.busy = False
-        self._on_error(message)
+        handler(message)
 
     def begin_progress(self, prefix: str, total: int | None = None,
                        joiner: str = "/") -> None:

@@ -10,14 +10,14 @@ from types import SimpleNamespace
 import pytest
 import onnxruntime
 from PySide6.QtCore import QThreadPool
-from PySide6.QtWidgets import QDialog, QMessageBox, QPushButton
+from PySide6.QtWidgets import QDialog, QPushButton
 
 from photosort.ai import models, runtime
 from photosort.executor import execute
 from photosort.journal import RunJournal, load_runs
 from photosort.plan import Move, Plan
 from photosort.settings import DEFAULT_CONTENT_CATEGORIES, Settings, load_settings
-from photosort.ui import history_dialog, model_download
+from photosort.ui import dialogs, history_dialog, model_download
 from photosort.ui.category_editor import CategoryEditor
 from photosort.ui.history_dialog import HistoryDialog, undo_summary
 from photosort.ui.main_window import MainWindow
@@ -338,19 +338,20 @@ def model_store(tmp_path, monkeypatch):
                                   hashlib.sha256(data).hexdigest())
     monkeypatch.setattr(models, "MODELS", table)
     monkeypatch.setattr(models, "models_dir", lambda: tmp_path / "models")
-    store = SimpleNamespace(answer=QMessageBox.StandardButton.Yes, asked=[], errors=[],
+    store = SimpleNamespace(answer=True, asked=[], defaults=[], errors=[],
                             titles=[], sources={k: tmp_path / "src" / f"{k}.onnx" for k in table})
 
-    def question(parent, title, text, *args, **kwargs):
+    def ask(parent, title, text, yes, no, default="no"):
         store.titles.append(title)
         store.asked.append(text)
+        store.defaults.append(default)
         return store.answer
 
     def show_error(parent, text, title=model_download.TITLE):
         store.titles.append(title)
         store.errors.append(text)
 
-    monkeypatch.setattr(QMessageBox, "question", question)
+    monkeypatch.setattr(dialogs, "ask", ask)
     monkeypatch.setattr(model_download, "show_error", show_error)
     yield store
     QThreadPool.globalInstance().waitForDone()
@@ -369,10 +370,11 @@ def test_ensure_models_downloads_after_yes(qtbot, model_store):
         "Photo Sorter needs to download the face models once (180 MB). Download now?"]
     assert models.missing(["a", "b"]) == []
     assert model_store.errors == []
+    assert model_store.defaults == ["no"]  # a download wants a deliberate yes
 
 
 def test_ensure_models_no_downloads_nothing(qtbot, model_store):
-    model_store.answer = QMessageBox.StandardButton.No
+    model_store.answer = False
     assert model_download.ensure_models(None, ["a", "b"]) is False
     assert models.missing(["a", "b"]) == ["a", "b"]
 
@@ -434,7 +436,7 @@ def test_clip_question_names_the_model_and_the_missing_size(qtbot, clip_store, m
         k for k in real_missing(keys) if k != "clip_tokenizer"])  # as if it were there
     for key, size in sizes.items():
         models.MODELS[key] = dataclasses.replace(models.MODELS[key], size=size)
-    clip_store.answer = QMessageBox.StandardButton.No
+    clip_store.answer = False
     assert model_download.ensure_models(None, models.CLIP_MODELS) is False
     assert clip_store.asked == [_clip_question(606)]  # 351.6 + 254.2 MB, not the tokenizer
     assert all("face" not in title.casefold() for title in clip_store.titles)

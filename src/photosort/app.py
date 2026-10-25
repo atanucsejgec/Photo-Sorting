@@ -9,7 +9,7 @@ import platformdirs
 from PySide6.QtWidgets import QApplication
 
 from photosort.settings import default_path, load_settings
-from photosort.ui import gc_guard
+from photosort.ui import gc_guard, theme
 from photosort.ui.main_window import TITLE, MainWindow
 
 LOG_MAX_BYTES = 1024 * 1024
@@ -58,6 +58,7 @@ def main() -> int:
     if font.pointSizeF() < 11:
         font.setPointSizeF(11)
         app.setFont(font)
+    theme.apply(app)  # after the font: the strip and headings scale from it
     path = default_path()
     window = MainWindow(load_settings(path), path)
     window.show()

@@ -75,7 +75,7 @@ class CandidateCard(QFrame):
         self.thumb_label = QLabel(VIDEO if candidate.kind == "video" else LOADING)
         self.thumb_label.setFixedSize(THUMB_PX, THUMB_PX)
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.thumb_label.setStyleSheet("background: #d8d8d8; color: #555;")
+        self.thumb_label.setObjectName("thumb")  # see theme
 
         c = candidate
         folder, _, name = c.rel.rpartition("/")

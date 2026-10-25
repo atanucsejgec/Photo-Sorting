@@ -78,7 +78,7 @@ class PhotoPreview(QDialog):
         self._loading = True
 
         self.image_label = _FittedLabel(LOADING)
-        self.image_label.setStyleSheet("background: #202020; color: #dddddd;")
+        self.image_label.setObjectName("thumb")  # see theme
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.image_label)

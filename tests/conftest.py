@@ -20,6 +20,14 @@ def _gc_on_the_gui_thread(qapp):
     gc_guard.uninstall()
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _dark_theme(qapp):
+    """Run every test under the app's real look, as main() sets it."""
+    from photosort.ui import theme
+
+    theme.apply(qapp)
+
+
 @pytest.fixture(autouse=True)
 def _gc_check_after_each_test():
     """A test that never runs the event loop gets its garbage checked too."""

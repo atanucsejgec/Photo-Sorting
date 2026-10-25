@@ -69,7 +69,7 @@ class EventRow(QFrame):
             label = QLabel(VIDEO if kind(rel) == "video" else LOADING)
             label.setFixedSize(EVENT_THUMB_PX, EVENT_THUMB_PX)
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setStyleSheet("background: #d8d8d8; color: #555;")
+            label.setObjectName("thumb")  # see theme
             label.setToolTip(rel)
             self.thumb_labels.append(label)
             thumbs.addWidget(label)

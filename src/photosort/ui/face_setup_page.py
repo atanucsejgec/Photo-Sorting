@@ -19,11 +19,13 @@ from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QMessageBox, QPushButton, QVBoxLayout, QWidget,
+    QPushButton, QVBoxLayout, QWidget,
 )
 
 from photosort.people import PeopleError, PeopleStore, Person
+from photosort.ui import dialogs
 from photosort.ui.face_naming_dialog import dropped_photo
+from photosort.ui.labels import literal
 from photosort.ui.qimage import pil_to_qimage
 
 _log = logging.getLogger("photosort")
@@ -183,8 +185,9 @@ class FaceSetupPage(QWidget):
     def _update_buttons(self, *_) -> None:
         person = self._current()
         self.more_button.setText(
-            "Add photos…" if person is None else f"Add photos to {person.name}…")
-        self.delete_button.setText("Forget…" if person is None else f"Forget {person.name}")
+            "Add photos…" if person is None else literal(f"Add photos to {person.name}…"))
+        self.delete_button.setText(
+            "Forget…" if person is None else literal(f"Forget {person.name}"))
         self.more_button.setEnabled(person is not None)
         self.delete_button.setEnabled(person is not None)
         self.start_button.setEnabled(bool(self.ticked_ids()))
@@ -213,11 +216,11 @@ class FaceSetupPage(QWidget):
     # ----- forgetting ------------------------------------------------------
 
     def confirm_forget(self, name: str) -> bool:
-        answer = QMessageBox.question(
+        return dialogs.ask(
             self, FORGET_TITLE,
             f"Forget {name}? Photo Sorter will no longer recognise them. "
-            "Photos already sorted stay where they are.")
-        return answer == QMessageBox.StandardButton.Yes
+            "Photos already sorted stay where they are.",
+            yes="Forget", no="Keep", default="no")
 
     def _forget(self) -> None:
         person = self._current()

@@ -5,13 +5,14 @@ import numpy as np
 import pytest
 from PIL import Image
 from PySide6.QtCore import QMimeData, QPointF, Qt, QThreadPool, QUrl
-from PySide6.QtGui import QDropEvent
+from PySide6.QtGui import QDropEvent, QKeySequence
 
 from photosort.faces import Face
 from photosort.modes import MODE_SPECS, MODES, date_mode
 from photosort.people import PeopleStore
 from photosort.settings import Settings, load_settings
 from photosort.ui import main_window
+from photosort.ui.flows import face as face_flow
 from photosort.ui.flows import groups as groups_flow
 from photosort.ui.main_window import MainWindow
 
@@ -77,9 +78,10 @@ def test_available_modes(make_window):
     buttons = _mode_buttons(w)
     enabled = [b for b in buttons if b.isEnabled()]
     disabled = [b for b in buttons if not b.isEnabled()]
-    assert [b.text() for b in enabled] == [
+    assert [b.text().replace("&&", "&") for b in enabled] == [
         "Date", "Face", "Duplicates", "Repeated shots", "Notes & Pages", "Type / source",
         "Content", "Bad photos", "Events", "Location", "Camera"]
+    assert all(QKeySequence.mnemonic(b.text()).isEmpty() for b in buttons)  # & shown as &
     assert enabled[0].isChecked()
     assert len(disabled) == 0
     assert not any("coming soon" in b.text() for b in buttons)
@@ -589,7 +591,7 @@ def test_planning_error_goes_home(qtbot, make_window, photos, make_pattern_jpeg,
 
 
 def test_back_to_cleared_on_start_and_go(qtbot, make_window, photos, make_pattern_jpeg,
-                                         errors, monkeypatch):
+                                         errors, store, monkeypatch):
     _burst(photos, make_pattern_jpeg)
     w = make_window()
     _start_mode(qtbot, w, photos, "date")
@@ -630,6 +632,46 @@ def test_back_to_cleared_on_start_and_go(qtbot, make_window, photos, make_patter
     assert w.current_page() is w.home
     assert w.back_to is None and w.flow_state is None
     assert errors == ["Could not plan the moves: drive gone"]
+
+    # A failed Task clears them too, even when set while it ran: the files
+    # could not be checked (check_failed), or the face or CLIP search failed.
+    from photosort.modes import duplicates
+
+    monkeypatch.setattr(main_window, "ensure_models", lambda parent, keys: True)
+    release = threading.Event()
+
+    def fails_when_released(*args, **kwargs):
+        assert release.wait(10)
+        raise OSError("drive gone")
+
+    def fails_with_both_set(start, error: str) -> None:
+        errors.clear()
+        release.clear()
+        start()
+        assert w.current_page() is w.progress_page
+        w.flow_state, w.back_to = object(), (lambda: None)  # as a flow might
+        release.set()
+        qtbot.waitUntil(lambda: errors != [])
+        assert errors == [error]
+        assert w.current_page() is w.home
+        assert w.back_to is None and w.flow_state is None
+
+    monkeypatch.setattr(duplicates, "find_duplicate_groups", fails_when_released)
+    w.mode_buttons["duplicates"].setChecked(True)
+    fails_with_both_set(w.start_button.click, "Could not check the files: drive gone")
+
+    w.clip_engine_factory = fails_when_released
+    w.mode_buttons["content"].setChecked(True)
+    fails_with_both_set(w.start_button.click, "Could not look at the photos: drive gone")
+
+    person = store.add("Zoe", np.ones(512, np.float32) / np.sqrt(512),
+                       Image.new("RGB", (40, 40), "blue"))
+    w.engine_factory = fails_when_released
+    w.mode_buttons["face"].setChecked(True)
+    w.start_button.click()
+    assert w.current_page() is w.face_setup_page
+    fails_with_both_set(lambda: face_flow.start_sort(w, [person.id]),
+                        "Could not look for faces: drive gone")
 
 
 def _stubborn(result, started: threading.Event):
