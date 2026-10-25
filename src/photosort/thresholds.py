@@ -57,4 +57,9 @@ CLIP_ENGINE_FAILS = 5
 # from CONTENT_UNSURE up to that, the owner is asked; below, it stays put.
 CONTENT_SURE = 0.75
 CONTENT_UNSURE = 0.45
+# Prompts for "none of the categories", in the softmax beside them: with only
+# one or two categories, a photo of something else would otherwise still be
+# sure (or at least unsure) of one. A photo they beat every category on stays put.
+CONTENT_BACKGROUND_PROMPTS = ("a photo", "a photo of something else")
 CONTENT_CATEGORIES_MAX = 30  # the most categories the owner can list
+CATEGORY_NAME_MAX = 50  # the longest category name the owner can type, in characters

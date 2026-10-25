@@ -5,9 +5,11 @@ import pytest
 from photosort.settings import (
     DEFAULT_CONTENT_CATEGORIES,
     Settings,
+    category_problem,
     default_path,
     load_settings,
     save_settings,
+    valid_category_list,
 )
 
 
@@ -121,6 +123,10 @@ def test_content_categories_roundtrip(tmp_path):
     "Food",
     ["Food", 3],
     None,
+    ["Food", "Food."],  # the same folder once made Windows-valid
+    ["a/b", "a:b"],  # both "a_b"
+    ["Bad Photos", "_Bad Photos"],  # both "_Bad Photos"
+    ["x" * 120 + "a", "x" * 120 + "b"],  # both cut to the same 100 characters
 ])
 def test_bad_content_categories_fall_back(tmp_path, bad):
     path = tmp_path / "settings.json"
@@ -128,3 +134,29 @@ def test_bad_content_categories_fall_back(tmp_path, bad):
     loaded = load_settings(path)
     assert loaded.content_categories == DEFAULT_CATEGORIES
     assert loaded.use_gpu is False
+
+
+def test_valid_category_list():
+    assert valid_category_list(list(DEFAULT_CONTENT_CATEGORIES))
+    assert valid_category_list(["Bad Photos"])  # its folder is "_Bad Photos"
+    assert valid_category_list(["x" * 200])  # its folder is cut short
+    assert not valid_category_list(["Food", "FOOD"])
+    assert not valid_category_list(("Food",))  # JSON gives lists only
+
+
+@pytest.mark.parametrize("name, others, problem", [
+    ("Meals", ["Food", "Pets & Animals"], None),
+    ("x" * 50, [], None),
+    ("", [], "Type a name."),
+    ("   ", ["Food"], "Type a name."),
+    ("..", [], "Type a name."),
+    ("food", ["Pets", "Food"], "There's already a category called Food."),
+    ("Food.", ["Food"], "There's already a category called Food."),
+    ("a:b", ["a/b"], "There's already a category called a/b."),
+    ("x" * 51, [], "That name is too long."),
+    ("Bad Photos", [], "Photo Sorter uses that name for its own folder. Pick another name."),
+    ("duplicates ", [], "Photo Sorter uses that name for its own folder. Pick another name."),
+    (".hidden", [], "Photo Sorter uses that name for its own folder. Pick another name."),
+])
+def test_category_problem(name, others, problem):
+    assert category_problem(name, others) == problem
