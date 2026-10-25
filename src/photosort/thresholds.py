@@ -42,3 +42,7 @@ FACE_EMBED_BATCH = 32  # faces described in one recognition run (about 11 MB eac
 FACE_ENGINE_FAILS = 5
 FACE_CROP_MARGIN = 0.3  # face pictures for the UI add this fraction of the face on each side
 PERSON_THUMB_PX = 160  # longest side of a remembered person's face picture
+
+# Content and Notes & Pages: OpenCLIP similarities times this scale are the
+# logits that the softmax over the prompts turns into probabilities.
+CLIP_LOGIT_SCALE = 100.0

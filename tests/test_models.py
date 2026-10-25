@@ -53,6 +53,25 @@ def test_models_table_matches_buffalo_l():
                        "recognition/model.onnx")
 
 
+def test_models_table_matches_clip_vit_b_32():
+    base = "https://huggingface.co/immich-app/ViT-B-32__openai/resolve/main"
+    expected = {
+        "clip_visual": ("ViT-B-32__openai/visual/model.onnx", 351_613_724,
+                        "33a3df41ceef21acdf371af00f6dd0456ec1f9eba24d03a7720f9c3734e40859"),
+        "clip_textual": ("ViT-B-32__openai/textual/model.onnx", 254_193_396,
+                         "b80cf0af751533a6712d92247f0ddc0c95208748bc59a1a27f33e67be6864e3b"),
+        "clip_tokenizer": ("ViT-B-32__openai/textual/tokenizer.json", 3_642_073,
+                           "6d9109cc838977f3ca94a379eec36aecc7c807e1785cd729660ca2fc0171fb35"),
+    }
+    assert models.CLIP_MODELS == ["clip_visual", "clip_textual", "clip_tokenizer"]
+    for key, (rel_path, size, sha256) in expected.items():
+        m = models.MODELS[key]
+        assert m.rel_path == rel_path
+        assert m.url == f"{base}/{rel_path.removeprefix('ViT-B-32__openai/')}"
+        assert m.size == size
+        assert m.sha256 == sha256
+
+
 def test_models_dir_is_in_user_data_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(models.platformdirs, "user_data_dir",
                         lambda app: str(tmp_path / app))

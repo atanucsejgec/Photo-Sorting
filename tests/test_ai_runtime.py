@@ -161,9 +161,11 @@ def test_make_session_bad_file_raises_without_blaming_gpu(fake_ort, monkeypatch,
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
-def test_starting_the_app_does_not_load_onnxruntime():
-    # If ONNX Runtime can't load on some computer, only Face mode should fail.
-    code = "import photosort.ui.main_window, sys; print('onnxruntime' in sys.modules)"
+def test_starting_the_app_does_not_load_onnxruntime_or_tokenizers():
+    # If ONNX Runtime or tokenizers can't load on some computer, only the AI
+    # modes should fail.
+    code = ("import photosort.ui.main_window, photosort.clip, sys; "
+            "print('onnxruntime' in sys.modules, 'tokenizers' in sys.modules)")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          check=True, env={**os.environ, "QT_QPA_PLATFORM": "offscreen"})
-    assert out.stdout.strip() == "False"
+    assert out.stdout.strip() == "False False"
