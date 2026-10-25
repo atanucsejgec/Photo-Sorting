@@ -26,13 +26,13 @@ class UnreadableImage(Exception):
 
 def open_image(path: Path, max_px: int | None = None) -> Image.Image:
     """Return the photo as RGB, the right way up, at most max_px on its longest side."""
-    img = _decode(path, max_px)
+    img = decode(path, max_px)
     if max_px is not None:
         img.thumbnail((max_px, max_px))
     return img
 
 
-def _decode(path: Path, min_px: int | None) -> Image.Image:
+def decode(path: Path, min_px: int | None) -> Image.Image:
     """Return the photo as RGB, the right way up.
 
     With min_px, a JPEG may be decoded at a smaller scale, but never below
@@ -62,7 +62,7 @@ def image_size(path: Path) -> tuple[int, int]:
 
 def perceptual_hash(path: Path) -> int:
     """Return the photo's 64-bit perceptual hash; similar photos differ in few bits."""
-    return _hash_of(_decode(path, HASH_PX))
+    return _hash_of(decode(path, HASH_PX))
 
 
 def sharpness(path: Path) -> float:
@@ -71,12 +71,12 @@ def sharpness(path: Path) -> float:
     The variance of a 4-neighbour Laplacian of the greyscale photo resized
     to SHARPNESS_WIDTH wide.
     """
-    return _sharpness_of(_decode(path, SHARPNESS_WIDTH))
+    return _sharpness_of(decode(path, SHARPNESS_WIDTH))
 
 
 def analyse(path: Path) -> tuple[int, float]:
     """Return (perceptual_hash(path), sharpness(path)), decoding the photo once."""
-    img = _decode(path, max(HASH_PX, SHARPNESS_WIDTH))
+    img = decode(path, max(HASH_PX, SHARPNESS_WIDTH))
     measured = _sharpness_of(img)  # first: _hash_of shrinks img in place
     return _hash_of(img), measured
 
@@ -89,8 +89,18 @@ def _hash_of(img: Image.Image) -> int:
 
 def _sharpness_of(img: Image.Image) -> float:
     """The sharpness measure of img (see sharpness); img is left unchanged."""
+    return laplacian_variance(measuring_grey(img))
+
+
+def measuring_grey(img: Image.Image) -> np.ndarray:
+    """img in greyscale (values 0-255, as float64), resized to SHARPNESS_WIDTH
+    wide and at least 3 rows high; img is left unchanged."""
     height = max(3, round(img.height * SHARPNESS_WIDTH / img.width))
-    grey = np.asarray(img.convert("L").resize((SHARPNESS_WIDTH, height)), dtype=np.float64)
+    return np.asarray(img.convert("L").resize((SHARPNESS_WIDTH, height)), dtype=np.float64)
+
+
+def laplacian_variance(grey: np.ndarray) -> float:
+    """The variance of the 4-neighbour Laplacian of grey (at least 3 by 3)."""
     laplacian = (
         grey[:-2, 1:-1] + grey[2:, 1:-1] + grey[1:-1, :-2] + grey[1:-1, 2:]
         - 4 * grey[1:-1, 1:-1]

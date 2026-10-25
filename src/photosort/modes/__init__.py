@@ -24,7 +24,7 @@ MODES: list[tuple[str, str, bool]] = [
     ("notes", "Notes & Pages", False),
     ("type", "Type / source", True),
     ("content", "Content", False),
-    ("bad", "Bad photos", False),
+    ("bad", "Bad photos", True),
     ("events", "Events", False),
     ("location", "Location", True),
     ("camera", "Camera", True),
@@ -35,10 +35,11 @@ Progress = Callable[[int, int], None] | None
 
 @dataclass(frozen=True)
 class ModeSpec:
-    kind: Literal["plan", "groups", "face"]
-    prepare: Callable[..., object]  # -> Plan (kind "plan") or list[Group]; None if cancelled
-    set_aside_folder: str | None = None  # kind "groups": where unkept files go
-    none_found: str | None = None  # kind "groups": the summary when no group is found
+    kind: Literal["plan", "groups", "face", "bad"]
+    # -> Plan (kind "plan"), list[Group] or list[Candidate] (kind "bad"); None if cancelled
+    prepare: Callable[..., object]
+    set_aside_folder: str | None = None  # kinds "groups", "bad": where files set aside go
+    none_found: str | None = None  # kinds "groups", "bad": the summary when none is found
 
 
 def _prepare_date(root: Path, include_subfolders: bool, progress: Progress = None,
@@ -89,6 +90,14 @@ def _find_repeated(root: Path, include_subfolders: bool, progress: Progress = No
                                          cancel=cancel)
 
 
+def _find_bad(root: Path, include_subfolders: bool, progress: Progress = None,
+              cancel: threading.Event | None = None):
+    from photosort.modes import bad_photos
+
+    return bad_photos.find_bad_photos(root, include_subfolders, progress=progress,
+                                      cancel=cancel)
+
+
 def _find_faces(root: Path, include_subfolders: bool, progress: Progress = None,
                 cancel: threading.Event | None = None):
     # Face mode also needs the people picked and a face engine; the main
@@ -103,6 +112,7 @@ MODE_SPECS: dict[str, ModeSpec] = {
     "repeated": ModeSpec("groups", _find_repeated, "Repeated Shots",
                          "No repeated shots found."),
     "type": ModeSpec("plan", _prepare_type),
+    "bad": ModeSpec("bad", _find_bad, "Bad Photos", "No bad photos found."),
     "location": ModeSpec("plan", _prepare_location),
     "camera": ModeSpec("plan", _prepare_camera),
 }

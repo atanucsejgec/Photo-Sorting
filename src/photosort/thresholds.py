@@ -20,6 +20,16 @@ SHARP_BLURRY = 0.6  # below this fraction: "blurry"
 SHARPNESS_WIDTH = 512  # images are resized to this width before measuring
 
 THUMB_PX = 240  # longest side of review thumbnails
+PREVIEW_PX = 1600  # longest side of a photo opened from a review grid
+
+# Bad photos, measured on the greyscale photo SHARPNESS_WIDTH wide (grey
+# values 0-255); the first rule that matches gives the reason.
+BAD_FLAT_STD = 12  # spread of grey below this: "accidental shot" (pocket, lens cap)
+BAD_DARK_MEAN = 35  # mean grey below this ...
+BAD_DARK_P95 = 100  # ... and the brightest 5% below this too: "too dark"
+BAD_BRIGHT_FRAC = 0.5  # more than this fraction of pixels at 250 or above ...
+BAD_BRIGHT_MEAN = 235  # ... or mean grey above this: "too bright"
+BAD_BLUR = 25.0  # sharpness (Laplacian variance) below this: "blurry"
 
 # Faces: matching a face to a remembered person by embedding similarity.
 FACE_SURE = 0.45  # at or above: surely that person

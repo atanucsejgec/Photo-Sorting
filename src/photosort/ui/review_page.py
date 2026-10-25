@@ -45,7 +45,7 @@ def _taken_text(taken: datetime | None) -> str:
     return f"{taken.day} {month} {taken:%Y, %H:%M:%S}"  # no leading zero on the day
 
 
-def _render_thumbnail(token: tuple[int, int], path: Path, progress=None, cancel=None):
+def render_thumbnail(token: tuple[int, int], path: Path, progress=None, cancel=None):
     """Return (*token, QImage or CANT_SHOW), or (*token, None) if cancelled first.
 
     Runs on a pool thread; a QImage (unlike a QPixmap) may be made here.
@@ -229,7 +229,7 @@ class ReviewPage(QWidget):
 
     def _request_thumbnail(self, n: int, path: Path) -> None:
         token = (self._generation, n)
-        task = Task(_render_thumbnail, token, path)
+        task = Task(render_thumbnail, token, path)
         task.signals.result.connect(self._thumbnail_ready)
         self._thumb_tasks[token] = task
         task.start()

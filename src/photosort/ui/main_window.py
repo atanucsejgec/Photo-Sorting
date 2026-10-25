@@ -1,12 +1,13 @@
-"""The main window: Home, Progress, Review, Face setup, Face questions, Summary
-and Done pages for a sort.
+"""The main window: Home, Progress, Review, Bad photos, Face setup, Face
+questions, Summary and Done pages for a sort.
 
 A mode either plans its moves straight away, or finds groups that the owner
 reviews first; the files not kept are then planned to be set aside (see
-photosort.modes.MODE_SPECS). Face mode first makes sure the face models are
-there, then shows the remembered people to pick from (or to add to); the
-photos are then searched for those people, the owner is asked about the
-unsure matches, and the moves planned.
+photosort.modes.MODE_SPECS). Bad photos mode finds bad photos that the owner
+ticks; the ticked ones are planned to be set aside. Face mode first makes
+sure the face models are there, then shows the remembered people to pick
+from (or to add to); the photos are then searched for those people, the
+owner is asked about the unsure matches, and the moves planned.
 
 The window owns the one PeopleStore of the app: the Face setup page, the
 naming dialog and Settings all use it.
@@ -34,12 +35,14 @@ from photosort.cache import AnalysisCache
 from photosort.executor import ExecResult, execute
 from photosort.faces import FaceEngine
 from photosort.journal import RunJournal
-from photosort.groups import Group, plan_set_aside
+from photosort.groups import Candidate, Group, plan_set_aside
 from photosort.modes import MODE_SPECS, MODES
+from photosort.modes.bad_photos import plan_bad
 from photosort.modes.face_mode import Answer, FaceScan, find_face_matches, plan_faces
 from photosort.people import PeopleError, PeopleStore, Person
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
+from photosort.ui.bad_photos_page import BadPhotosPage
 from photosort.ui.face_naming_dialog import FaceNamingDialog, pick_photo
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
@@ -126,6 +129,8 @@ class MainWindow(QMainWindow):
         self._include_subfolders = False
         self._mode: str | None = None
         self._groups: list[Group] = []  # being reviewed; kept for Back on the summary
+        self._bad: list[Candidate] = []  # bad photos shown; kept for Back on the summary
+        self._bad_ticked: set[str] = set()  # the bad photos last ticked to move
         self._plan: Plan | None = None
         self._run_id: str | None = None
         self._progress_prefix = ""
@@ -140,12 +145,14 @@ class MainWindow(QMainWindow):
         self.home = self._build_home()
         self.progress_page = self._build_progress()
         self.review_page = self._build_review()
+        self.bad_page = self._build_bad()
         self.face_setup_page = self._build_face_setup()
         self.face_question_page = self._build_face_questions()
         self.summary_page = self._build_summary()
         self.done_page = self._build_done()
-        for page in (self.home, self.progress_page, self.review_page, self.face_setup_page,
-                     self.face_question_page, self.summary_page, self.done_page):
+        for page in (self.home, self.progress_page, self.review_page, self.bad_page,
+                     self.face_setup_page, self.face_question_page, self.summary_page,
+                     self.done_page):
             self.stack.addWidget(page)
         self._show(self.home)
 
@@ -231,6 +238,12 @@ class MainWindow(QMainWindow):
     def _build_review(self) -> ReviewPage:
         page = ReviewPage()
         page.finished.connect(self._on_reviewed)
+        page.cancelled.connect(lambda: self._show(self.home))
+        return page
+
+    def _build_bad(self) -> BadPhotosPage:
+        page = BadPhotosPage()
+        page.finished.connect(self._on_bad_ticked)
         page.cancelled.connect(lambda: self._show(self.home))
         return page
 
@@ -426,6 +439,7 @@ class MainWindow(QMainWindow):
             return
         self._plan = None  # a stale plan must never be executed
         self._groups = []
+        self._bad = []
         self._face_scan = None
         root = self._folder()
         if root is None:
@@ -453,8 +467,12 @@ class MainWindow(QMainWindow):
         if spec.kind == "face":
             self._show_face_setup()
             return
-        self._begin_progress("Checking files…")
-        on_result = self._on_plan if spec.kind == "plan" else self._on_groups
+        if spec.kind == "bad":
+            self._begin_progress("Checking photos…", joiner="of")
+            on_result = self._on_bad
+        else:
+            self._begin_progress("Checking files…")
+            on_result = self._on_plan if spec.kind == "plan" else self._on_groups
         self._run(
             Task(spec.prepare, root, self._include_subfolders), on_result, self._on_plan_error
         )
@@ -488,6 +506,30 @@ class MainWindow(QMainWindow):
             plan = plan_set_aside(self._root, self._mode, folder, self._groups, keep)
         except OSError as e:  # e.g. the drive was unplugged during the review
             self._groups = []
+            self._show(self.home)
+            self.show_error(f"Could not plan the moves: {e}")
+            return
+        self._on_plan(plan)
+
+    # ----- bad photos ------------------------------------------------------
+
+    def _on_bad(self, bad: list[Candidate] | None) -> None:
+        if bad is None or self._cancel_pressed():
+            self._show(self.home)
+            return
+        if not bad:
+            self._show_summary([MODE_SPECS["bad"].none_found], can_go=False)
+            return
+        self._bad = bad
+        self.bad_page.load(self._root, bad)
+        self._show(self.bad_page)
+
+    def _on_bad_ticked(self, move: set[str]) -> None:
+        self._bad_ticked = move
+        try:
+            plan = plan_bad(self._root, self._bad, move)
+        except OSError as e:  # e.g. the drive was unplugged while ticking
+            self._bad = []
             self._show(self.home)
             self.show_error(f"Could not plan the moves: {e}")
             return
@@ -619,9 +661,14 @@ class MainWindow(QMainWindow):
         self._show(self.summary_page)
 
     def _back_from_summary(self) -> None:
-        """Back to the review or the face questions, every answer intact, if
-        there was one; to the people picked for a face sort; else Home."""
-        if self._groups:
+        """Back to the review, the bad photos or the face questions, every
+        answer intact, if there was one; to the people picked for a face
+        sort; else Home."""
+        if self._bad:
+            self._plan = None  # the ticks make a fresh one
+            self.bad_page.load(self._root, self._bad, self._bad_ticked)
+            self._show(self.bad_page)
+        elif self._groups:
             self._plan = None  # the review makes a fresh one
             self.review_page.resume()
             self._show(self.review_page)
@@ -665,6 +712,7 @@ class MainWindow(QMainWindow):
             return
         self._run_id = journal.run_id
         self._groups = []
+        self._bad = []
         self._face_scan = None
         self._begin_progress("Moving…", len(plan.moves))
         self._run(Task(execute, root, plan, journal), self._on_executed, self._on_execute_error)
@@ -729,6 +777,7 @@ class MainWindow(QMainWindow):
         if self._task is not None:
             self._task.cancel_event.set()
         self.review_page.stop_thumbnails()
+        self.bad_page.stop_thumbnails()
         self.face_question_page.stop_loading()
         QThreadPool.globalInstance().waitForDone()
         super().closeEvent(event)
