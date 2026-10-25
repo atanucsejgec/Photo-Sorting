@@ -51,15 +51,17 @@ def fit_name(name: str, max_chars: int, max_bytes: int) -> str:
     UTF-8 bytes, cut short if need be.
 
     The cut never splits a character, and leaves no dangling dot, space or
-    combining mark (a vowel sign cut off from its letter, say). The result
-    is Windows-valid (safe_name) and not a folder the scanner skips (such a
-    name gets a "_" prefix). Both limits must be at least 1 (ValueError).
+    combining mark (a vowel sign cut off from its letter, say); a name that
+    is not cut keeps its last mark ("কলকাতা"). The result is Windows-valid
+    (safe_name) and not a folder the scanner skips (such a name gets a "_"
+    prefix). Both limits must be at least 1 (ValueError).
     """
     if max_chars < 1 or max_bytes < 1:
         raise ValueError(f"fit_name limits must be at least 1: {max_chars}, {max_bytes}")
     end = min(len(name), max_chars)
     while True:
-        folder = _clean_cut(name[:end])
+        part = name[:end]
+        folder = _clean_cut(part) if end < len(name) else _scanned_safe_name(part)
         if fits(folder, max_chars, max_bytes):
             return folder
         end -= 1
@@ -71,8 +73,13 @@ def _clean_cut(part: str) -> str:
     while part and (part[-1] in ". \u200c\u200d"
                     or unicodedata.category(part[-1]).startswith("M")):
         part = part[:-1]
-    part = safe_name(part)
-    return "_" + part if skipped_folder(part) else part
+    return _scanned_safe_name(part)
+
+
+def _scanned_safe_name(name: str) -> str:
+    """name made Windows-valid, and not one the scanner skips."""
+    name = safe_name(name)
+    return "_" + name if skipped_folder(name) else name
 
 
 def fold(name: str) -> str:

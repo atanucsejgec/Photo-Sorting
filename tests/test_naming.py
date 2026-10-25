@@ -178,6 +178,17 @@ def test_fit_name_never_leaves_a_dangling_vowel_sign(tmp_path):
     _usable_folder(tmp_path, folder)
 
 
+@pytest.mark.parametrize("name", [
+    "কলকাতা",  # Kolkata: ends on the vowel sign AA
+    "সীমা",
+    "জয়",  # ends on the nukta (a combining mark)
+    "Cafe\u0301",  # Café, its accent typed as a combining mark
+])
+def test_fit_name_keeps_a_final_mark_when_nothing_is_cut(tmp_path, name):
+    assert _fit(name) == name
+    _usable_folder(tmp_path, name)
+
+
 @pytest.mark.parametrize("name, cut", [
     ("Duplicates" + " " * 95 + "x" * 20, "_Duplicates"),  # would be skipped by scans
     ("CON" + " " * 100 + "y", "_CON"),  # reserved on Windows
