@@ -1,11 +1,15 @@
 import threading
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 from PySide6.QtCore import QMimeData, QPointF, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QDropEvent
 
+from photosort.faces import Face
 from photosort.modes import MODE_SPECS, MODES, date_mode
+from photosort.people import PeopleStore
 from photosort.settings import Settings, load_settings
 from photosort.ui import main_window
 from photosort.ui.main_window import MainWindow
@@ -26,11 +30,16 @@ def errors(monkeypatch):
 
 
 @pytest.fixture
-def make_window(qtbot, settings_path, errors):
+def store(tmp_path) -> PeopleStore:
+    return PeopleStore(tmp_path / "people")  # never the owner's own
+
+
+@pytest.fixture
+def make_window(qtbot, settings_path, errors, store):
     windows = []
 
     def _make(settings: Settings | None = None) -> MainWindow:
-        w = MainWindow(settings or Settings(), settings_path)
+        w = MainWindow(settings or Settings(), settings_path, people_store=store)
         qtbot.addWidget(w)
         windows.append(w)
         return w
@@ -602,3 +611,68 @@ def test_cancel_after_planning_returns_home(qtbot, make_window, photos, make_jpe
     w.go_button.click()  # the cancelled plan must not run
     assert (photos / "a.jpg").is_file()
     assert load_runs(photos) == []
+
+
+def _unit(seed: int) -> np.ndarray:
+    v = np.random.default_rng(seed).standard_normal(512).astype(np.float32)
+    return v / np.linalg.norm(v)
+
+
+def _face(embedding: np.ndarray, x: float = 20) -> Face:
+    return Face((x, 20.0, x + 60, 80.0), np.zeros((5, 2), np.float32), 0.9,
+                embedding.astype(np.float32), (200, 200))
+
+
+class _Faces:
+    """A face engine that knows each photo's faces by file name."""
+
+    def __init__(self, faces: dict[str, list[Face]]) -> None:
+        self.faces = faces
+
+    def analyse(self, path: Path) -> list[Face]:
+        return list(self.faces.get(Path(path).name, []))
+
+
+def test_face_end_to_end(qtbot, make_window, photos, make_jpeg, store, errors,
+                         monkeypatch):
+    monkeypatch.setattr(main_window, "ensure_models", lambda parent, keys: True)
+    atanu = store.add("Atanu", _unit(1), Image.new("RGB", (40, 40), "blue"))
+    zoe = store.add("Zoe", _unit(2), Image.new("RGB", (40, 40), "green"))
+    for name in ("a.jpg", "b.jpg", "c.jpg"):
+        make_jpeg(photos / name, size=(200, 200))
+    rather_zoe = 0.3 * zoe.embeddings[0] + 0.7 * _unit(7)  # similarity about 0.39
+    rather_zoe /= np.linalg.norm(rather_zoe)
+    engine = _Faces({"a.jpg": [_face(atanu.embeddings[0])],
+                     "b.jpg": [_face(atanu.embeddings[0]), _face(zoe.embeddings[0], 110)],
+                     "c.jpg": [_face(rather_zoe)]})
+    w = make_window()
+    w.engine_factory = lambda use_gpu: engine
+
+    w.folder_edit.setText(str(photos))
+    w.mode_buttons["face"].setChecked(True)
+    w.start_button.click()
+    assert w.current_page() is w.face_setup_page
+    w.face_setup_page.start_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
+    page = w.face_question_page
+    assert page.heading_label.text().startswith("Is this Zoe? ")
+    assert page.counter_label.text() == "1 of 1"
+    page.yes_button.click()
+    assert w.current_page() is w.summary_page
+    assert w.summary_label.text().splitlines()[0] == (
+        "3 photos → 2 person folders, 1 together folders")
+
+    w.go_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.done_page)
+    assert "Moved 3 files." in w.done_label.text()
+    assert (photos / "Atanu" / "a.jpg").is_file()
+    assert (photos / "Atanu & Zoe" / "b.jpg").is_file()
+    assert (photos / "Zoe" / "c.jpg").is_file()
+    assert not any((photos / n).exists() for n in ("a.jpg", "b.jpg", "c.jpg"))
+
+    w.undo_button.click()
+    qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
+    assert all((photos / n).is_file() for n in ("a.jpg", "b.jpg", "c.jpg"))
+    for folder in ("Atanu", "Atanu & Zoe", "Zoe"):
+        assert not (photos / folder).exists()
+    assert errors == []

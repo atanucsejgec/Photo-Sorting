@@ -1,4 +1,6 @@
+import gc
 import threading
+import weakref
 from pathlib import Path
 
 import numpy as np
@@ -9,10 +11,13 @@ from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
 
 from photosort.faces import Face
+from photosort.modes.face_mode import FaceScan, Question
 from photosort.people import PeopleStore
 from photosort.settings import Settings, load_settings
 from photosort.ui import main_window
+from photosort.ui import face_question_page
 from photosort.ui.face_naming_dialog import FaceNamingDialog
+from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage, RememberedPeopleDialog
 from photosort.ui.main_window import MainWindow
 from photosort.ui.settings_dialog import SettingsDialog
@@ -373,6 +378,250 @@ def test_naming_dialog_choose_and_drop_another_photo(qtbot, store, photo, make_j
     assert engine.calls == ["two.jpg", "one.jpg", "three.jpg"]
 
 
+def test_naming_dialog_matches_names_as_they_are_saved(qtbot, store, photo):
+    zoe = _remember(store, "Zoe", 2)
+    d = _make_dialog(qtbot, photo, _two_faces(photo), store)
+    qtbot.waitUntil(lambda: len(d.rows) == 2)
+    d.rows[0].name_edit.setText("Zoe.")  # saved as "Zoe": the same person
+    d.rows[1].skip_check.setChecked(True)
+    d.save_button.click()
+    assert d.result() == QDialog.DialogCode.Accepted
+    (person,) = store.people()
+    assert person.id == zoe.id and len(person.embeddings) == 2
+
+
+def test_naming_dialog_same_saved_name_twice_is_refused(qtbot, store, photo):
+    d = _make_dialog(qtbot, photo, _two_faces(photo), store)
+    qtbot.waitUntil(lambda: len(d.rows) == 2)
+    d.rows[0].name_edit.setText("Zoe")
+    d.rows[1].name_edit.setText("zoe.")
+    d.save_button.click()
+    assert d.result() != QDialog.DialogCode.Accepted
+    assert d.rows[1].error_label.text() == "Two faces can't have the same name."
+    assert store.people() == []
+
+
+def test_naming_dialog_closed_while_looking_is_fine(qtbot, store, photo):
+    engine = _two_faces(photo)
+    engine.hold[photo.name] = threading.Event()
+    d = FaceNamingDialog(photo, engine, store)
+    qtbot.waitUntil(lambda: engine.calls == [photo.name])
+    d.reject()
+    d.deleteLater()
+    qtbot.wait(10)  # the dialog is gone before the analysis reports
+    engine.hold[photo.name].set()
+    QThreadPool.globalInstance().waitForDone()
+    qtbot.wait(10)  # the result arrives for a dialog that is gone: no error
+
+
+def test_naming_dialog_lets_go_of_its_engine_when_closed(qtbot, store, photo):
+    engine = _two_faces(photo)
+    ref = weakref.ref(engine)
+    d = _make_dialog(qtbot, photo, engine, store)
+    qtbot.waitUntil(lambda: len(d.rows) == 2)
+    d.reject()
+    del engine
+    QThreadPool.globalInstance().waitForDone()
+    gc.collect()
+    assert ref() is None
+
+
+# ----- question page --------------------------------------------------------
+
+@pytest.fixture
+def asking(tmp_path, store, make_jpeg):
+    """Three questions: a.jpg (Atanu), b.jpg (Atanu, then Zoe)."""
+    root = tmp_path / "asked"
+    make_jpeg(root / "a.jpg", size=(200, 200))
+    make_jpeg(root / "b.jpg", size=(300, 200))
+    atanu = _remember(store, "Atanu", 1)
+    zoe = _remember(store, "Zoe", 2)
+    questions = [
+        Question("a.jpg", atanu.id, "Atanu", (20.0, 40.0, 80.0, 120.0), (200, 200), 0.40, 63),
+        Question("b.jpg", atanu.id, "Atanu", (10.0, 10.0, 50.0, 50.0), (300, 200), 0.35, 50),
+        Question("b.jpg", zoe.id, "Zoe", (150.0, 10.0, 200.0, 60.0), (300, 200), 0.32, 38),
+    ]
+    scan = FaceScan({}, questions, photos=2, unreadable=0)
+    return root, scan, [atanu, zoe]
+
+
+def _question_page(qtbot, asking) -> FaceQuestionPage:
+    root, scan, people = asking
+    page = FaceQuestionPage()
+    qtbot.addWidget(page)
+    page.resize(900, 600)
+    page.load(root, scan, people)
+    return page
+
+
+def _keys(scan):
+    return [(q.rel, q.person_id) for q in scan.questions]
+
+
+def test_question_shows_name_percent_and_counter(qtbot, asking):
+    page = _question_page(qtbot, asking)
+    assert page.heading_label.text() == "Is this Atanu? 63% sure"
+    assert page.counter_label.text() == "1 of 3"
+    assert not page.person_label.pixmap().isNull()  # Atanu's remembered face
+    assert page.yes_button.text() == "Yes"
+    assert page.no_button.text() == "No"
+    assert page.skip_button.text() == "Skip"
+    assert page.back_button.text() == "Previous"
+    assert page.stop_button.text() == "Stop asking"
+    assert not page.back_button.isEnabled()
+    qtbot.waitUntil(page.photo_view.has_photo)
+    assert page.photo_view.image_size() == (200, 200)
+
+
+def test_face_box_is_drawn_scaled_to_the_photo_shown(qtbot, asking):
+    page = _question_page(qtbot, asking)
+    qtbot.waitUntil(page.photo_view.has_photo)
+    view = page.photo_view
+    view.resize(600, 300)  # the 200x200 photo is shown 300x300, centred
+    box = view.box_rect()
+    assert (box.left(), box.top(), box.width(), box.height()) == pytest.approx(
+        (150 + 30, 60, 90, 120))
+    view.resize(400, 400)  # shown 400x400: twice the photo's pixels
+    box = view.box_rect()
+    assert (box.left(), box.top(), box.width(), box.height()) == pytest.approx(
+        (40, 80, 120, 160))
+
+
+def test_face_box_follows_the_photos_orientation(qtbot, tmp_path, store, make_pattern_jpeg):
+    # Stored 300x200 and turned upright (EXIF 6) to 200x300, as faces.py decodes it.
+    root = tmp_path / "turned"
+    make_pattern_jpeg(root / "t.jpg", 1, size=(300, 200), orientation=6)
+    atanu = _remember(store, "Atanu", 1)
+    question = Question("t.jpg", atanu.id, "Atanu", (0.0, 150.0, 100.0, 300.0), (200, 300),
+                        0.4, 63)
+    page = FaceQuestionPage()
+    qtbot.addWidget(page)
+    page.load(root, FaceScan({}, [question], 1, 0), [atanu])
+    qtbot.waitUntil(page.photo_view.has_photo)
+    assert page.photo_view.image_size() == (200, 300)
+    view = page.photo_view
+    view.resize(400, 600)  # shown at twice the decoded size
+    box = view.box_rect()
+    assert (box.left(), box.top(), box.width(), box.height()) == pytest.approx(
+        (0, 300, 200, 300))
+
+
+def test_keys_answer_and_move_on(qtbot, asking):
+    root, scan, _ = asking
+    page = _question_page(qtbot, asking)
+    done = []
+    page.finished.connect(done.append)
+    qtbot.keyClick(page, Qt.Key.Key_Y)
+    assert page.counter_label.text() == "2 of 3"
+    assert page.heading_label.text() == "Is this Atanu? 50% sure"
+    assert page.back_button.isEnabled()
+    qtbot.keyClick(page, Qt.Key.Key_N)
+    assert page.counter_label.text() == "3 of 3"
+    assert page.heading_label.text() == "Is this Zoe? 38% sure"
+    assert done == []
+    qtbot.keyClick(page, Qt.Key.Key_S)
+    a, b_atanu, b_zoe = _keys(scan)
+    assert done == [{a: "yes", b_atanu: "no", b_zoe: "skip"}]
+
+
+def test_buttons_answer_too(qtbot, asking):
+    root, scan, _ = asking
+    page = _question_page(qtbot, asking)
+    done = []
+    page.finished.connect(done.append)
+    page.no_button.click()
+    page.skip_button.click()
+    page.yes_button.click()
+    a, b_atanu, b_zoe = _keys(scan)
+    assert done == [{a: "no", b_atanu: "skip", b_zoe: "yes"}]
+
+
+def test_previous_lets_an_answer_be_changed(qtbot, asking):
+    root, scan, _ = asking
+    page = _question_page(qtbot, asking)
+    done = []
+    page.finished.connect(done.append)
+    qtbot.keyClick(page, Qt.Key.Key_Y)
+    qtbot.keyClick(page, Qt.Key.Key_Y)
+    qtbot.keyClick(page, Qt.Key.Key_Left)
+    assert page.counter_label.text() == "2 of 3"
+    assert page.answer_label.text() == "Your answer: Yes"
+    page.back_button.click()
+    assert page.counter_label.text() == "1 of 3"
+    qtbot.keyClick(page, Qt.Key.Key_N)  # changed
+    assert page.counter_label.text() == "2 of 3"
+    page.stop_button.click()
+    a, b_atanu, _ = _keys(scan)
+    assert done == [{a: "no", b_atanu: "yes"}]
+
+
+def test_stop_finishes_with_the_answers_so_far(qtbot, asking):
+    root, scan, _ = asking
+    page = _question_page(qtbot, asking)
+    done = []
+    page.finished.connect(done.append)
+    qtbot.keyClick(page, Qt.Key.Key_Y)
+    page.stop_button.click()
+    assert done == [{_keys(scan)[0]: "yes"}]
+
+
+def test_cancel_question_page(qtbot, asking):
+    page = _question_page(qtbot, asking)
+    cancelled = []
+    page.cancelled.connect(lambda: cancelled.append(True))
+    page.cancel_button.click()
+    assert cancelled == [True]
+
+
+def test_resume_shows_the_last_question_with_its_answer(qtbot, asking):
+    root, scan, _ = asking
+    page = _question_page(qtbot, asking)
+    done = []
+    page.finished.connect(done.append)
+    for key in (Qt.Key.Key_Y, Qt.Key.Key_N, Qt.Key.Key_S):
+        qtbot.keyClick(page, key)
+    page.resume()
+    assert page.counter_label.text() == "3 of 3"
+    assert page.answer_label.text() == "Your answer: Skip"
+    page.stop_button.click()
+    assert done[-1] == done[0]
+
+
+def test_unreadable_photo_can_still_be_answered(qtbot, asking):
+    root, scan, _ = asking
+    (root / "a.jpg").write_bytes(b"not a photo")
+    page = _question_page(qtbot, asking)
+    qtbot.waitUntil(lambda: page.photo_view.message() == "Couldn't load this photo")
+    assert not page.photo_view.has_photo()
+    done = []
+    page.finished.connect(done.append)
+    qtbot.keyClick(page, Qt.Key.Key_Y)
+    page.stop_button.click()
+    assert done == [{_keys(scan)[0]: "yes"}]
+
+
+def test_a_late_photo_never_shows_on_another_question(qtbot, asking, monkeypatch):
+    root, scan, _ = asking
+    release = threading.Event()
+    real = face_question_page.open_image
+
+    def slow_for_a(path, max_px=None):
+        if Path(path).name == "a.jpg":
+            assert release.wait(10)
+        return real(path, max_px)
+
+    monkeypatch.setattr(face_question_page, "open_image", slow_for_a)
+    page = _question_page(qtbot, asking)
+    assert page.photo_view.message() == "Loading…"
+    qtbot.keyClick(page, Qt.Key.Key_Y)  # on to b.jpg before a.jpg has loaded
+    qtbot.waitUntil(page.photo_view.has_photo)
+    assert page.photo_view.image_size() == (300, 200)
+    release.set()
+    QThreadPool.globalInstance().waitForDone()
+    qtbot.wait(20)
+    assert page.photo_view.image_size() == (300, 200)  # still b.jpg
+
+
 # ----- main window ----------------------------------------------------------
 
 @pytest.fixture
@@ -510,19 +759,115 @@ def test_face_sort_with_only_ticked_people(qtbot, make_window, photos, store, ma
     assert [(m.src, m.dst) for m in w._plan.moves] == [("b.jpg", "Zoe/b.jpg")]
 
 
-def test_unsure_matches_stay_put_for_now(qtbot, make_window, photos, store, make_jpeg,
-                                         models_present):
+def _one_unsure(store, photos, make_jpeg):
+    """a.jpg with a face rather like Atanu's (similarity about 0.39)."""
     atanu = _remember(store, "Atanu", 1)
-    make_jpeg(photos / "a.jpg")
-    unsure = _towards(atanu.embeddings[0], _unit(7), 0.7)  # similarity about 0.39
-    engine = FakeEngine({"a.jpg": [_face(unsure)]})
+    make_jpeg(photos / "a.jpg", size=(200, 200))
+    unsure = _towards(atanu.embeddings[0], _unit(7), 0.7)
+    return atanu, FakeEngine({"a.jpg": [_face(unsure)]})
+
+
+def test_unsure_match_is_asked_before_planning(qtbot, make_window, photos, store,
+                                                make_jpeg, models_present, errors):
+    atanu, engine = _one_unsure(store, photos, make_jpeg)
     w = make_window(engine)
     _to_setup(w, photos)
     w.face_setup_page.start_button.click()
-    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
-    assert w._face_scan.questions  # asked about: not sure enough to move
+    qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
+    page = w.face_question_page
+    assert page.heading_label.text().startswith("Is this Atanu? ")
+    assert page.counter_label.text() == "1 of 1"
+    assert w._plan is None  # nothing planned before the answers
+    page.yes_button.click()
+    assert w.current_page() is w.summary_page
+    assert [(m.src, m.dst) for m in w._plan.moves] == [("a.jpg", "Atanu/a.jpg")]
+    assert errors == []
+
+
+def test_stop_asking_leaves_unanswered_photos(qtbot, make_window, photos, store,
+                                              make_jpeg, models_present):
+    _, engine = _one_unsure(store, photos, make_jpeg)
+    w = make_window(engine)
+    _to_setup(w, photos)
+    w.face_setup_page.start_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
+    w.face_question_page.stop_button.click()
+    assert w.current_page() is w.summary_page
     assert w._plan.moves == []
     assert not w.go_button.isEnabled()
+
+
+def test_back_from_summary_returns_to_the_questions(qtbot, make_window, photos, store,
+                                                    make_jpeg, models_present):
+    _, engine = _one_unsure(store, photos, make_jpeg)
+    w = make_window(engine)
+    _to_setup(w, photos)
+    w.face_setup_page.start_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
+    page = w.face_question_page
+    page.yes_button.click()
+    w.back_button.click()
+    assert w.current_page() is page
+    assert w._plan is None
+    assert page.counter_label.text() == "1 of 1"
+    assert page.answer_label.text() == "Your answer: Yes"  # kept
+    page.stop_button.click()
+    assert [(m.src, m.dst) for m in w._plan.moves] == [("a.jpg", "Atanu/a.jpg")]
+
+
+def test_cancel_questions_returns_to_setup(qtbot, make_window, photos, store, make_jpeg,
+                                           models_present):
+    _, engine = _one_unsure(store, photos, make_jpeg)
+    w = make_window(engine)
+    _to_setup(w, photos)
+    w.face_setup_page.start_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
+    w.face_question_page.cancel_button.click()
+    assert w.current_page() is w.face_setup_page
+    assert w._plan is None
+
+
+def test_planning_error_after_questions_goes_home(qtbot, make_window, photos, store,
+                                                  make_jpeg, models_present, errors,
+                                                  monkeypatch):
+    _, engine = _one_unsure(store, photos, make_jpeg)
+
+    def unplugged(*args, **kwargs):
+        raise OSError("the drive is gone")
+
+    monkeypatch.setattr(main_window, "plan_faces", unplugged)
+    w = make_window(engine)
+    _to_setup(w, photos)
+    w.face_setup_page.start_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
+    w.face_question_page.yes_button.click()
+    assert w.current_page() is w.home
+    assert errors == ["Could not plan the moves: the drive is gone"]
+    assert w._plan is None
+
+
+def test_window_lets_go_of_the_naming_engine(qtbot, make_window, photos, store, make_jpeg,
+                                             tmp_path, models_present, monkeypatch):
+    _remember(store, "Atanu", 1)
+    me = make_jpeg(tmp_path / "faces" / "zoe.jpg", size=(200, 200))
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(me), ""))
+    _name_in_dialog(monkeypatch, qtbot, "Zoe")
+    made = []
+
+    def factory(use_gpu):
+        engine = FakeEngine({"zoe.jpg": [_face(_unit(2))]})
+        made.append(weakref.ref(engine))
+        return engine
+
+    w = make_window()
+    w.engine_factory = factory
+    _to_setup(w, photos)
+    w.face_setup_page.add_button.click()
+    assert [p.name for p in store.people()] == ["Atanu", "Zoe"]
+    QThreadPool.globalInstance().waitForDone()
+    qtbot.wait(10)  # the closed dialog is deleted
+    gc.collect()
+    assert len(made) == 1 and made[0]() is None
 
 
 def test_cancel_face_scan_returns_to_setup(qtbot, make_window, photos, store, make_jpeg,

@@ -1,10 +1,12 @@
-"""The main window: Home, Progress, Review, Face setup, Summary and Done pages for a sort.
+"""The main window: Home, Progress, Review, Face setup, Face questions, Summary
+and Done pages for a sort.
 
 A mode either plans its moves straight away, or finds groups that the owner
 reviews first; the files not kept are then planned to be set aside (see
 photosort.modes.MODE_SPECS). Face mode first makes sure the face models are
 there, then shows the remembered people to pick from (or to add to); the
-photos are then searched for those people and the moves planned.
+photos are then searched for those people, the owner is asked about the
+unsure matches, and the moves planned.
 
 The window owns the one PeopleStore of the app: the Face setup page, the
 naming dialog and Settings all use it.
@@ -39,6 +41,7 @@ from photosort.people import PeopleError, PeopleStore, Person
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
 from photosort.ui.face_naming_dialog import FaceNamingDialog, pick_photo
+from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
 from photosort.ui.history_dialog import HistoryDialog, undo_summary
 from photosort.ui.model_download import ensure_models
@@ -115,7 +118,6 @@ class MainWindow(QMainWindow):
         self.people_store = PeopleStore() if people_store is None else people_store
         # Makes the face engine, given Settings' use_gpu; the models open on first use.
         self.engine_factory: Callable[[bool], FaceEngine] = FaceEngine
-        self._naming_engine: tuple[bool, FaceEngine] | None = None  # (use_gpu, engine)
         self._face_scan: FaceScan | None = None  # kept for Back on the summary
         self._face_people: list[Person] = []  # the people the scan looked for
         self._task: Task | None = None
@@ -139,10 +141,11 @@ class MainWindow(QMainWindow):
         self.progress_page = self._build_progress()
         self.review_page = self._build_review()
         self.face_setup_page = self._build_face_setup()
+        self.face_question_page = self._build_face_questions()
         self.summary_page = self._build_summary()
         self.done_page = self._build_done()
         for page in (self.home, self.progress_page, self.review_page, self.face_setup_page,
-                     self.summary_page, self.done_page):
+                     self.face_question_page, self.summary_page, self.done_page):
             self.stack.addWidget(page)
         self._show(self.home)
 
@@ -238,6 +241,12 @@ class MainWindow(QMainWindow):
         page.more_requested.connect(self._add_photos)
         page.selection_changed.connect(self._save_settings)
         page.back_button.clicked.connect(lambda: self._show(self.home))
+        return page
+
+    def _build_face_questions(self) -> FaceQuestionPage:
+        page = FaceQuestionPage()
+        page.finished.connect(self._plan_face_moves)
+        page.cancelled.connect(self._show_face_setup)
         return page
 
     def _build_summary(self) -> QWidget:
@@ -487,18 +496,15 @@ class MainWindow(QMainWindow):
         self.face_setup_page.load(self.people_store)
         self._show(self.face_setup_page)
 
-    def _engine_for_naming(self) -> FaceEngine:
-        """The engine the naming dialogs share, so the models open only once."""
-        use_gpu = self.settings.use_gpu
-        if self._naming_engine is None or self._naming_engine[0] != use_gpu:
-            self._naming_engine = (use_gpu, self.engine_factory(use_gpu))
-        return self._naming_engine[1]
-
     def _name_faces(self, path: Path, name: str = "") -> tuple[list[Person], bool]:
         """Let the owner name the faces in path. Return the people saved (now
-        ticked) and whether the owner finished with Save."""
-        dialog = FaceNamingDialog(path, self._engine_for_naming(), self.people_store, self,
-                                  name=name)
+        ticked) and whether the owner finished with Save.
+
+        The dialog has a face engine of its own, let go when it closes, so
+        the models are not held in memory twice for the life of the app.
+        """
+        engine = self.engine_factory(self.settings.use_gpu)
+        dialog = FaceNamingDialog(path, engine, self.people_store, self, name=name)
         finished = dialog.exec() == QDialog.DialogCode.Accepted
         saved = dialog.added()
         dialog.deleteLater()
@@ -568,12 +574,9 @@ class MainWindow(QMainWindow):
             self._plan_face_moves({})
 
     def _ask_face_questions(self) -> None:
-        """Ask the owner about the unsure matches, then plan.
-
-        Until the question page is built, they are left unanswered, so
-        those photos stay where they are.
-        """
-        self._plan_face_moves({})
+        """Ask the owner about the unsure matches; the page's answers are then planned."""
+        self.face_question_page.load(self._root, self._face_scan, self._face_people)
+        self._show(self.face_question_page)
 
     def _plan_face_moves(self, answers: dict[tuple[str, str], Answer]) -> None:
         try:
@@ -611,12 +614,16 @@ class MainWindow(QMainWindow):
         self._show(self.summary_page)
 
     def _back_from_summary(self) -> None:
-        """Back to the review, every answer intact, if there was one; to the
-        people picked for a face sort; else Home."""
+        """Back to the review or the face questions, every answer intact, if
+        there was one; to the people picked for a face sort; else Home."""
         if self._groups:
             self._plan = None  # the review makes a fresh one
             self.review_page.resume()
             self._show(self.review_page)
+        elif self._face_scan is not None and self._face_scan.questions:
+            self._plan = None  # the answers make a fresh one
+            self.face_question_page.resume()
+            self._show(self.face_question_page)
         elif self._face_scan is not None:
             self._plan = None
             self._show_face_setup()
@@ -711,5 +718,6 @@ class MainWindow(QMainWindow):
         if self._task is not None:
             self._task.cancel_event.set()
         self.review_page.stop_thumbnails()
+        self.face_question_page.stop_loading()
         QThreadPool.globalInstance().waitForDone()
         super().closeEvent(event)

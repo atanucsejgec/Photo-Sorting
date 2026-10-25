@@ -187,7 +187,9 @@ def face_crop(path: Path, box: Box, size: int = 160) -> Image.Image:
 
 class FaceEngine:
     """Detects and embeds faces. The models are opened on first use, on the
-    calling thread, so build it anywhere and use it from one worker thread."""
+    calling thread, so build it anywhere. Use it from one thread at a time,
+    any thread: the face scan's worker, or the naming dialog's analyses on
+    pool threads, one after another."""
 
     def __init__(self, use_gpu: bool):
         self.use_gpu = use_gpu

@@ -4,8 +4,12 @@ The photo is analysed on a pool thread (the face models take a while to
 open, and so does decoding a big photo); its faces and their pictures
 arrive at FaceNamingDialog._analysed. Save adds each named face as a new
 person, or, when the name is that of a remembered person, as another
-sample of them. A row saved once is locked, so pressing Save again after
-fixing another row never saves it twice.
+sample of them. Names are compared as they will be saved (naming.safe_name,
+case-insensitively), so "Zoe." is Zoe. A row saved once is locked, so
+pressing Save again after fixing another row never saves it twice.
+
+The dialog lets go of its face engine when it closes (an analysis still
+running keeps it until it ends), so the models are not kept in memory.
 """
 
 import threading
@@ -22,6 +26,7 @@ from PySide6.QtWidgets import (
 from photosort.faces import Face, face_crop
 from photosort.imageinfo import UnreadableImage
 from photosort.media import PHOTO_EXTS, kind
+from photosort.naming import safe_name
 from photosort.people import PeopleError, PeopleStore, Person
 from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.worker import Task
@@ -48,6 +53,14 @@ def pick_photo(parent: QWidget | None, title: str = "Choose a photo") -> Path | 
     patterns = " ".join(f"*{ext} *{ext.upper()}" for ext in sorted(PHOTO_EXTS))
     path, _ = QFileDialog.getOpenFileName(parent, title, "", f"Photos ({patterns})")
     return Path(path) if path else None
+
+
+def _name_key(name: str) -> str:
+    """How name is compared: as PeopleStore saves it, case-insensitively; "" if
+    there is no name to save."""
+    if not name.replace(".", "").strip():
+        return ""
+    return safe_name(name.strip()).casefold()
 
 
 def _find_faces(engine, path: Path, ended: threading.Event, progress=None, cancel=None):
@@ -167,6 +180,8 @@ class FaceNamingDialog(QDialog):
         return self._task is not None
 
     def _analyse(self, path: Path) -> None:
+        if self._engine is None:  # closed
+            return
         self.rows = []
         self.scroll.setWidget(QWidget())  # deletes the previous photo's rows
         self.status_label.setText(LOOKING)
@@ -256,7 +271,7 @@ class FaceNamingDialog(QDialog):
         seen: set[str] = set()
         clash = False
         for row in named:
-            key = row.name().casefold()
+            key = _name_key(row.name())
             if key and key in seen:
                 row.show_error(SAME_NAME)
                 clash = True
@@ -264,14 +279,14 @@ class FaceNamingDialog(QDialog):
         if clash:
             return
         try:
-            remembered = {p.name.casefold(): p for p in self._store.people()}
+            remembered = {_name_key(p.name): p for p in self._store.people()}
         except PeopleError as e:
             self.status_label.setText(str(e))
             return
         failed = False
         for row in pending:
             try:
-                person = remembered.get(row.name().casefold())
+                person = remembered.get(_name_key(row.name()))
                 if person is not None:
                     self._store.add_samples(person.id, row.face.embedding)
                 else:
@@ -300,4 +315,5 @@ class FaceNamingDialog(QDialog):
     def done(self, result: int) -> None:
         if self._task is not None:
             self._task.cancel_event.set()
+        self._engine = None  # closed: no more photos are analysed
         super().done(result)
