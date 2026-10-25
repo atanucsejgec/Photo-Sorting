@@ -1,8 +1,8 @@
 """The Face setup page: the remembered people, ticked for this sort.
 
 Everyone comes up unticked: the owner ticks the people to sort by, one for
-their photos, two or more for the photos of them together. Only the people
-load() is asked to tick (say, ones just named) come up ticked. A photo
+all their photos, two or more for only the photos with two or more of them.
+Only the people load() is asked to tick (say, ones just named) come up ticked. A photo
 dropped on the page is named like one picked with "Add person…". The same
 list, without ticks, drops and with only Forget, is the Settings
 "Remembered people…" dialog.
@@ -30,8 +30,9 @@ _log = logging.getLogger("photosort")
 
 ICON_PX = 64
 HEADING = "Sort by face"
-HINT = ("Tick a person to sort their photos into their own folder. Tick two or more "
-        "to sort only the photos of them together.")
+HINT = ("Tick one person to sort their photos into a folder named after them. With two "
+        "or more ticked, only photos with two or more of them are sorted, into a folder "
+        "named after the people in each photo.")
 NOBODY = "No one is remembered yet. Add a person: pick a photo of them and type their name."
 PEOPLE_HINT = "The people Photo Sorter knows by face, for sorting by face."
 NOBODY_LEFT = "No one is remembered."

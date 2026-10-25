@@ -15,8 +15,9 @@ Working now:
   `Repeated Shots/`.
 - **Face** mode: give it one photo and type the names of the people in it. It remembers
   them; tick the people to sort by. With one ticked, it moves every photo of them into
-  a folder named after them (`Atanu/`); with two or more, only the photos of them
-  together, into `Atanu & Zoe/` (photos of just one of them stay put). When it isn't
+  a folder named after them (`Atanu/`). With two or more ticked, only photos with two
+  or more of them are sorted, into a folder named after the people in each photo
+  (`Atanu & Zoe/`); photos with just one of them stay put. When it isn't
   sure, it asks ("Is this Atanu? 72% sure"). Strangers are ignored. Face data stays on
   this computer.
 

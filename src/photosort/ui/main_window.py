@@ -505,18 +505,24 @@ class MainWindow(QMainWindow):
         self._show(self.face_setup_page)
 
     def _name_faces(self, path: Path, name: str = "") -> tuple[list[Person], bool]:
-        """Let the owner name the faces in path. Return the people saved (now
-        ticked) and whether the owner finished with Save.
+        """Let the owner name the faces in path. Return the people saved and
+        whether the owner finished with Save. The people new to the store come
+        back ticked; the ticks of the others stay as they were.
 
         The dialog has a face engine of its own, let go when it closes, so
         the models are not held in memory twice for the life of the app.
         """
+        try:
+            known = {p.id for p in self.people_store.people()}
+        except PeopleError:
+            known = set()
         engine = self.engine_factory(self.settings.use_gpu)
         dialog = FaceNamingDialog(path, engine, self.people_store, self, name=name)
         finished = dialog.exec() == QDialog.DialogCode.Accepted
         saved = dialog.added()
         dialog.deleteLater()
-        ticked = [*self.face_setup_page.ticked_ids(), *(p.id for p in saved)]
+        ticked = [*self.face_setup_page.ticked_ids(),
+                  *(p.id for p in saved if p.id not in known)]
         self.face_setup_page.load(self.people_store, ticked)
         return saved, finished
 
@@ -530,7 +536,9 @@ class MainWindow(QMainWindow):
             return
         nobody_yet = not self.face_setup_page.has_people()
         saved, finished = self._name_faces(path)
-        if saved and finished and nobody_yet:  # §5.2: sorting starts after naming
+        # §5.2: sorting starts after naming. Not for two or more people: that
+        # would be a sort of group photos only, which the owner should choose.
+        if len(saved) == 1 and finished and nobody_yet:
             self._start_face_sort(self.face_setup_page.ticked_ids())
 
     def _add_photos(self, person_id: str) -> None:

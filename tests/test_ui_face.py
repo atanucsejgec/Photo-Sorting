@@ -1143,6 +1143,26 @@ def test_naming_with_nobody_remembered_starts_sorting(qtbot, make_window, photos
     assert [(m.src, m.dst) for m in w._plan.moves] == [("a.jpg", "Atanu/a.jpg")]
 
 
+def test_first_naming_of_several_people_waits_for_start(qtbot, make_window, photos, store,
+                                                       make_jpeg, tmp_path, models_present,
+                                                       monkeypatch):
+    # Two or more ticked sorts group photos only: that is the owner's to start.
+    me = make_jpeg(tmp_path / "faces" / "two.jpg", size=(200, 200))
+    make_jpeg(photos / "a.jpg")
+    engine = _two_faces(me)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(me), ""))
+    _name_in_dialog(monkeypatch, qtbot, "Atanu", "Zoe")
+    w = make_window(engine)
+    _to_setup(w, photos)
+    w.face_setup_page.add_button.click()
+    assert [p.name for p in store.people()] == ["Atanu", "Zoe"]
+    assert w.current_page() is w.face_setup_page
+    assert _rows(w.face_setup_page) == [("Atanu", True), ("Zoe", True)]
+    assert w.face_setup_page.start_button.isEnabled()
+    assert w._task is None
+    assert engine.calls == ["two.jpg"]  # no photo looked at for a sort
+
+
 def test_photo_dropped_on_setup_names_its_faces(qtbot, make_window, photos, store,
                                                make_jpeg, tmp_path, models_present,
                                                monkeypatch):
@@ -1202,13 +1222,16 @@ def test_add_photos_to_a_person(qtbot, make_window, photos, store, make_jpeg, tm
         return self.result()
 
     monkeypatch.setattr(FaceNamingDialog, "exec", fake_exec)
+    _remember(store, "Bob", 3)
     w = make_window(engine)
     _to_setup(w, photos)
-    w.face_setup_page.people_list.setCurrentRow(0)
+    _tick(w.face_setup_page, "Bob")
+    w.face_setup_page.people_list.setCurrentItem(_item(w.face_setup_page, "Atanu"))
     w.face_setup_page.more_button.click()
     assert len(opened) == 1
     assert len(store.people()[0].embeddings) == 2
     assert w.current_page() is w.face_setup_page  # no sort started
+    assert _rows(w.face_setup_page) == [("Atanu", False), ("Bob", True)]  # ticks unchanged
 
 
 def test_settings_gets_the_windows_people_store(make_window, monkeypatch, store):
