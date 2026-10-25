@@ -67,6 +67,14 @@ CONTENT_BACKGROUND_PROMPTS = ("a photo", "a photo of something else")
 # owner is asked; below, it stays put.
 NOTES_SURE = 0.80
 NOTES_UNSURE = 0.50
+# The paper prompts, one per kind of paper, in the order of notes.KINDS
+# (Handwritten, Book Pages, Printed Documents, Receipts).
+NOTES_PAPER_PROMPTS = (
+    "a photo of handwritten notes",
+    "a photo of a page from a book",
+    "a photo of a printed document",
+    "a photo of a receipt",
+)
 # Prompts for photos that are not of paper, in the softmax beside the paper ones.
 NOTES_OTHER_PROMPTS = (
     "a photo of people",

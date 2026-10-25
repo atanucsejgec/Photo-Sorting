@@ -10,14 +10,15 @@ from types import SimpleNamespace
 import pytest
 import onnxruntime
 from PySide6.QtCore import QThreadPool
-from PySide6.QtWidgets import QMessageBox, QPushButton
+from PySide6.QtWidgets import QDialog, QMessageBox, QPushButton
 
 from photosort.ai import models, runtime
 from photosort.executor import execute
 from photosort.journal import RunJournal, load_runs
 from photosort.plan import Move, Plan
-from photosort.settings import Settings, load_settings
+from photosort.settings import DEFAULT_CONTENT_CATEGORIES, Settings, load_settings
 from photosort.ui import history_dialog, model_download
+from photosort.ui.category_editor import CategoryEditor
 from photosort.ui.history_dialog import HistoryDialog, undo_summary
 from photosort.ui.main_window import MainWindow
 from photosort.ui.settings_dialog import SettingsDialog
@@ -246,6 +247,59 @@ def test_settings_shows_runtime_status(qtbot, tmp_path, monkeypatch):
                         lambda: ["CPUExecutionProvider"])
     d.gpu_check.setChecked(True)
     assert d.runtime_label.text() == "Running on: CPU (no usable GPU found)"
+
+
+def test_settings_edits_the_categories(qtbot, tmp_path, monkeypatch):
+    path = tmp_path / "config" / "settings.json"
+    settings = Settings()
+    d = SettingsDialog(settings, path)
+    qtbot.addWidget(d)
+    assert d.categories_button.text() == "Content categories…"
+    seen = []
+
+    def edit(editor):
+        seen.append(editor.categories())
+        editor.list_widget.setCurrentRow(0)
+        editor.remove_button.click()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(CategoryEditor, "exec", edit)
+    d.categories_button.click()
+    assert seen == [list(DEFAULT_CONTENT_CATEGORIES)]
+    assert settings.content_categories == list(DEFAULT_CONTENT_CATEGORIES)  # not until OK
+    d.accept()
+    assert settings.content_categories == list(DEFAULT_CONTENT_CATEGORIES[1:])
+    assert load_settings(path).content_categories == list(DEFAULT_CONTENT_CATEGORIES[1:])
+
+
+def test_settings_cancel_keeps_the_categories(qtbot, tmp_path, monkeypatch):
+    settings = Settings(content_categories=["Food"])
+    d = SettingsDialog(settings, tmp_path / "settings.json")
+    qtbot.addWidget(d)
+
+    def edit(editor):
+        editor.reset_button.click()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(CategoryEditor, "exec", edit)
+    d.categories_button.click()
+    d.reject()
+    assert settings.content_categories == ["Food"]
+
+
+def test_settings_editor_cancelled_changes_nothing(qtbot, tmp_path, monkeypatch):
+    settings = Settings(content_categories=["Food", "Cars"])
+    d = SettingsDialog(settings, tmp_path / "settings.json")
+    qtbot.addWidget(d)
+
+    def edit(editor):
+        editor.reset_button.click()
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(CategoryEditor, "exec", edit)
+    d.categories_button.click()
+    d.accept()
+    assert settings.content_categories == ["Food", "Cars"]
 
 
 @pytest.fixture

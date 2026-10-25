@@ -61,6 +61,13 @@ def test_kinds_and_prompts():
                              "a screenshot of a phone screen"]
 
 
+def test_paper_prompts_are_tuned_in_thresholds():
+    from photosort import thresholds
+
+    assert thresholds.NOTES_PAPER_PROMPTS == tuple(PAPER_PROMPTS)
+    assert isinstance(PAPER_PROMPTS, list)
+
+
 # --- judge ----------------------------------------------------------------------
 
 def test_judge_receipt_is_sure():

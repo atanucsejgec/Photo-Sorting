@@ -2,8 +2,9 @@
 
 The four kinds of paper (KINDS) are each described to CLIP by a prompt
 (PAPER_PROMPTS); beside them are prompts for photos of other things
-(OTHER_PROMPTS). A photo's probability for each prompt is the softmax, over
-all of them, of its similarities to them times thresholds.CLIP_LOGIT_SCALE.
+(OTHER_PROMPTS). Both are tuned in thresholds. A photo's probability for
+each prompt is the softmax, over all of them, of its similarities to them
+times thresholds.CLIP_LOGIT_SCALE.
 Its paper probability is the sum of the four kinds', and its kind the
 likeliest of them. At NOTES_SURE or above it goes to Notes & Pages/<kind>;
 from NOTES_UNSURE up to that, the owner is asked first (a Verdict); below, it
@@ -17,16 +18,16 @@ import numpy as np
 from photosort.modes._clip_scan import ClipScan, place, probabilities, summary_rest
 from photosort.modes.content import Verdict
 from photosort.plan import Plan
-from photosort.thresholds import NOTES_OTHER_PROMPTS, NOTES_SURE, NOTES_UNSURE
+from photosort.thresholds import (
+    NOTES_OTHER_PROMPTS,
+    NOTES_PAPER_PROMPTS,
+    NOTES_SURE,
+    NOTES_UNSURE,
+)
 
 NOTES_FOLDER = "Notes & Pages"  # at the root; each kind has its folder in it
 KINDS = ["Handwritten", "Book Pages", "Printed Documents", "Receipts"]
-PAPER_PROMPTS = [  # one per kind, in KINDS' order
-    "a photo of handwritten notes",
-    "a photo of a page from a book",
-    "a photo of a printed document",
-    "a photo of a receipt",
-]
+PAPER_PROMPTS = list(NOTES_PAPER_PROMPTS)  # one per kind, in KINDS' order
 OTHER_PROMPTS = list(NOTES_OTHER_PROMPTS)
 
 

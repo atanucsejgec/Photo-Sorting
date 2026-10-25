@@ -53,8 +53,10 @@ def _folder_key(name: str) -> str:
 def category_problem(name: str, others: list[str]) -> str | None:
     """What is wrong with name as a new or renamed category beside others
     (the rest of the list), for the owner; None if nothing is."""
-    if _empty(name):
+    if not name.strip():
         return "Type a name."
+    if not any(c.isalnum() for c in name):  # "_" or "?" would make a folder of nothing
+        return "Use at least one letter or number."
     if len(name) > CATEGORY_NAME_MAX:
         return "That name is too long."
     if skipped_folder(safe_name(name)):
