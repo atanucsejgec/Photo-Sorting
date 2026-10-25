@@ -65,7 +65,7 @@ def test_the_timer_collects_cycles_on_the_gui_thread(qtbot, qapp, no_guard):
     ((701, 11, 0), 1),
     ((701, 11, 11), 2),
 ])
-def test_check_collects_the_generation_the_default_collector_would(
+def test_check_collects_the_oldest_generation_over_its_threshold(
         qapp, no_guard, monkeypatch, count, generation):
     guard = gc_guard.install(qapp)
     asked = []

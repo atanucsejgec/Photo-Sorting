@@ -133,6 +133,7 @@ Success means the owner can pick a folder, choose a mode, look over what will ha
 
 ### 5.8 Bad photos
 - Finds blurry, very dark, overexposed and accidental shots (pocket shots, a finger over the lens, the floor).
+- Only camera photos are judged. Screenshots (by Type/source's own rule, §5.6) and PNG or WebP graphics with no camera make or model (stickers, saved chat screens) are left alone, since a sharp white or dark-mode screen isn't a bad photo **(my call)**. Videos are skipped.
 - Review screen like the duplicates one, with each photo's reason shown ("blurry", "too dark"). The owner ticks which ones to move.
 - Ticked photos go to `Bad Photos/`. Nothing is deleted.
 

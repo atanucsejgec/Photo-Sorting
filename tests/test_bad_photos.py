@@ -1,7 +1,9 @@
 import threading
 from datetime import datetime
 
-from PIL import Image
+import numpy as np
+import pytest
+from PIL import Image, ImageDraw
 
 from photosort.groups import Candidate
 from photosort.modes import MODE_SPECS
@@ -104,3 +106,92 @@ def test_mode_spec():
     assert spec.kind == "bad"
     assert spec.set_aside_folder == "Bad Photos"
     assert spec.none_found == "No bad photos found."
+
+
+# Screenshots and graphics: sharp, but mostly white or nearly black, so the
+# light rules alone would call them "too bright" or "too dark".
+
+def _chat_screen(dark: bool) -> Image.Image:
+    """A 1080x2400 phone chat screen: bubbles and lines of text."""
+    back, bubble, text = ((12, 12, 12), (32, 32, 32), (90, 90, 90)) if dark else (
+        (255, 255, 255), (236, 236, 236), (20, 20, 20))
+    img = Image.new("RGB", (1080, 2400), back)
+    draw = ImageDraw.Draw(img)
+    for i, top in enumerate(range(200, 2200, 260)):
+        left = 40 if i % 2 else 380
+        draw.rounded_rectangle((left, top, left + 660, top + 200), 30, fill=bubble)
+        for line in range(3):
+            y = top + 40 + line * 50
+            draw.rectangle((left + 30, y, left + 600 - line * 120, y + 12), fill=text)
+    return img
+
+
+def _sticker(transparent: bool) -> Image.Image:
+    """A 512x512 cartoon face on a white background (see-through or not)."""
+    img = Image.new("RGBA", (512, 512), (255, 255, 255, 0 if transparent else 255))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse((156, 156, 356, 356), fill=(250, 200, 40, 255), outline="black", width=8)
+    draw.ellipse((210, 220, 230, 240), fill="black")
+    draw.ellipse((282, 220, 302, 240), fill="black")
+    draw.arc((206, 240, 306, 320), 20, 160, fill="black", width=8)
+    return img
+
+
+def _graphics(root):
+    """Screenshots named the way phones and computers name them, and the
+    same pictures as plain graphics with no EXIF at all."""
+    light, dark, sticker = _chat_screen(False), _chat_screen(True), _sticker(False)
+    light.save(root / "Screenshot_20250315-101500.png")
+    dark.save(root / "Screenshot 2025-03-15 at 22.10.00.png")
+    light.save(root / "Screenshot_20250316-090000.jpg", quality=90)
+    dark.save(root / "screen-shot dark.jpg", quality=90)
+    light.save(root / "chat.png")
+    dark.save(root / "dark mode.png")
+    dark.save(root / "dark mode.webp", lossless=True)
+    sticker.save(root / "sticker.png")
+    _sticker(True).save(root / "see-through sticker.png")
+    sticker.save(root / "sticker.webp", lossless=True)
+    sticker.convert("RGB").save(root / "sticker.gif")  # not a photo at all
+
+
+def test_graphics_would_be_bad_by_their_light_alone(tmp_path):
+    from photosort.quality import bad_reason, measure_quality
+
+    _graphics(tmp_path)
+    reasons = {p.name: bad_reason(measure_quality(p)) for p in tmp_path.iterdir()
+               if p.suffix != ".gif"}
+    assert reasons["chat.png"] == "too bright"
+    assert reasons["dark mode.png"] == "too dark"
+    assert reasons["sticker.png"] == "too bright"
+    assert all(reasons.values()), reasons
+
+
+def test_screenshots_and_graphics_are_left_alone(tmp_path):
+    _graphics(tmp_path)
+    progress = []
+    assert find_bad_photos(tmp_path, False, lambda i, n: progress.append((i, n))) == []
+    assert progress[-1] == (10, 10)  # every photo looked at; the GIF isn't one
+
+
+def _dark_pattern(path, fmt, make=None, model=None):
+    rng = np.random.default_rng(7)
+    grey = (rng.integers(0, 256, (48, 64)) * 0.25).astype(np.uint8)
+    img = Image.fromarray(np.dstack([grey] * 3)).resize((800, 600), Image.Resampling.NEAREST)
+    exif = Image.Exif()
+    if make is not None:
+        exif[271] = make
+    if model is not None:
+        exif[272] = model
+    img.save(path, fmt, exif=exif)
+    return path
+
+
+@pytest.mark.parametrize("name, fmt, make, model", [
+    ("IMG_20250315_101500.jpg", "JPEG", "Google", "Pixel 7"),
+    ("no camera info.jpg", "JPEG", None, None),  # a JPEG is a photo either way
+    ("from a camera.png", "PNG", None, "Canon EOS R6"),
+    ("from a camera.webp", "WEBP", "samsung", None),
+])
+def test_dark_camera_photos_are_still_judged(tmp_path, name, fmt, make, model):
+    _dark_pattern(tmp_path / name, fmt, make, model)
+    assert [(c.rel, c.note) for c in find_bad_photos(tmp_path, False)] == [(name, "too dark")]

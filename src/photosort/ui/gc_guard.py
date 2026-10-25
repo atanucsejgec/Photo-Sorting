@@ -6,7 +6,9 @@ there, while the GUI thread is busy with Qt objects, can crash PySide (its
 wrappers are traversed mid-change). So, once installed, the automatic
 collector is off; the guard checks the same thresholds on the GUI thread,
 every interval_ms and after each Task's result or error is delivered, and
-collects the generation the automatic collector would have.
+collects on a schedule like the automatic collector's (not exactly the same:
+CPython 3.12 can go straight to an older generation and holds gen 2 back
+until enough long-lived objects are pending; the guard does neither).
 """
 
 import gc
