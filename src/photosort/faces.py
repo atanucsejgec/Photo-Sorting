@@ -24,6 +24,7 @@ from photosort.thresholds import (
     FACE_DECODE_PX,
     FACE_DET_SCORE,
     FACE_DET_SIZE,
+    FACE_EMBED_BATCH,
     FACE_MIN_PX,
     FACE_NMS_IOU,
 )
@@ -237,11 +238,19 @@ class FaceEngine:
         return self._embed_crops([align(img, landmarks)])[0]
 
     def _embed_crops(self, crops: list[Image.Image]) -> np.ndarray:
-        """Embed aligned 112x112 crops in one run: (n, 512) float32, unit rows."""
+        """Embed aligned 112x112 crops: (n, 512) float32, unit rows.
+
+        At most FACE_EMBED_BATCH crops go in one run, so a crowd photo never
+        runs the GPU out of memory.
+        """
         session = self._recognition()
-        x = np.stack([np.asarray(c, np.float32) for c in crops])
-        x = ((x - 127.5) / 127.5).transpose(0, 3, 1, 2)
-        out = session.run(None, {session.get_inputs()[0].name: x})[0]
+        chunks = []
+        for start in range(0, len(crops), FACE_EMBED_BATCH):
+            x = np.stack([np.asarray(c, np.float32)
+                          for c in crops[start:start + FACE_EMBED_BATCH]])
+            x = ((x - 127.5) / 127.5).transpose(0, 3, 1, 2)
+            chunks.append(session.run(None, {session.get_inputs()[0].name: x})[0])
+        out = np.concatenate(chunks)
         out = out / np.linalg.norm(out, axis=1, keepdims=True)
         return out.astype(np.float32)
 

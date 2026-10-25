@@ -12,6 +12,7 @@ the face is a stranger's. In each photo a person matches at most one face
 and a face at most one person, the most similar pairs first.
 """
 
+import logging
 import threading
 import unicodedata
 from collections.abc import Callable, Iterable
@@ -27,7 +28,15 @@ from photosort.naming import TargetAllocator, resolve_existing_dir, safe_name
 from photosort.people import Person, person_scores
 from photosort.plan import Move, Plan
 from photosort.scanner import scan, skipped_folder
-from photosort.thresholds import FACE_FOLDER_MAX, FACE_FOLDER_MAX_BYTES, FACE_SURE, FACE_UNSURE
+from photosort.thresholds import (
+    FACE_ENGINE_FAILS,
+    FACE_FOLDER_MAX,
+    FACE_FOLDER_MAX_BYTES,
+    FACE_SURE,
+    FACE_UNSURE,
+)
+
+_log = logging.getLogger("photosort")
 
 Answer = Literal["yes", "no", "skip"]
 
@@ -137,9 +146,39 @@ def _assign(faces: list[Face], people: list[Person]) -> list[tuple[Face, Person,
     return matches
 
 
-def _faces_of(path: Path, analyse: Callable[[Path], list[Face]],
+class _Analyser:
+    """analyse(path), where one photo failing never stops the scan.
+
+    An error other than UnreadableImage is logged with the photo's path and
+    the photo counted as unreadable; but when the first FACE_ENGINE_FAILS
+    photos analysed all fail so, the face models are at fault, not the
+    photos, and the error is raised.
+    """
+
+    def __init__(self, analyse: Callable[[Path], list[Face]]) -> None:
+        self._analyse = analyse
+        self._worked = False  # a photo has been analysed
+        self._fails = 0
+
+    def __call__(self, path: Path, rel: str) -> list[Face] | None:
+        try:
+            faces = self._analyse(path)
+        except UnreadableImage:
+            return None
+        except Exception:
+            self._fails += 1
+            if not self._worked and self._fails >= FACE_ENGINE_FAILS:
+                raise
+            _log.warning("Looking for faces in %s failed", rel, exc_info=True)
+            return None
+        self._worked = True
+        return faces
+
+
+def _faces_of(root: Path, rel: str, analyse: _Analyser,
               cache: AnalysisCache | None) -> list[Face] | None:
-    """The faces in the photo at path, or None if it can't be read (not cached)."""
+    """The faces in the photo root/rel, or None if it can't be read (not cached)."""
+    path = root / rel
     if cache is not None:
         data = cache.get(FACES_KIND, path)
         if data is not None:
@@ -147,11 +186,8 @@ def _faces_of(path: Path, analyse: Callable[[Path], list[Face]],
                 return unpack_faces(data)
             except ValueError:
                 pass  # not ours after all: look again
-    try:
-        faces = analyse(path)
-    except UnreadableImage:
-        return None
-    if cache is not None:
+    faces = analyse(path, rel)
+    if faces is not None and cache is not None:
         cache.put(FACES_KIND, path, pack_faces(faces))
     return faces
 
@@ -168,10 +204,13 @@ def find_face_matches(
     """Find which of people are in each photo under root; None if cancelled.
 
     analyse(path) returns a photo's faces (raising UnreadableImage if it
-    can't). progress(i, total) is called after each photo; videos are not
-    looked at. With a cache, a photo analysed before is not analysed again.
+    can't). A photo it fails on otherwise is counted as unreadable, unless
+    the first photos all fail (see _Analyser). progress(i, total) is called after
+    each photo; videos are not looked at. With a cache, a photo analysed
+    before is not analysed again.
     """
     root = Path(root)
+    analyser = _Analyser(analyse)
     photos = [rel for rel in scan(root, include_subfolders) if kind(rel) == "photo"]
     total = len(photos)
     sure: dict[str, set[str]] = {}
@@ -180,7 +219,7 @@ def find_face_matches(
     for i, rel in enumerate(photos, start=1):
         if cancel is not None and cancel.is_set():
             return None
-        faces = _faces_of(root / rel, analyse, cache)
+        faces = _faces_of(root, rel, analyser, cache)
         if faces is None:
             unreadable += 1
         else:

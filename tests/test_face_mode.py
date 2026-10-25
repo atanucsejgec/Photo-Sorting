@@ -375,3 +375,55 @@ def test_face_mode_registered_and_offered():
     assert ("face", "Face", True) in MODES
     assert MODE_SPECS["face"].kind == "face"
 
+
+
+def test_one_photo_failing_is_logged_and_counted_unreadable(tmp_path, caplog):
+    touch(tmp_path, "a.jpg", "b.jpg", "c.jpg")
+    engine = FakeEngine({"a.jpg": [face({0: 0.9})], "b.jpg": RuntimeError("CUDA out of memory"),
+                         "c.jpg": [face({1: 0.9})]})
+    with caplog.at_level("WARNING", logger="photosort"):
+        scan = find_face_matches(tmp_path, False, [ATANU, ZOE], engine)
+    assert (scan.photos, scan.unreadable) == (3, 1)
+    assert scan.sure == {"a.jpg": {ATANU.id}, "c.jpg": {ZOE.id}}
+    assert any("b.jpg" in r.getMessage() for r in caplog.records)
+
+
+def test_failed_photo_is_not_cached(tmp_path):
+    touch(tmp_path, "a.jpg", "b.jpg")
+    faces = {"a.jpg": [face({0: 0.9})], "b.jpg": RuntimeError("model trouble")}
+    with AnalysisCache(tmp_path) as cache:
+        find_face_matches(tmp_path, False, [ATANU], FakeEngine(faces), cache=cache)
+    engine = FakeEngine(faces)
+    with AnalysisCache(tmp_path) as cache:
+        scan = find_face_matches(tmp_path, False, [ATANU], engine, cache=cache)
+    assert engine.calls == ["b.jpg"]
+    assert scan.unreadable == 1
+
+
+def test_first_five_photos_failing_means_the_engine_is_broken(tmp_path):
+    names = [f"{n}.jpg" for n in range(7)]
+    touch(tmp_path, *names)
+    error = RuntimeError("model trouble")
+    engine = FakeEngine({name: error for name in names})
+    with pytest.raises(RuntimeError, match="model trouble"):
+        find_face_matches(tmp_path, False, [ATANU], engine)
+    assert len(engine.calls) == 5
+
+
+def test_unreadable_photos_do_not_count_as_engine_failures(tmp_path):
+    names = [f"{n}.jpg" for n in range(7)]
+    touch(tmp_path, *names)
+    faces = {name: UnreadableImage("bad") for name in names[:3]}
+    faces |= {name: RuntimeError("one bad photo") for name in names[3:7]}
+    scan = find_face_matches(tmp_path, False, [ATANU], FakeEngine(faces))
+    assert scan.unreadable == 7  # only 4 engine failures: not given up
+
+
+def test_failures_after_a_success_never_stop_the_scan(tmp_path):
+    names = [f"{n}.jpg" for n in range(8)]
+    touch(tmp_path, *names)
+    faces = {name: RuntimeError("model trouble") for name in names[1:]}
+    faces["0.jpg"] = [face({0: 0.9})]
+    scan = find_face_matches(tmp_path, False, [ATANU], FakeEngine(faces))
+    assert (scan.photos, scan.unreadable) == (8, 7)
+    assert scan.sure == {"0.jpg": {ATANU.id}}

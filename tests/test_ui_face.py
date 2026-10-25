@@ -889,7 +889,8 @@ def test_cancel_face_scan_returns_to_setup(qtbot, make_window, photos, store, ma
 def test_face_scan_error_goes_home(qtbot, make_window, photos, store, make_jpeg,
                                    models_present, errors):
     _remember(store, "Atanu", 1)
-    make_jpeg(photos / "a.jpg")
+    for n in range(5):  # the first five photos all fail: the models are at fault
+        make_jpeg(photos / f"{n}.jpg")
 
     class Broken:
         def analyse(self, path):

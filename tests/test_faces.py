@@ -282,3 +282,34 @@ def test_engine_analyse_embeds_all_faces_in_one_batch(tmp_path, engine, monkeypa
         assert np.linalg.norm(face.embedding) == pytest.approx(1.0, abs=1e-5)
     # The same grey everywhere: the two crops embed alike.
     assert similarity(result[0].embedding, result[1].embedding) == pytest.approx(1.0, abs=1e-4)
+
+
+class FakeRecognition:
+    """A recognition session: a random embedding per crop; records the batch sizes."""
+
+    def __init__(self):
+        self.batches = []
+
+    def get_inputs(self):
+        class Input:
+            name = "input.1"
+        return [Input()]
+
+    def run(self, names, feed):
+        x = next(iter(feed.values()))
+        self.batches.append(len(x))
+        return [np.random.default_rng(len(self.batches)).standard_normal((len(x), 512))]
+
+
+def test_analyse_embeds_many_faces_in_chunks(tmp_path, monkeypatch):
+    path = grey_jpeg(tmp_path / "crowd.jpg", (800, 600))
+    engine = FaceEngine(use_gpu=False)
+    found = [((10.0 + n, 10.0, 122.0 + n, 122.0), TEMPLATE + n, 0.9) for n in range(70)]
+    monkeypatch.setattr(engine, "detect", lambda img: found)
+    engine._rec = FakeRecognition()
+    result = engine.analyse(path)
+    assert engine._rec.batches == [32, 32, 6]
+    assert len(result) == 70
+    for face in result:
+        assert face.embedding.shape == (512,)
+        assert np.linalg.norm(face.embedding) == pytest.approx(1.0, abs=1e-5)
