@@ -53,3 +53,19 @@ def test_save_overwrites_and_leaves_no_temp_file(tmp_path):
 
 def test_default_path():
     assert default_path().as_posix().endswith("photo-sorter/settings.json")
+
+
+def test_face_people_default_and_roundtrip(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"include_subfolders": True, "use_gpu": False,
+                                "last_folder": "/x"}))  # written before face_people existed
+    assert load_settings(path).face_people == []
+    save_settings(Settings(face_people=["ab12", "cd34"]), path)
+    assert load_settings(path).face_people == ["ab12", "cd34"]
+
+
+def test_bad_face_people_falls_back(tmp_path):
+    path = tmp_path / "settings.json"
+    for bad in ("ab12", ["ab12", 3], {"a": 1}, None):
+        path.write_text(json.dumps({"face_people": bad}))
+        assert load_settings(path).face_people == []

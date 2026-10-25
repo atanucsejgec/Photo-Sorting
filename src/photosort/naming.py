@@ -3,11 +3,13 @@
 NTFS compares names case-insensitively, so every clash check here uses
 casefold(). The owner's drive is NTFS mounted case-sensitively on Linux and
 also used from Windows, so a folder is never created beside one whose name
-differs only in case: the existing folder's spelling is used instead.
+differs only in case, or only in how its letters are encoded (fold): the
+existing folder's spelling is used instead.
 """
 
 import os
 import re
+import unicodedata
 from pathlib import Path
 
 _BAD_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -37,11 +39,17 @@ def safe_name(name: str) -> str:
     return name
 
 
+def fold(name: str) -> str:
+    """name as names are matched: case-insensitively, and in Unicode's NFC form
+    (Bengali, say, can type one letter as one character or as two)."""
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", name).casefold())
+
+
 def _existing_part(folder: Path, part: str) -> str:
     """Return part as spelt on disk in folder, if a folder by that name exists.
 
-    An exact match wins; otherwise the first (sorted) case variant that is a
-    folder. With no match part is returned unchanged.
+    An exact match wins; otherwise the first (sorted) variant (same fold) that
+    is a folder. With no match part is returned unchanged.
     """
     if os.path.isdir(folder / part):
         return part
@@ -49,7 +57,7 @@ def _existing_part(folder: Path, part: str) -> str:
         with os.scandir(folder) as entries:
             matches = sorted(
                 entry.name for entry in entries
-                if entry.name.casefold() == part.casefold() and entry.is_dir()
+                if fold(entry.name) == fold(part) and entry.is_dir()
             )
     except OSError:
         matches = []
@@ -88,7 +96,7 @@ class TargetAllocator:
 
     def __init__(self, root: Path) -> None:
         self._root = Path(root)
-        self._resolved: dict[str, str] = {}  # casefolded dir -> spelling to use
+        self._resolved: dict[str, str] = {}  # folded dir -> spelling to use
         self._taken: dict[str, set[str]] = {}  # casefolded dir -> casefolded names
 
     def allocate(self, dst: str) -> str:
@@ -112,7 +120,7 @@ class TargetAllocator:
         """resolve_existing_dir, cached per folder level (a big root is listed once)."""
         if not directory:
             return directory
-        key = directory.casefold()
+        key = fold(directory)
         if key not in self._resolved:
             parent, _, part = directory.rpartition("/")
             parent = self._resolve(parent)

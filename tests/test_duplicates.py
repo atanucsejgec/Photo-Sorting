@@ -8,6 +8,7 @@ from photosort.executor import execute
 from photosort.groups import plan_set_aside
 from photosort.imageinfo import open_image, perceptual_hash
 from photosort.journal import RunJournal
+from photosort.modes import _analysis
 from photosort.modes.duplicates import find_duplicate_groups
 from photosort.thresholds import DUP_HASH_MAX
 
@@ -209,3 +210,25 @@ def test_cancel_returns_none(tmp_path, make_pattern_jpeg):
 
     assert find_duplicate_groups(tmp_path, False, progress=progress, cancel=cancel) is None
     assert calls == [1]
+
+
+def test_duplicates_second_run_uses_cache(tmp_path, make_pattern_jpeg, monkeypatch):
+    make_pattern_jpeg(tmp_path / "x.jpg", 1)
+    shutil.copyfile(tmp_path / "x.jpg", tmp_path / "x copy.jpg")
+    make_pattern_jpeg(tmp_path / "small.jpg", 1, size=(400, 300), quality=60)
+    calls = []
+    real_analyse = _analysis.analyse
+
+    def counting(path):
+        calls.append(path)
+        return real_analyse(path)
+
+    monkeypatch.setattr(_analysis, "analyse", counting)
+    first = find_duplicate_groups(tmp_path, include_subfolders=False)
+    assert len(calls) == 3
+    calls.clear()
+    second = find_duplicate_groups(tmp_path, include_subfolders=False)
+    assert calls == []
+    assert [[(c.rel, c.width, c.height, c.sharpness) for c in g.members] for g in second] \
+        == [[(c.rel, c.width, c.height, c.sharpness) for c in g.members] for g in first]
+    assert len(first) == 1 and len(first[0].members) == 3

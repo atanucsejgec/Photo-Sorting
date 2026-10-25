@@ -10,4 +10,10 @@ if [ -z "$uv" ]; then
     uv="$HOME/.local/bin/uv"
 fi
 
-exec "$uv" run --project "$repo" photo-sorter "$@"
+args=(run --project "$repo")
+# Without an NVIDIA GPU the ~2 GB of CUDA libraries are no use: skip them.
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+    args+=(--no-group gpu)
+fi
+
+exec "$uv" "${args[@]}" photo-sorter "$@"

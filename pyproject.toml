@@ -10,6 +10,7 @@ dependencies = [
     "platformdirs>=4",
     "numpy>=2.5.4",
     "imagehash>=4.3.2",
+    "onnxruntime-gpu==1.31.0",
 ]
 
 [project.scripts]
@@ -17,6 +18,12 @@ photo-sorter = "photosort.app:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-qt>=4.4"]
+# The CUDA and cuDNN libraries (~2 GB). The launcher leaves them out on
+# computers without an NVIDIA GPU.
+gpu = ["onnxruntime-gpu[cuda,cudnn]==1.31.0"]
+
+[tool.uv]
+default-groups = ["dev", "gpu"]
 
 [build-system]
 requires = ["hatchling"]

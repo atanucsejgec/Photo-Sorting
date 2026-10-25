@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from photosort.naming import TargetAllocator, resolve_existing_dir, safe_name
+from photosort.naming import TargetAllocator, fold, resolve_existing_dir, safe_name
 
 
 def _touch(p):
@@ -120,3 +120,16 @@ def test_allocate_uses_on_disk_spelling_of_folder(tmp_path):
     assert alloc.allocate("No Date/x.jpg") == "no date/x (1).jpg"
     assert alloc.allocate("No Date/y.jpg") == "no date/y.jpg"
     assert os.listdir(tmp_path) == ["no date"]
+
+
+def test_fold_compares_case_and_unicode_forms():
+    assert fold("ATANU") == fold("atanu")
+    assert fold("\u099c\u09df") == fold("\u099c\u09af\u09bc")  # জয় typed two ways
+    assert fold("Zoe") != fold("Zoé")
+
+
+def test_resolve_existing_dir_matches_another_unicode_form(tmp_path):
+    (tmp_path / "\u099c\u09df").mkdir()  # জয়, as another program spelt it
+    assert resolve_existing_dir(tmp_path, "\u099c\u09af\u09bc/x") == "\u099c\u09df/x"
+    alloc = TargetAllocator(tmp_path)
+    assert alloc.allocate("\u099c\u09af\u09bc/x.jpg") == "\u099c\u09df/x.jpg"

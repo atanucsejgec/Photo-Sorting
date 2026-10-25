@@ -1,8 +1,15 @@
-"""The main window: Home, Progress, Review, Summary and Done pages for a sort.
+"""The main window: Home, Progress, Review, Face setup, Face questions, Summary
+and Done pages for a sort.
 
 A mode either plans its moves straight away, or finds groups that the owner
 reviews first; the files not kept are then planned to be set aside (see
-photosort.modes.MODE_SPECS).
+photosort.modes.MODE_SPECS). Face mode first makes sure the face models are
+there, then shows the remembered people to pick from (or to add to); the
+photos are then searched for those people, the owner is asked about the
+unsure matches, and the moves planned.
+
+The window owns the one PeopleStore of the app: the Face setup page, the
+naming dialog and Settings all use it.
 
 Slow work runs in a worker.Task. Only one Task runs at a time (self._busy
 guards every way of starting one); the window keeps a reference to the last
@@ -11,30 +18,40 @@ using it, and closing the window cancels it and waits for the pool to finish.
 """
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QThreadPool, QUrl
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QCheckBox, QFileDialog, QHBoxLayout,
+    QAbstractItemView, QButtonGroup, QCheckBox, QDialog, QFileDialog, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressBar,
     QPushButton, QRadioButton, QStackedWidget, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
+from photosort.cache import AnalysisCache
 from photosort.executor import ExecResult, execute
+from photosort.faces import FaceEngine
 from photosort.journal import RunJournal
 from photosort.groups import Group, plan_set_aside
 from photosort.modes import MODE_SPECS, MODES
+from photosort.modes.face_mode import Answer, FaceScan, find_face_matches, plan_faces
+from photosort.people import PeopleError, PeopleStore, Person
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
+from photosort.ui.face_naming_dialog import FaceNamingDialog, pick_photo
+from photosort.ui.face_question_page import FaceQuestionPage
+from photosort.ui.face_setup_page import FaceSetupPage
 from photosort.ui.history_dialog import HistoryDialog, undo_summary
+from photosort.ui.model_download import ensure_models
 from photosort.ui.review_page import ReviewPage
 from photosort.ui.settings_dialog import SettingsDialog
 from photosort.ui.worker import Task
 from photosort.undo import UndoBlocked, UndoResult, undo_run
 
 TITLE = "Photo Sorter"
+FACE_MODELS = ("face_detection", "face_recognition")
 
 
 def _heading(text: str) -> QLabel:
@@ -80,11 +97,29 @@ def _undo_with_message(root: Path, run_id: str, progress=None) -> UndoResult:
         raise RuntimeError(f"Undo the newer run(s) first: {runs}") from e
 
 
+def _scan_faces(root: Path, include_subfolders: bool, people: list[Person],
+                engine_factory: Callable[[bool], FaceEngine], use_gpu: bool,
+                progress=None, cancel=None) -> FaceScan | None:
+    """find_face_matches with a face engine made here, on the worker thread,
+    and root's analysis cache."""
+    engine = engine_factory(use_gpu)
+    with AnalysisCache(root) as cache:
+        return find_face_matches(root, include_subfolders, people, engine.analyse,
+                                 progress=progress, cancel=cancel, cache=cache)
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, settings: Settings, settings_path: Path | None = None) -> None:
+    def __init__(self, settings: Settings, settings_path: Path | None = None,
+                 people_store: PeopleStore | None = None) -> None:
         super().__init__()
         self.settings = settings
         self._settings_path = default_path() if settings_path is None else Path(settings_path)
+        # The app's one store of remembered people (they have no lock between stores).
+        self.people_store = PeopleStore() if people_store is None else people_store
+        # Makes the face engine, given Settings' use_gpu; the models open on first use.
+        self.engine_factory: Callable[[bool], FaceEngine] = FaceEngine
+        self._face_scan: FaceScan | None = None  # kept for Back on the summary
+        self._face_people: list[Person] = []  # the people the scan looked for
         self._task: Task | None = None
         self._busy = False  # a Task is running
         self._root: Path | None = None
@@ -94,6 +129,7 @@ class MainWindow(QMainWindow):
         self._plan: Plan | None = None
         self._run_id: str | None = None
         self._progress_prefix = ""
+        self._progress_joiner = "/"
 
         self.setWindowTitle(TITLE)
         self.setMinimumSize(900, 600)
@@ -104,10 +140,12 @@ class MainWindow(QMainWindow):
         self.home = self._build_home()
         self.progress_page = self._build_progress()
         self.review_page = self._build_review()
+        self.face_setup_page = self._build_face_setup()
+        self.face_question_page = self._build_face_questions()
         self.summary_page = self._build_summary()
         self.done_page = self._build_done()
-        for page in (self.home, self.progress_page, self.review_page, self.summary_page,
-                     self.done_page):
+        for page in (self.home, self.progress_page, self.review_page, self.face_setup_page,
+                     self.face_question_page, self.summary_page, self.done_page):
             self.stack.addWidget(page)
         self._show(self.home)
 
@@ -194,6 +232,22 @@ class MainWindow(QMainWindow):
         page = ReviewPage()
         page.finished.connect(self._on_reviewed)
         page.cancelled.connect(lambda: self._show(self.home))
+        return page
+
+    def _build_face_setup(self) -> FaceSetupPage:
+        page = FaceSetupPage(self.settings)
+        page.start.connect(self._start_face_sort)
+        page.add_requested.connect(self._add_person)
+        page.photo_dropped.connect(self._add_person)
+        page.more_requested.connect(self._add_photos)
+        page.selection_changed.connect(self._save_settings)
+        page.back_button.clicked.connect(lambda: self._show(self.home))
+        return page
+
+    def _build_face_questions(self) -> FaceQuestionPage:
+        page = FaceQuestionPage()
+        page.finished.connect(self._plan_face_moves)
+        page.cancelled.connect(self._show_face_setup)
         return page
 
     def _build_summary(self) -> QWidget:
@@ -289,8 +343,11 @@ class MainWindow(QMainWindow):
     def _task_finished(self, _value: object = None) -> None:
         self._busy = False
 
-    def _begin_progress(self, prefix: str, total: int | None = None) -> None:
+    def _begin_progress(self, prefix: str, total: int | None = None,
+                        joiner: str = "/") -> None:
+        """Show the progress page: "<prefix> <i> <joiner> <total>"."""
         self._progress_prefix = prefix
+        self._progress_joiner = joiner
         self.progress_bar.setRange(0, 0)  # busy until the first tick
         if total is None:
             self.progress_label.setText(prefix)
@@ -302,7 +359,8 @@ class MainWindow(QMainWindow):
     def _on_progress(self, i: int, total: int) -> None:
         self.progress_bar.setRange(0, max(total, 1))
         self.progress_bar.setValue(i)
-        self.progress_label.setText(f"{self._progress_prefix} {i} / {total}")
+        self.progress_label.setText(
+            f"{self._progress_prefix} {i} {self._progress_joiner} {total}")
 
     # ----- home ------------------------------------------------------------
 
@@ -356,7 +414,8 @@ class MainWindow(QMainWindow):
         HistoryDialog(root, self).exec()
 
     def _open_settings(self) -> None:
-        SettingsDialog(self.settings, self._settings_path, self).exec()
+        SettingsDialog(self.settings, self._settings_path, self,
+                       people=self.people_store).exec()
 
     def _subfolders_toggled(self, checked: bool) -> None:
         self.settings.include_subfolders = checked
@@ -367,6 +426,7 @@ class MainWindow(QMainWindow):
             return
         self._plan = None  # a stale plan must never be executed
         self._groups = []
+        self._face_scan = None
         root = self._folder()
         if root is None:
             self.show_error("This folder doesn't exist any more.")
@@ -380,6 +440,9 @@ class MainWindow(QMainWindow):
         if spec is None:
             self.show_error("This way of sorting isn't ready yet.")
             return
+        if spec.kind == "face" and not ensure_models(self, FACE_MODELS):
+            self._show(self.home)
+            return
         self._root = root
         self._mode = mode
         self._include_subfolders = self.subfolders_check.isChecked()
@@ -387,6 +450,9 @@ class MainWindow(QMainWindow):
         self.settings.include_subfolders = self._include_subfolders
         self._save_settings()
 
+        if spec.kind == "face":
+            self._show_face_setup()
+            return
         self._begin_progress("Checking files…")
         on_result = self._on_plan if spec.kind == "plan" else self._on_groups
         self._run(
@@ -427,6 +493,110 @@ class MainWindow(QMainWindow):
             return
         self._on_plan(plan)
 
+    # ----- face ------------------------------------------------------------
+
+    def _show_face_setup(self) -> None:
+        self.face_setup_page.load(self.people_store)
+        self._show(self.face_setup_page)
+
+    def _name_faces(self, path: Path, name: str = "") -> tuple[list[Person], bool]:
+        """Let the owner name the faces in path. Return the people saved (now
+        ticked) and whether the owner finished with Save.
+
+        The dialog has a face engine of its own, let go when it closes, so
+        the models are not held in memory twice for the life of the app.
+        """
+        engine = self.engine_factory(self.settings.use_gpu)
+        dialog = FaceNamingDialog(path, engine, self.people_store, self, name=name)
+        finished = dialog.exec() == QDialog.DialogCode.Accepted
+        saved = dialog.added()
+        dialog.deleteLater()
+        if saved:
+            ids = [*self.settings.face_people, *(p.id for p in saved)]
+            self.settings.face_people = list(dict.fromkeys(ids))
+            self._save_settings()
+        self.face_setup_page.load(self.people_store)
+        return saved, finished
+
+    def _add_person(self, path: Path | None = None) -> None:
+        """Name the faces in path, or in a photo the owner picks."""
+        if self._busy:
+            return
+        if path is None:
+            path = pick_photo(self, "Choose a photo of the person")
+        if path is None:
+            return
+        nobody_yet = not self.face_setup_page.has_people()
+        saved, finished = self._name_faces(path)
+        if saved and finished and nobody_yet:  # §5.2: sorting starts after naming
+            self._start_face_sort(self.face_setup_page.ticked_ids())
+
+    def _add_photos(self, person_id: str) -> None:
+        if self._busy:
+            return
+        try:
+            person = next((p for p in self.people_store.people() if p.id == person_id), None)
+        except PeopleError as e:
+            self.show_error(str(e))
+            return
+        if person is None:
+            self.face_setup_page.load(self.people_store)
+            return
+        path = pick_photo(self, f"Choose a photo of {person.name}")
+        if path is not None:
+            self._name_faces(path, person.name)
+
+    def _start_face_sort(self, person_ids: list[str]) -> None:
+        if self._busy or self._root is None:
+            return
+        try:
+            people = [p for p in self.people_store.people() if p.id in set(person_ids)]
+        except PeopleError as e:
+            self.show_error(str(e))
+            return
+        if not people:
+            self.face_setup_page.load(self.people_store)
+            return
+        self._save_settings()  # the ticks, also when left as they first came up
+        self._plan = None
+        self._face_scan = None
+        self._face_people = people
+        self._begin_progress("Looking for faces…", joiner="of")
+        self._run(
+            Task(_scan_faces, self._root, self._include_subfolders, people,
+                 self.engine_factory, self.settings.use_gpu),
+            self._on_face_scan, self._on_face_scan_error,
+        )
+
+    def _on_face_scan(self, scan: FaceScan | None) -> None:
+        if scan is None or self._cancel_pressed():
+            self._show_face_setup()
+            return
+        self._face_scan = scan
+        if scan.questions:
+            self._ask_face_questions()
+        else:
+            self._plan_face_moves({})
+
+    def _ask_face_questions(self) -> None:
+        """Ask the owner about the unsure matches; the page's answers are then planned."""
+        self.face_question_page.load(self._root, self._face_scan, self._face_people)
+        self._show(self.face_question_page)
+
+    def _plan_face_moves(self, answers: dict[tuple[str, str], Answer]) -> None:
+        try:
+            plan = plan_faces(self._root, self._face_scan, self._face_people, answers)
+        except OSError as e:  # e.g. the drive was unplugged
+            self._face_scan = None
+            self._show(self.home)
+            self.show_error(f"Could not plan the moves: {e}")
+            return
+        self._on_plan(plan)
+
+    def _on_face_scan_error(self, message: str) -> None:
+        self._show(self.home)
+        self.show_error(f"Could not look for faces: {message}")
+
     # ----- summary ---------------------------------------------------------
 
     def _on_plan(self, plan: Plan | None) -> None:
@@ -449,11 +619,19 @@ class MainWindow(QMainWindow):
         self._show(self.summary_page)
 
     def _back_from_summary(self) -> None:
-        """Back to the review, every answer intact, if there was one; else Home."""
+        """Back to the review or the face questions, every answer intact, if
+        there was one; to the people picked for a face sort; else Home."""
         if self._groups:
             self._plan = None  # the review makes a fresh one
             self.review_page.resume()
             self._show(self.review_page)
+        elif self._face_scan is not None and self._face_scan.questions:
+            self._plan = None  # the answers make a fresh one
+            self.face_question_page.resume()
+            self._show(self.face_question_page)
+        elif self._face_scan is not None:
+            self._plan = None
+            self._show_face_setup()
         else:
             self._show(self.home)
 
@@ -487,6 +665,7 @@ class MainWindow(QMainWindow):
             return
         self._run_id = journal.run_id
         self._groups = []
+        self._face_scan = None
         self._begin_progress("Moving…", len(plan.moves))
         self._run(Task(execute, root, plan, journal), self._on_executed, self._on_execute_error)
 
@@ -550,5 +729,6 @@ class MainWindow(QMainWindow):
         if self._task is not None:
             self._task.cancel_event.set()
         self.review_page.stop_thumbnails()
+        self.face_question_page.stop_loading()
         QThreadPool.globalInstance().waitForDone()
         super().closeEvent(event)

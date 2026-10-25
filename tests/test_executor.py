@@ -305,3 +305,103 @@ def test_execute_reuses_case_twin_folder(tmp_path, make_jpeg):
     day = tmp_path / "2025/02-february/20-02-2025"
     assert sorted(os.listdir(day)) == ["a.jpg", "b.jpg", "c.jpg"]
     assert load_dirs(tmp_path, journal.run_id)[0] == ["2025/02-february/20-02-2025"]
+
+
+def _date_run(root):
+    from photosort.modes.date_mode import prepare_date_plan
+
+    plan = prepare_date_plan(root, True)
+    journal = RunJournal.create(root, "date", True, len(plan.moves))
+    return execute(root, plan, journal), journal
+
+
+def test_folder_left_holding_only_the_cache_is_removed(tmp_path, make_pattern_jpeg):
+    from photosort.modes.duplicates import find_duplicate_groups
+    from photosort.undo import undo_run
+
+    x = tmp_path / "X"
+    make_pattern_jpeg(x / "a.jpg", 1, exif_dt="2025:02:20 10:00:00")
+    make_pattern_jpeg(x / "b.jpg", 2, exif_dt="2025:02:21 10:00:00")
+    find_duplicate_groups(x, include_subfolders=False)
+    assert (x / ".photosort" / "cache.db").is_file()
+
+    result, journal = _date_run(tmp_path)
+    assert result.moved == 2
+    assert not x.exists()
+    assert "X" in load_dirs(tmp_path, journal.run_id)[1]
+
+    undo_run(tmp_path, journal.run_id)
+    assert sorted(os.listdir(x)) == ["a.jpg", "b.jpg"]
+
+
+@pytest.mark.parametrize("extra", ["runs/r.json", "notes.txt"])
+def test_folder_whose_photosort_holds_more_is_kept(tmp_path, make_pattern_jpeg, extra):
+    x = tmp_path / "X"
+    make_pattern_jpeg(x / "a.jpg", 1, exif_dt="2025:02:20 10:00:00")
+    _write(x / ".photosort" / "cache.db", b"cache")
+    _write(x / ".photosort" / extra, b"keep me")
+    result, _ = _date_run(tmp_path)
+    assert result.moved == 1
+    assert sorted(os.listdir(x / ".photosort")) == sorted(["cache.db", extra.split("/")[0]])
+    assert (x / ".photosort" / extra).read_bytes() == b"keep me"
+
+
+@pytest.mark.parametrize("name", ["cache.db.jpg", "Cache.DB - wedding.jpg", "CACHE.DB",
+                                  "cache.db-journal.bak", "cache.db.broken-x"])
+def test_photosort_holding_a_lookalike_is_kept(tmp_path, make_pattern_jpeg, name):
+    x = tmp_path / "X"
+    make_pattern_jpeg(x / "a.jpg", 1, exif_dt="2025:02:20 10:00:00")
+    _write(x / ".photosort" / "cache.db", b"cache")
+    _write(x / ".photosort" / name, b"an owner's file")
+    result, _ = _date_run(tmp_path)
+    assert result.moved == 1
+    assert (x / ".photosort" / name).read_bytes() == b"an owner's file"
+    assert (x / ".photosort" / "cache.db").is_file()
+
+
+@pytest.mark.usefixtures("case_sensitive_fs")
+def test_photosort_in_another_case_is_kept(tmp_path, make_pattern_jpeg):
+    x = tmp_path / "X"
+    make_pattern_jpeg(x / "a.jpg", 1, exif_dt="2025:02:20 10:00:00")
+    _write(x / ".PhotoSort" / "cache.db", b"not ours")
+    result, _ = _date_run(tmp_path)
+    assert result.moved == 1
+    assert (x / ".PhotoSort" / "cache.db").read_bytes() == b"not ours"
+
+
+def test_photosort_holding_a_folder_or_link_is_kept(tmp_path, make_pattern_jpeg):
+    root = tmp_path / "root"
+    x, y = root / "X", root / "Y"
+    make_pattern_jpeg(x / "a.jpg", 1, exif_dt="2025:02:20 10:00:00")
+    make_pattern_jpeg(y / "b.jpg", 2, exif_dt="2025:02:20 11:00:00")
+    (x / ".photosort" / "cache.db").mkdir(parents=True)  # a folder, not our file
+    target = _write(tmp_path / "elsewhere.jpg", b"owner")
+    (y / ".photosort").mkdir()
+    (y / ".photosort" / "cache.db").symlink_to(target)
+    result, _ = _date_run(root)
+    assert result.moved == 2
+    assert (x / ".photosort" / "cache.db").is_dir()
+    assert (y / ".photosort" / "cache.db").is_symlink()
+    assert target.read_bytes() == b"owner"
+
+
+def test_symlinked_photosort_is_kept(tmp_path, make_pattern_jpeg):
+    x = tmp_path / "X"
+    make_pattern_jpeg(x / "a.jpg", 1, exif_dt="2025:02:20 10:00:00")
+    real = _write(tmp_path / "real" / "cache.db", b"elsewhere")
+    (x / ".photosort").symlink_to(real.parent)
+    result, _ = _date_run(tmp_path)
+    assert result.moved == 1
+    assert (x / ".photosort").is_symlink()
+    assert real.read_bytes() == b"elsewhere"
+
+
+def test_all_our_cache_files_go_with_the_folder(tmp_path, make_pattern_jpeg):
+    x = tmp_path / "X"
+    make_pattern_jpeg(x / "a.jpg", 1, exif_dt="2025:02:20 10:00:00")
+    for name in ["cache.db", "cache.db-journal", "cache.db-wal", "cache.db-shm",
+                 "cache.db.broken-1", "cache.db.broken-12", "cache.db.broken-1-journal"]:
+        _write(x / ".photosort" / name, b"ours")
+    result, _ = _date_run(tmp_path)
+    assert result.moved == 1
+    assert not x.exists()

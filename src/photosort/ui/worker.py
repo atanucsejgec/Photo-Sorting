@@ -46,13 +46,17 @@ class Task(QRunnable):
         QThreadPool.globalInstance().start(self)
 
     def run(self) -> None:
+        # A Task runs once, but may be kept alive long after: it lets go of
+        # the function and its arguments (a face engine, say) now.
+        fn, args = self._fn, self._args
+        self._fn, self._args = None, ()
         kwargs: dict[str, object] = {"progress": self.signals.progress.emit}
         if self._cancellable:
             kwargs["cancel"] = self.cancel_event
         try:
-            value = self._fn(*self._args, **kwargs)
+            value = fn(*args, **kwargs)
         except Exception as e:
-            name = getattr(self._fn, "__name__", repr(self._fn))
+            name = getattr(fn, "__name__", repr(fn))
             _log.error("Task %s failed:\n%s", name, traceback.format_exc())
             self.signals.error.emit(str(e) or type(e).__name__)
         else:

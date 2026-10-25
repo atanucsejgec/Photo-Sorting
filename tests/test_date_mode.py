@@ -20,7 +20,8 @@ def test_modes_list():
         "content", "bad", "events", "location", "camera",
     ]
     assert MODES[0] == ("date", "Date", True)
-    assert [k for k, _, available in MODES if available] == ["date", "duplicates", "repeated"]
+    assert [k for k, _, available in MODES if available] == [
+        "date", "face", "duplicates", "repeated"]
 
 
 def test_month_names():

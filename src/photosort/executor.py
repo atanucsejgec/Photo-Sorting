@@ -7,7 +7,9 @@ source. Each move is journalled before it happens.
 
 import errno
 import os
+import re
 import shutil
+import stat
 import tempfile
 import threading
 from collections.abc import Callable
@@ -20,6 +22,7 @@ from photosort.naming import TargetAllocator
 from photosort.plan import Plan
 
 PHOTOSORT_DIR = ".photosort"
+CACHE_NAME = "cache.db"  # photosort.cache's database, in a .photosort folder
 
 
 def _exists(path: Path) -> bool:
@@ -106,14 +109,70 @@ def _is_empty_dir(path: Path) -> bool:
         return False
 
 
+# The exact names photosort.cache creates in a .photosort folder: the
+# database, SQLite's side files, and set-aside copies of both. Matched
+# case-sensitively and in full, so an owner's look-alike is never taken.
+_CACHE_FILE = re.compile(
+    re.escape(CACHE_NAME) + r"(\.broken-[0-9]+)?(-journal|-wal|-shm)?")
+
+
+def _cache_only(path: Path) -> Path | None:
+    """The .photosort in folder path if it is all path holds and it holds
+    nothing but analysis-cache files (cache.db and its side and broken
+    copies); else None. That cache is ours and disposable, never photos."""
+    try:
+        with os.scandir(path) as entries:
+            found = list(entries)
+        if len(found) != 1 or found[0].name != PHOTOSORT_DIR:
+            return None
+        photosort_dir = Path(found[0].path)
+        if _cache_files(photosort_dir) is None:
+            return None
+        return photosort_dir
+    except OSError:
+        return None
+
+
+def _cache_files(photosort_dir: Path) -> list[str] | None:
+    """The paths of the cache files in photosort_dir if that is a real folder
+    (not a symlink) holding nothing else; else None."""
+    if not stat.S_ISDIR(os.lstat(photosort_dir).st_mode):
+        return None
+    with os.scandir(photosort_dir) as entries:
+        found = list(entries)
+    if all(_CACHE_FILE.fullmatch(e.name) and e.is_file(follow_symlinks=False)
+           for e in found):
+        return [e.path for e in found]
+    return None
+
+
+def _remove_cache(photosort_dir: Path) -> None:
+    """Remove the analysis-cache files in photosort_dir, then the folder itself.
+
+    Checks afresh that photosort_dir is still a real folder holding only
+    cache files; raises OSError, removing nothing, if it is not.
+    """
+    files = _cache_files(photosort_dir)
+    if files is None:
+        raise OSError(errno.ENOTEMPTY, "not only the analysis cache", str(photosort_dir))
+    for file in files:
+        try:
+            os.unlink(file)
+        except FileNotFoundError:
+            pass  # gone meanwhile, as SQLite's side files may be
+    os.rmdir(photosort_dir)  # fails unless empty
+
+
 def _remove_empty_dirs(
     root: Path, moved: list[tuple[str, str]], planned_dsts: list[str],
     journal: RunJournal,
 ) -> None:
     """Remove source folders the moves left empty, walking up towards root.
 
-    Never removes root, .photosort or anything in it, or a parent of any
-    planned or actual dst.
+    A folder holding only a .photosort with nothing but the analysis cache
+    in it counts as empty: the cache goes with it. Never removes root, a
+    .photosort holding anything else (such as undo records), or a parent of
+    any planned or actual dst.
     """
     keep = {""}
     for dst in planned_dsts + [dst for _, dst in moved]:
@@ -129,12 +188,17 @@ def _remove_empty_dirs(
             if rel.split("/")[0].casefold() == PHOTOSORT_DIR:
                 break
             path = root / rel
-            if not _is_empty_dir(path):
+            empty = _is_empty_dir(path)
+            cache = None if empty else _cache_only(path)
+            if not empty and cache is None:
                 break
             # Journal first: a record for a folder that then stays is harmless
             # (undo's mkdir is a no-op), a removed folder with no record is lost.
+            # Undo recreates the folder; the cache is not worth bringing back.
             journal.record_dir_removed(rel)
             try:
+                if cache is not None:
+                    _remove_cache(cache)
                 os.rmdir(path)  # fails unless empty
             except OSError:
                 break
