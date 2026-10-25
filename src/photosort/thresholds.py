@@ -53,18 +53,23 @@ CLIP_LOGIT_SCALE = 100.0
 # an unreadable photo) stops: the CLIP model, not the photos, is at fault.
 CLIP_ENGINE_FAILS = 5
 # Content: p is the best category's probability (the softmax over the
-# category prompts). At or above CONTENT_SURE the photo goes to that category;
-# from CONTENT_UNSURE up to that, the owner is asked; below, it stays put.
-CONTENT_SURE = 0.75
-CONTENT_UNSURE = 0.45
+# categories, each the unit mean of one prompt per part of its name, and the
+# background prompts). At or above CONTENT_SURE the photo goes to that
+# category; from CONTENT_UNSURE up to that, the owner is asked; below, it
+# stays put. Tuned on 732 real photos (2026-10-25): 319 sure, 221 unsure,
+# 192 stay.
+CONTENT_SURE = 0.60
+CONTENT_UNSURE = 0.40
 # Prompts for "none of the categories", in the softmax beside them: with only
 # one or two categories, a photo of something else would otherwise still be
-# sure (or at least unsure) of one. A photo they beat every category on stays put.
-CONTENT_BACKGROUND_PROMPTS = ("a photo", "a photo of something else")
+# sure (or at least unsure) of one. A photo they beat every category on stays
+# put.
+CONTENT_BACKGROUND_PROMPTS = ("a photo of something else",)
 # Notes & Pages: paper is the sum of the four paper prompts' probabilities
 # (the softmax over them and NOTES_OTHER_PROMPTS). At or above NOTES_SURE the
 # photo goes to its likeliest kind's folder; from NOTES_UNSURE up to that, the
-# owner is asked; below, it stays put.
+# owner is asked; below, it stays put. The prompts below were tuned on the
+# same 732 real photos (2026-10-25): 13 sure (all of them paper), 2 unsure.
 NOTES_SURE = 0.80
 NOTES_UNSURE = 0.50
 # The paper prompts, one per kind of paper, in the order of notes.KINDS
@@ -73,7 +78,7 @@ NOTES_PAPER_PROMPTS = (
     "a photo of handwritten notes",
     "a photo of a page from a book",
     "a photo of a printed document",
-    "a photo of a receipt",
+    "a photo of a shop receipt",
 )
 # Prompts for photos that are not of paper, in the softmax beside the paper ones.
 NOTES_OTHER_PROMPTS = (
@@ -83,6 +88,10 @@ NOTES_OTHER_PROMPTS = (
     "a photo of an animal",
     "a photo of an object",
     "a screenshot of a phone screen",
+    "a photo of a sign",
+    "a photo of a bank card",
+    "a photo of a computer screen",
+    "a photo of an old printed photograph",
 )
 CONTENT_CATEGORIES_MAX = 30  # the most categories the owner can list
 CATEGORY_NAME_MAX = 50  # the longest category name the owner can type, in characters

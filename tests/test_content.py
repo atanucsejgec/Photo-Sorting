@@ -10,7 +10,14 @@ from photosort.cache import AnalysisCache
 from photosort.clip import CLIP_KIND, pack, unpack
 from photosort.imageinfo import UnreadableImage
 from photosort.modes._clip_scan import ClipScan, embed_photos
-from photosort.modes.content import Verdict, background_prompts, judge, plan_content, prompts
+from photosort.modes.content import (
+    Verdict,
+    background_prompts,
+    category_embeddings,
+    judge,
+    plan_content,
+    prompt_sets,
+)
 from photosort.plan import Move
 from photosort.settings import DEFAULT_CONTENT_CATEGORIES
 from photosort.thresholds import (
@@ -24,7 +31,7 @@ from photosort.thresholds import (
 # prompt on axis d is exactly CLIP_LOGIT_SCALE times its weight on that axis.
 CATEGORIES = list(DEFAULT_CONTENT_CATEGORIES)  # Food on axis 0, Pets & Animals on 1, ...
 TEXT = np.eye(512, dtype=np.float32)[:len(CATEGORIES)]
-BG_AXES = [500, 501]  # the background prompts ("a photo", "a photo of something else")
+BG_AXES = [500]  # the background prompt ("a photo of something else")
 BACKGROUND = np.eye(512, dtype=np.float32)[BG_AXES]
 _SPARE = 511  # takes up the rest of each photo's length
 
@@ -73,13 +80,96 @@ def touch(root: Path, *rels: str) -> None:
 # --- judge --------------------------------------------------------------------
 
 def test_background_prompts():
-    assert background_prompts() == ["a photo", "a photo of something else"]
-    assert CONTENT_BACKGROUND_PROMPTS == ("a photo", "a photo of something else")
+    assert background_prompts() == ["a photo of something else"]
+    assert CONTENT_BACKGROUND_PROMPTS == ("a photo of something else",)
 
 
-def test_prompts():
-    assert prompts(["Food", "Pets & Animals"]) == ["a photo of food",
-                                                   "a photo of pets & animals"]
+def test_content_limits_are_tuned():
+    assert (CONTENT_SURE, CONTENT_UNSURE) == (0.60, 0.40)
+
+
+def test_prompt_sets_one_prompt_per_part_of_the_name():
+    assert prompt_sets(["Food", "Selfies & People", "Arts and Crafts", "Rock AND Roll",
+                        "Fish & Chips and Peas"]) == [
+        ["a photo of food"],
+        ["a photo of selfies", "a photo of people"],
+        ["a photo of arts", "a photo of crafts"],
+        ["a photo of rock", "a photo of roll"],
+        ["a photo of fish", "a photo of chips", "a photo of peas"],
+    ]
+
+
+def test_prompt_sets_split_on_whole_words_only():
+    assert prompt_sets(["Sand", "Andes", "Brandy", "Rock&Roll", "Hand-and-Foot",
+                        "And More"]) == [
+        ["a photo of sand"], ["a photo of andes"], ["a photo of brandy"],
+        ["a photo of rock&roll"], ["a photo of hand-and-foot"], ["a photo of and more"]]
+
+
+def test_prompt_sets_drop_empty_parts_and_strip_them():
+    assert prompt_sets(["Food & ", " &  Drink", "Cakes  and   Pies"]) == [
+        ["a photo of food"], ["a photo of drink"], ["a photo of cakes", "a photo of pies"]]
+
+
+def test_prompt_sets_nothing_left_uses_the_whole_name():
+    assert prompt_sets([" & ", "and"]) == [["a photo of  & "], ["a photo of and"]]
+
+
+class FakeText:
+    """text_embeddings() for the tests: a vector by prompt; records the calls."""
+
+    def __init__(self, vectors: dict[str, list[float]]) -> None:
+        self.vectors = vectors
+        self.calls: list[list[str]] = []
+
+    def __call__(self, texts: list[str]) -> np.ndarray:
+        self.calls.append(list(texts))
+        out = np.zeros((len(texts), 512), np.float32)
+        for row, text in enumerate(texts):
+            v = self.vectors[text]
+            out[row, :len(v)] = v
+        return out
+
+
+def test_category_embeddings_are_the_unit_mean_of_the_parts():
+    text = FakeText({"a photo of food": [0.0, 0.0, 1.0],
+                     "a photo of pets": [1.0, 0.0, 0.0],
+                     "a photo of animals": [0.6, 0.8, 0.0]})
+    got = category_embeddings(text, ["Food", "Pets & Animals"])
+    assert got.shape == (2, 512)
+    np.testing.assert_allclose(got[0, :3], [0.0, 0.0, 1.0], atol=1e-6)
+    # The mean (0.8, 0.4) made unit length again.
+    np.testing.assert_allclose(got[1, :3], [2 / math.sqrt(5), 1 / math.sqrt(5), 0.0],
+                               atol=1e-6)
+    np.testing.assert_allclose(np.linalg.norm(got, axis=1), [1.0, 1.0], atol=1e-6)
+    assert not got[:, 3:].any()
+    # The text model is asked once, for every part in order.
+    assert text.calls == [["a photo of food", "a photo of pets", "a photo of animals"]]
+
+
+def test_category_embeddings_of_orthogonal_parts():
+    text = FakeText({"a photo of selfies": [1.0, 0.0], "a photo of people": [0.0, 1.0]})
+    got = category_embeddings(text, ["Selfies & People"])
+    np.testing.assert_allclose(got[0, :2], [1 / math.sqrt(2), 1 / math.sqrt(2)], atol=1e-6)
+
+
+def test_category_embeddings_judge_a_photo_of_one_part():
+    # A photo of only animals is still a photo of Pets & Animals: its similarity
+    # to the category is its similarity to animals over the square root of 2.
+    text = FakeText({"a photo of food": [1.0], "a photo of pets": [0.0, 1.0],
+                     "a photo of animals": [0.0, 0.0, 1.0]})
+    cats = category_embeddings(text, ["Food", "Pets & Animals"])
+    scan = clip_scan({"cat.jpg": photo({2: 30.0, 0: 30.0 / math.sqrt(2) - 1.0})})
+    assert judge(scan, ["Food", "Pets & Animals"], cats, BACKGROUND) == (
+        {"cat.jpg": "Pets & Animals"}, [])
+
+
+def test_judge_at_the_tuned_limits():
+    scan = clip_scan({"sure.jpg": food_at(0.61), "high.jpg": food_at(0.59),
+                      "low.jpg": food_at(0.41), "faint.jpg": food_at(0.39)})
+    sure, unsure = judge(scan, CATEGORIES, TEXT, BACKGROUND)
+    assert sure == {"sure.jpg": "Food"}
+    assert [v.rel for v in unsure] == ["high.jpg", "low.jpg"]
 
 
 def test_judge_sure_from_content_sure():
@@ -96,22 +186,22 @@ def test_judge_sure_from_content_sure():
 
 
 def test_judge_photo_between_two_categories_is_unsure():
-    # Food's logit is ln(1.5) above Pets & Animals': 60 % against 40 %.
-    scan = clip_scan({"cat_eating.jpg": photo({0: 50.0, 1: 50.0 - math.log(1.5)})})
+    # Food's logit is ln(0.55 / 0.45) above Pets & Animals': 55 % against 45 %.
+    scan = clip_scan({"cat_eating.jpg": photo({0: 50.0, 1: 50.0 - math.log(0.55 / 0.45)})})
     sure, unsure = judge(scan, CATEGORIES, TEXT, BACKGROUND)
     assert sure == {}
     [verdict] = unsure
     assert isinstance(verdict, Verdict)
     assert (verdict.rel, verdict.best) == ("cat_eating.jpg", "Food")
-    assert verdict.prob == pytest.approx(0.6, abs=1e-6)
+    assert verdict.prob == pytest.approx(0.55, abs=1e-6)
     # All categories, best first; the ones tied at nothing keep their order.
     assert [name for name, _ in verdict.ranked] == CATEGORIES
-    assert [p for _, p in verdict.ranked[:2]] == pytest.approx([0.6, 0.4], abs=1e-6)
+    assert [p for _, p in verdict.ranked[:2]] == pytest.approx([0.55, 0.45], abs=1e-6)
     assert sum(p for _, p in verdict.ranked) == pytest.approx(1.0)
 
 
 def test_judge_ranks_best_first():
-    scan = clip_scan({"car.jpg": photo({5: 50.0, 2: 49.0})})  # Vehicles, then Nature
+    scan = clip_scan({"car.jpg": photo({5: 50.0, 2: 49.8})})  # Vehicles 55 %, then Nature
     _, [verdict] = judge(scan, CATEGORIES, TEXT, BACKGROUND)
     assert verdict.best == "Vehicles"
     assert [name for name, _ in verdict.ranked[:3]] == ["Vehicles", "Nature & Landscapes",
@@ -122,7 +212,7 @@ def test_judge_ranks_best_first():
 
 def test_judge_photo_below_content_unsure_goes_nowhere():
     scan = clip_scan({
-        "nothing.jpg": photo({}),  # orthogonal to every prompt: 1/10 each
+        "nothing.jpg": photo({}),  # orthogonal to every prompt: 1/9 each
         "faint.jpg": food_at(CONTENT_UNSURE - 1e-4),
         "maybe.jpg": food_at(CONTENT_UNSURE + 1e-4),
     })
@@ -132,7 +222,7 @@ def test_judge_photo_below_content_unsure_goes_nowhere():
 
 
 def test_judge_sorts_the_unsure_by_rel():
-    maybe = food_at(0.6)
+    maybe = food_at(0.5)
     scan = clip_scan({"b.jpg": maybe, "a/z.jpg": maybe, "a.jpg": maybe})
     _, unsure = judge(scan, CATEGORIES, TEXT, BACKGROUND)
     assert [v.rel for v in unsure] == ["a.jpg", "a/z.jpg", "b.jpg"]
@@ -149,30 +239,36 @@ def test_judge_refuses_categories_not_matching_the_text(categories, text):
 
 
 def test_judge_one_category_still_lets_photos_stay():
-    scan = clip_scan({"food.jpg": photo({0: 50.0}), "other.jpg": photo({BG_AXES[0]: 50.0})})
+    # Without the background prompt every photo would be 100 % Food. "leaning.jpg"
+    # is Food 45 % (above CONTENT_UNSURE), but something else 55 %.
+    scan = clip_scan({"food.jpg": photo({0: 50.0}), "other.jpg": photo({BG_AXES[0]: 50.0}),
+                      "leaning.jpg": photo({0: 50.0,
+                                            BG_AXES[0]: 50.0 + math.log(0.55 / 0.45)})})
     sure, unsure = judge(scan, ["Food"], TEXT[:1], BACKGROUND)
     assert sure == {"food.jpg": "Food"}
     assert unsure == []
 
 
 def test_judge_two_categories_still_let_photos_stay():
+    # Without the background prompt a photo of nothing would be Food 50 %
+    # (unsure); with it, 1/3 each: Food 33 %, below CONTENT_UNSURE.
     scan = clip_scan({"food.jpg": photo({0: 50.0}),
-                      "other.jpg": photo({BG_AXES[1]: 50.0}),
-                      "nothing.jpg": photo({})})  # 1/4 each: Food 25 %
+                      "other.jpg": photo({BG_AXES[0]: 50.0}),
+                      "nothing.jpg": photo({})})
     sure, unsure = judge(scan, CATEGORIES[:2], TEXT[:2], BACKGROUND)
     assert sure == {"food.jpg": "Food"}
     assert unsure == []
 
 
 def test_judge_background_beating_every_category_leaves_the_photo_put():
-    # Food 46 % (above CONTENT_UNSURE), but "a photo" 54 %.
+    # Food 46 % (above CONTENT_UNSURE), but "a photo of something else" 54 %.
     scan = clip_scan({"a.jpg": photo({0: 50.0, BG_AXES[0]: 50.0 + math.log(0.54 / 0.46)})})
     assert judge(scan, CATEGORIES, TEXT, BACKGROUND) == ({}, [])
 
 
 def test_judge_probabilities_are_over_categories_and_background():
     # Food and "a photo of something else" tie: Food is 50 %, unsure.
-    scan = clip_scan({"a.jpg": photo({0: 50.0, BG_AXES[1]: 50.0})})
+    scan = clip_scan({"a.jpg": photo({0: 50.0, BG_AXES[0]: 50.0})})
     _, [verdict] = judge(scan, CATEGORIES, TEXT, BACKGROUND)
     assert verdict.prob == pytest.approx(0.5, abs=1e-6)
     assert isinstance(verdict.ranked, tuple)

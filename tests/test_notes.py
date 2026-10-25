@@ -11,9 +11,9 @@ from photosort.thresholds import CLIP_LOGIT_SCALE, NOTES_SURE, NOTES_UNSURE
 
 # Each prompt's text embedding is a basis vector, so a photo's logit for the
 # prompt on axis d is exactly CLIP_LOGIT_SCALE times its weight on that axis.
-# The paper prompts are on axes 0-3 (in KINDS' order), the others on 4-9.
+# The paper prompts are on axes 0-3 (in KINDS' order), the others on 4-13.
 PAPER = np.eye(512, dtype=np.float32)[0:4]
-OTHER = np.eye(512, dtype=np.float32)[4:10]
+OTHER = np.eye(512, dtype=np.float32)[4:14]
 HANDWRITTEN, BOOK, PRINTED, RECEIPT = 0, 1, 2, 3
 PEOPLE, PLACE = 4, 5
 _SPARE = 511  # takes up the rest of each photo's length
@@ -32,7 +32,7 @@ def receipt_at(paper: float) -> np.ndarray:
     """A photo whose paper probability is paper, Receipts' logit its only one above 0.
 
     With e^L for Receipts and 1 for each other prompt, paper is
-    (e^L + 3) / (e^L + 9).
+    (e^L + 3) / (e^L + 13).
     """
     others = len(PAPER) + len(OTHER) - 1
     other_paper = len(PAPER) - 1
@@ -55,10 +55,12 @@ def touch(root, *rels: str) -> None:
 def test_kinds_and_prompts():
     assert KINDS == ["Handwritten", "Book Pages", "Printed Documents", "Receipts"]
     assert PAPER_PROMPTS == ["a photo of handwritten notes", "a photo of a page from a book",
-                             "a photo of a printed document", "a photo of a receipt"]
+                             "a photo of a printed document", "a photo of a shop receipt"]
     assert OTHER_PROMPTS == ["a photo of people", "a photo of a place", "a photo of food",
                              "a photo of an animal", "a photo of an object",
-                             "a screenshot of a phone screen"]
+                             "a screenshot of a phone screen", "a photo of a sign",
+                             "a photo of a bank card", "a photo of a computer screen",
+                             "a photo of an old printed photograph"]
 
 
 def test_paper_prompts_are_tuned_in_thresholds():
@@ -90,7 +92,7 @@ def test_judge_below_notes_unsure_stays_put():
     scan = clip_scan({
         "faint.jpg": receipt_at(NOTES_UNSURE - 1e-4),
         "maybe.jpg": receipt_at(NOTES_UNSURE + 1e-4),
-        "nothing.jpg": photo({}),  # orthogonal to every prompt: paper 40 %
+        "nothing.jpg": photo({}),  # orthogonal to every prompt: paper 4/14, 29 %
     })
     sure, unsure = judge(scan, PAPER, OTHER)
     assert sure == {}

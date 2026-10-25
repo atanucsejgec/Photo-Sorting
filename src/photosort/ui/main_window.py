@@ -142,7 +142,7 @@ def _sort_by_clip(root: Path, include_subfolders: bool, mode: str, choices: list
         return _ClipSort(choices, scan, {}, [])
     text = engine.text_embeddings
     if mode == "content":
-        sure, unsure = content.judge(scan, choices, text(content.prompts(choices)),
+        sure, unsure = content.judge(scan, choices, content.category_embeddings(text, choices),
                                      text(content.background_prompts()))
     else:
         sure, unsure = notes.judge(scan, text(notes.PAPER_PROMPTS), text(notes.OTHER_PROMPTS))

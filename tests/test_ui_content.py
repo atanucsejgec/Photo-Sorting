@@ -1,6 +1,7 @@
 """The Content and Notes & Pages screens: the review page, the category editor,
 and the main window's flow with a fake CLIP engine (never the real model)."""
 
+import math
 import threading
 from pathlib import Path
 
@@ -382,12 +383,16 @@ def _start(w, photos, mode):
 
 
 def _content_engine() -> _Clip:
-    prompts = content.prompts(CATEGORIES) + content.background_prompts()
-    return _Clip(prompts, {
+    prompts = [text for parts in content.prompt_sets(CATEGORIES) for text in parts]
+    # Buildings & City is the unit mean of its two parts' axes, so a photo
+    # with s on each part has s * sqrt(2) on the category.
+    building = 0.298 / math.sqrt(2)
+    return _Clip(prompts + content.background_prompts(), {
         "food.jpg": {"a photo of food": 0.3},  # sure
-        # unsure: about 60 % vehicles, 40 % buildings
-        "street.jpg": {"a photo of vehicles": 0.3, "a photo of buildings & city": 0.296},
-        "wall.jpg": {"a photo": 0.3},  # none of the categories
+        # unsure: about 55 % vehicles, 45 % buildings & city
+        "street.jpg": {"a photo of vehicles": 0.3, "a photo of buildings": building,
+                       "a photo of city": building},
+        "wall.jpg": {"a photo of something else": 0.3},  # none of the categories
     })
 
 
@@ -409,7 +414,7 @@ def test_content_end_to_end(qtbot, make_window, photos, make_jpeg, errors, model
     assert page.heading_label.text() == "1 photo to check"
     [card] = page.cards
     assert card.verdict.rel == "street.jpg"
-    assert card.guess_label.text() == "Vehicles? 60% sure"
+    assert card.guess_label.text() == "Vehicles? 55% sure"
     assert card.choice_combo.currentText() == "Vehicles"
     card.choice_combo.setCurrentText("Buildings & City")
     page.continue_button.click()
@@ -439,7 +444,7 @@ def test_content_uses_the_categories_in_settings(qtbot, make_window, photos, mak
     _start(w, photos, "content")
     qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
     assert engine.texts_asked == [
-        "a photo of food", "a photo of vehicles", "a photo", "a photo of something else"]
+        "a photo of food", "a photo of vehicles", "a photo of something else"]
     # street.jpg: vehicles beats buildings, which isn't a category any more
     assert (w.summary_label.text().splitlines()[0]) == "2 photos → 2 category folders"
 
@@ -504,6 +509,26 @@ def test_cancel_after_the_photos_never_opens_the_text_model(qtbot, make_window, 
     assert engine.texts_asked == []
 
 
+def test_sort_by_clip_judges_a_category_by_the_mean_of_its_parts(tmp_path):
+    (tmp_path / "cat.jpg").write_bytes(b"not really a photo")
+    # Only on "animals": 0.3 / sqrt(2) on Pets & Animals, a logit 21.2 against
+    # Food's 21.2 - ln(0.55 / 0.45): Pets & Animals 55 %, Food 45 %.
+    food = 0.3 / math.sqrt(2) - math.log(0.55 / 0.45) / 100
+    engine = _Clip(["a photo of pets", "a photo of animals", "a photo of food",
+                    "a photo of something else"],
+                   {"cat.jpg": {"a photo of animals": 0.3, "a photo of food": food}})
+    choices = ["Pets & Animals", "Food"]
+    result = main_window._sort_by_clip(tmp_path, False, "content", choices,
+                                       lambda use_gpu: engine, False)
+    assert engine.texts_asked == ["a photo of pets", "a photo of animals", "a photo of food",
+                                  "a photo of something else"]
+    assert result.sure == {}
+    [verdict] = result.unsure
+    assert (verdict.rel, verdict.best) == ("cat.jpg", "Pets & Animals")
+    assert verdict.prob == pytest.approx(0.55, abs=1e-4)
+    assert [name for name, _ in verdict.ranked] == ["Pets & Animals", "Food"]
+
+
 def test_review_back_goes_home(qtbot, make_window, photos, make_jpeg, models_asked):
     _make_content_photos(photos, make_jpeg)
     w = make_window(_content_engine())
@@ -515,7 +540,7 @@ def test_review_back_goes_home(qtbot, make_window, photos, make_jpeg, models_ask
 
 def _notes_engine() -> _Clip:
     return _Clip(notes.PAPER_PROMPTS + notes.OTHER_PROMPTS, {
-        "receipt.jpg": {"a photo of a receipt": 0.3},  # sure
+        "receipt.jpg": {"a photo of a shop receipt": 0.3},  # sure
         "people.jpg": {"a photo of people": 0.3},  # not paper
     })
 
