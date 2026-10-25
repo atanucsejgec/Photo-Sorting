@@ -1,4 +1,7 @@
 import logging
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import onnxruntime
@@ -156,3 +159,11 @@ def test_make_session_bad_file_raises_without_blaming_gpu(fake_ort, monkeypatch,
         runtime.make_session(Path("gone.onnx"), True)
     assert runtime.runtime_status(True) == "GPU (CUDA)"
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_starting_the_app_does_not_load_onnxruntime():
+    # If ONNX Runtime can't load on some computer, only Face mode should fail.
+    code = "import photosort.ui.main_window, sys; print('onnxruntime' in sys.modules)"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         check=True, env={**os.environ, "QT_QPA_PLATFORM": "offscreen"})
+    assert out.stdout.strip() == "False"

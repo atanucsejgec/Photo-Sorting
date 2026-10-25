@@ -4,6 +4,9 @@ The GPU is used when the owner has "Use GPU" on, ONNX Runtime offers CUDA
 and an NVIDIA driver is installed (the onnxruntime-gpu wheel offers CUDA
 even on computers without one). A CUDA session that fails to start is retried on the CPU, and the
 failure is remembered so Settings can say the run is on the CPU.
+
+ONNX Runtime is imported only when it is first needed, so the app starts
+(and the other modes work) even where it can't be loaded.
 """
 
 import ctypes
@@ -12,8 +15,10 @@ import logging
 import sys
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import onnxruntime as ort
+if TYPE_CHECKING:
+    import onnxruntime
 
 _log = logging.getLogger("photosort")
 
@@ -40,7 +45,15 @@ def _cuda_driver_present() -> bool:
     return True
 
 
+def _ort():
+    """The onnxruntime module, imported on first use."""
+    import onnxruntime
+
+    return onnxruntime
+
+
 def providers(use_gpu: bool) -> list[str]:
+    ort = _ort()
     if use_gpu and CUDA in ort.get_available_providers() and _cuda_driver_present():
         return [CUDA, CPU]
     return [CPU]
@@ -57,6 +70,7 @@ def runtime_status(use_gpu: bool) -> str:
 def _set_up(cuda: bool) -> None:
     """Quiet ONNX Runtime's logging, and load the CUDA libraries, once each."""
     global _logging_set, _dlls_preloaded
+    ort = _ort()
     with _lock:
         if not _logging_set:
             ort.set_default_logger_severity(_ERRORS_ONLY)
@@ -70,8 +84,9 @@ def _set_up(cuda: bool) -> None:
                 _log.warning("Could not preload the CUDA libraries", exc_info=True)
 
 
-def make_session(path: Path, use_gpu: bool) -> ort.InferenceSession:
+def make_session(path: Path, use_gpu: bool) -> "onnxruntime.InferenceSession":
     global _gpu_failed
+    ort = _ort()
     path = Path(path)
     wanted = providers(use_gpu)
     _set_up(cuda=wanted[0] == CUDA)
