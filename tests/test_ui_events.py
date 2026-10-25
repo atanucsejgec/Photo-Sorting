@@ -63,7 +63,7 @@ def test_one_row_per_event(qtbot, tmp_path, make_page):
     assert _rows(page) == [
         ("Event 10-01-2025", "10 Jan 2025 – 12 Jan 2025", "3 files"),
         ("Event 20-02-2025", "20 Feb 2025", "4 files"),
-        ("Event 20-02-2025 (2)", "20 Feb 2025", "1 files"),
+        ("Event 20-02-2025 (2)", "20 Feb 2025", "1 file"),
     ]
     assert all(r.name_edit.text() == "" for r in page.rows)
     assert [len(r.thumb_labels) for r in page.rows] == [3, 4, 1]
@@ -135,17 +135,36 @@ def test_split_splits_the_row(tmp_path, make_page):
         ("Event 10-01-2025", "10 Jan 2025 – 12 Jan 2025", "3 files"),
         ("Event 20-02-2025", "20 Feb 2025", "2 files"),
         ("Event 20-02-2025 (2)", "20 Feb 2025", "2 files"),
-        ("Event 20-02-2025 (3)", "20 Feb 2025", "1 files"),
+        ("Event 20-02-2025 (3)", "20 Feb 2025", "1 file"),
     ]
     assert [r.name_edit.text() for r in page.rows] == ["", "Party", "", ""]
     page.rows[0].split_button.click()  # the first night and the rest
-    assert [r.count_label.text() for r in page.rows][:2] == ["1 files", "2 files"]
+    assert [r.count_label.text() for r in page.rows][:2] == ["1 file", "2 files"]
     assert page.rows[1].range_label.text() == "11 Jan 2025 – 12 Jan 2025"
     results = _finished(page)
     page.continue_button.click()
     (events_out, names, _), = results
     assert [len(e.files) for e in events_out] == [1, 2, 2, 2, 1]
     assert names == ["", "", "Party", "", ""]
+
+
+@pytest.mark.parametrize("first, second, merged", [
+    (False, False, False), (True, False, True), (False, True, True), (True, True, True)])
+def test_merge_skips_if_either_row_was_skipped(tmp_path, make_page, first, second, merged):
+    page = make_page()
+    page.load(tmp_path, _three(tmp_path), 0)
+    page.rows[1].skip_check.setChecked(first)
+    page.rows[2].skip_check.setChecked(second)
+    page.rows[1].merge_button.click()
+    assert page.rows[1].skip_check.isChecked() is merged
+
+
+def test_split_keeps_the_skip_tick_on_both_halves(tmp_path, make_page):
+    page = make_page()
+    page.load(tmp_path, _three(tmp_path), 0)
+    page.rows[1].skip_check.setChecked(True)
+    page.rows[1].split_button.click()
+    assert [r.skip_check.isChecked() for r in page.rows] == [False, True, True, False]
 
 
 def test_skip_tick(tmp_path, make_page):

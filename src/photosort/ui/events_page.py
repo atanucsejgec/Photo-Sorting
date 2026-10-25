@@ -77,7 +77,8 @@ class EventRow(QFrame):
 
         self.name_edit = QLineEdit(name)
         self.range_label = QLabel(range_text(event))
-        self.count_label = QLabel(f"{len(event.files)} files")
+        count = len(event.files)
+        self.count_label = QLabel(f"{count} file{'' if count == 1 else 's'}")
         self.merge_button = QPushButton("Merge with next")
         self.split_button = QPushButton("Split")
         self.split_button.setEnabled(_can_split(event))
@@ -215,12 +216,14 @@ class EventsPage(QWidget):
             row.merge_button.setEnabled(n + 1 < count)
 
     def _merge_with_next(self, row: EventRow) -> None:
-        """One row for row's event and the next: row's name and Skip tick stay."""
+        """One row for row's event and the next: row's name stays, and it is
+        skipped if either was (better a file left put than one moved by mistake)."""
         index = self.rows.index(row)
         if index + 1 >= len(self.rows):
             return
         following = self.rows[index + 1]
-        name, skipped = row.name_edit.text(), row.skip_check.isChecked()
+        name = row.name_edit.text()
+        skipped = row.skip_check.isChecked() or following.skip_check.isChecked()
         self._remove_row(row)
         self._remove_row(following)
         self._insert_row(index, merge(row.found_event, following.found_event), name, skipped)
