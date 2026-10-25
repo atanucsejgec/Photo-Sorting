@@ -56,6 +56,18 @@ def pick_photo(parent: QWidget | None, title: str = "Choose a photo") -> Path | 
     return Path(path) if path else None
 
 
+def dropped_photo(event) -> Path | None:
+    """The one photo file a drag (or drop) event carries, or None."""
+    mime = event.mimeData()
+    if not mime.hasUrls():
+        return None
+    urls = mime.urls()
+    if len(urls) != 1 or not urls[0].isLocalFile():
+        return None
+    path = Path(urls[0].toLocalFile())
+    return path if kind(path) == "photo" and path.is_file() else None
+
+
 def _name_key(name: str) -> str:
     """How name is compared: as PeopleStore saves it, case-insensitively; "" if
     there is no name to save."""
@@ -237,27 +249,16 @@ class FaceNamingDialog(QDialog):
         if path is not None:
             self._analyse(path)
 
-    @staticmethod
-    def _dropped_photo(event) -> Path | None:
-        mime = event.mimeData()
-        if not mime.hasUrls():
-            return None
-        urls = mime.urls()
-        if len(urls) != 1 or not urls[0].isLocalFile():
-            return None
-        path = Path(urls[0].toLocalFile())
-        return path if kind(path) == "photo" and path.is_file() else None
-
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if not self._analysing() and self._dropped_photo(event):
+        if not self._analysing() and dropped_photo(event):
             event.acceptProposedAction()
 
     def dragMoveEvent(self, event) -> None:
-        if not self._analysing() and self._dropped_photo(event):
+        if not self._analysing() and dropped_photo(event):
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent) -> None:
-        path = self._dropped_photo(event)
+        path = dropped_photo(event)
         if path is not None and not self._analysing():
             event.acceptProposedAction()
             self._analyse(path)

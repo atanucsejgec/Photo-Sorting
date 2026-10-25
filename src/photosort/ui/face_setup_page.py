@@ -2,8 +2,9 @@
 
 All are ticked the first time; after that the last ticks are remembered in
 Settings.face_people (a person not among them comes up unticked, unless
-none of the people listed is among them). The same list, without ticks and
-with only Forget, is the Settings "Remembered people…" dialog.
+none of the people listed is among them). A photo dropped on the page is
+named like one picked with "Add person…". The same list, without ticks,
+drops and with only Forget, is the Settings "Remembered people…" dialog.
 
 The face pictures are small JPEGs in the app's own data folder, so they are
 read on the GUI thread.
@@ -13,7 +14,7 @@ import logging
 
 from PIL import Image
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QFont, QIcon, QPixmap
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QMessageBox, QPushButton, QVBoxLayout, QWidget,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from photosort.people import PeopleError, PeopleStore, Person
 from photosort.settings import Settings
+from photosort.ui.face_naming_dialog import dropped_photo
 from photosort.ui.qimage import pil_to_qimage
 
 _log = logging.getLogger("photosort")
@@ -48,8 +50,8 @@ def _icon(person: Person) -> QIcon:
 class FaceSetupPage(QWidget):
     """Lists the remembered people; emits start(ids) with the ticked ones.
 
-    add_requested and more_requested(person id) ask the owner of the page
-    (the main window) to name faces in a photo. selection_changed is emitted
+    add_requested, photo_dropped(path) and more_requested(person id) ask
+    the owner of the page (the main window) to name faces in a photo. selection_changed is emitted
     when the owner changes the ticks (or forgets someone), after
     settings.face_people is updated, so the settings can be saved.
     With delete_only, there are no ticks and Forget is the only button.
@@ -57,6 +59,7 @@ class FaceSetupPage(QWidget):
 
     start = Signal(list)  # list[str]: the ticked person ids, in list order
     add_requested = Signal()
+    photo_dropped = Signal(object)  # Path: a photo to add a person from
     more_requested = Signal(str)
     selection_changed = Signal()
 
@@ -68,6 +71,7 @@ class FaceSetupPage(QWidget):
         self._store: PeopleStore | None = None
         self._people: dict[str, Person] = {}
         self._loading = False
+        self.setAcceptDrops(not delete_only)
 
         layout = QVBoxLayout(self)
         if not delete_only:
@@ -200,6 +204,22 @@ class FaceSetupPage(QWidget):
         person = self._current()
         if person is not None:
             self.more_requested.emit(person.id)
+
+    # ----- dropping a photo -------------------------------------------------
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if dropped_photo(event):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:
+        if dropped_photo(event):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        path = dropped_photo(event)
+        if path is not None:
+            event.acceptProposedAction()
+            self.photo_dropped.emit(path)
 
     # ----- forgetting ------------------------------------------------------
 

@@ -178,6 +178,49 @@ def test_setup_page_with_nobody_remembered(qtbot, store):
     assert page.add_button.isEnabled()
 
 
+def _drop_events(path: Path) -> tuple[QDropEvent, QDropEvent, QMimeData]:
+    """(drag enter, drop, their data) for dragging path in; keep the data
+    alive while the events are used. The enter event is a QDropEvent too: it
+    has all the handler uses, without QDragEnterEvent's deprecated constructor."""
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path))])
+    events = []
+    for _ in range(2):
+        event = QDropEvent(QPointF(5, 5), Qt.DropAction.CopyAction, mime,
+                           Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+        event.setAccepted(False)
+        events.append(event)
+    return events[0], events[1], mime
+
+
+def test_setup_page_takes_a_dropped_photo(qtbot, store, photo, tmp_path):
+    page = _make_page(qtbot, Settings())
+    page.load(store)
+    assert page.acceptDrops()
+    dropped = []
+    page.photo_dropped.connect(dropped.append)
+    enter, drop, _mime = _drop_events(photo)
+    page.dragEnterEvent(enter)
+    assert enter.isAccepted()
+    page.dropEvent(drop)
+    assert dropped == [photo]
+
+    notes = tmp_path / "notes.txt"
+    notes.write_text("not a photo")
+    for path in (notes, tmp_path / "gone.jpg"):
+        enter, drop, _mime = _drop_events(path)
+        page.dragEnterEvent(enter)
+        assert not enter.isAccepted()
+        page.dropEvent(drop)
+    assert dropped == [photo]
+
+
+def test_remembered_people_list_takes_no_drops(qtbot, store):
+    page = FaceSetupPage(delete_only=True)
+    qtbot.addWidget(page)
+    assert not page.acceptDrops()
+
+
 def test_forget_asks_first_then_removes(qtbot, store, asked):
     _remember(store, "Atanu", 1)
     _remember(store, "Zoe", 2)
@@ -976,6 +1019,29 @@ def test_naming_with_nobody_remembered_starts_sorting(qtbot, make_window, photos
     assert atanu.name == "Atanu"
     assert load_settings(settings_path).face_people == [atanu.id]
     assert [(m.src, m.dst) for m in w._plan.moves] == [("a.jpg", "Atanu/a.jpg")]
+
+
+def test_photo_dropped_on_setup_names_its_faces(qtbot, make_window, photos, store,
+                                               make_jpeg, tmp_path, models_present,
+                                               monkeypatch):
+    me = make_jpeg(tmp_path / "faces" / "me.jpg", size=(200, 200))
+    make_jpeg(photos / "a.jpg")
+    engine = FakeEngine({"me.jpg": [_face(_unit(1))], "a.jpg": [_face(_unit(1))]})
+
+    def no_picker(*args, **kwargs):
+        raise AssertionError("the dropped photo is used: no file picker")
+
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", no_picker)
+    opened = []
+    _name_in_dialog(monkeypatch, qtbot, "Atanu", opened=opened)
+    w = make_window(engine)
+    _to_setup(w, photos)
+    _, drop, _mime = _drop_events(me)
+    w.face_setup_page.dropEvent(drop)
+    assert opened[0].parent() is w
+    assert engine.calls[0] == "me.jpg"
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)  # as with Add person…
+    assert [p.name for p in store.people()] == ["Atanu"]
 
 
 def test_naming_with_people_listed_waits_for_start(qtbot, make_window, photos, store,

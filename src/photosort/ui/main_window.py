@@ -238,6 +238,7 @@ class MainWindow(QMainWindow):
         page = FaceSetupPage(self.settings)
         page.start.connect(self._start_face_sort)
         page.add_requested.connect(self._add_person)
+        page.photo_dropped.connect(self._add_person)
         page.more_requested.connect(self._add_photos)
         page.selection_changed.connect(self._save_settings)
         page.back_button.clicked.connect(lambda: self._show(self.home))
@@ -515,10 +516,12 @@ class MainWindow(QMainWindow):
         self.face_setup_page.load(self.people_store)
         return saved, finished
 
-    def _add_person(self) -> None:
+    def _add_person(self, path: Path | None = None) -> None:
+        """Name the faces in path, or in a photo the owner picks."""
         if self._busy:
             return
-        path = pick_photo(self, "Choose a photo of the person")
+        if path is None:
+            path = pick_photo(self, "Choose a photo of the person")
         if path is None:
             return
         nobody_yet = not self.face_setup_page.has_people()
