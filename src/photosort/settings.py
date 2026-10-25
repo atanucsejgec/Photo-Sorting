@@ -14,6 +14,15 @@ from pathlib import Path
 
 import platformdirs
 
+from photosort.naming import fold, safe_name
+from photosort.thresholds import CONTENT_CATEGORIES_MAX
+
+# The Content mode's categories until the owner edits them, in this order.
+DEFAULT_CONTENT_CATEGORIES: tuple[str, ...] = (
+    "Food", "Pets & Animals", "Nature & Landscapes", "Selfies & People",
+    "Buildings & City", "Vehicles", "Events & Celebrations", "Text & Documents",
+)
+
 
 @dataclass
 class Settings:
@@ -21,6 +30,18 @@ class Settings:
     use_gpu: bool = True
     last_folder: str | None = None
     face_people: list[str] = field(default_factory=list)  # ids ticked on the Face setup page
+    content_categories: list[str] = field(
+        default_factory=lambda: list(DEFAULT_CONTENT_CATEGORIES))
+
+
+def _valid_categories(names) -> bool:
+    """Whether names is a usable category list: 1 to CONTENT_CATEGORIES_MAX
+    strings, none that safe_name leaves empty (it gives "_" then), and no two
+    the same folder (by fold)."""
+    return (isinstance(names, list)
+            and 1 <= len(names) <= CONTENT_CATEGORIES_MAX
+            and all(isinstance(n, str) and safe_name(n) != "_" for n in names)
+            and len({fold(n) for n in names}) == len(names))
 
 
 _VALID = {
@@ -28,6 +49,7 @@ _VALID = {
     "use_gpu": lambda v: isinstance(v, bool),
     "last_folder": lambda v: v is None or isinstance(v, str),
     "face_people": lambda v: isinstance(v, list) and all(isinstance(i, str) for i in v),
+    "content_categories": _valid_categories,
 }
 
 

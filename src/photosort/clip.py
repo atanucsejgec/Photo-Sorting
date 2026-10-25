@@ -64,12 +64,16 @@ def preprocess(img: Image.Image) -> np.ndarray:
     """img as the visual model's (3, 224, 224) float32 input.
 
     The shortest side is resized to 224 (bicubic; smaller photos are scaled
-    up), the middle 224x224 is cut out, and each channel is normalised with
+    up) and the longest in proportion, cut to whole pixels as OpenCLIP does;
+    the middle 224x224 is cut out, and each channel is normalised with
     CLIP's mean and standard deviation.
     """
-    scale = _SIZE / min(img.size)
-    size = (max(_SIZE, round(img.width * scale)), max(_SIZE, round(img.height * scale)))
-    resized = img.convert("RGB").resize(size, Image.Resampling.BICUBIC)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    short, long = sorted(img.size)
+    long = int(_SIZE * long / short)
+    size = (_SIZE, long) if img.width <= img.height else (long, _SIZE)
+    resized = img.resize(size, Image.Resampling.BICUBIC)
     left = round((resized.width - _SIZE) / 2)
     top = round((resized.height - _SIZE) / 2)
     square = resized.crop((left, top, left + _SIZE, top + _SIZE))

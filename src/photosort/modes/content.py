@@ -1,0 +1,116 @@
+"""Content mode: move each photo to the folder of its best category.
+
+The categories are the owner's list (Settings.content_categories), each
+described to CLIP by a prompt ("a photo of food"). A photo's probability for
+each category is the softmax, over the category prompts, of its similarities
+to them times thresholds.CLIP_LOGIT_SCALE. At CONTENT_SURE or above, the
+photo goes to its best category's folder at the root; from CONTENT_UNSURE up
+to that, the owner is asked first (a Verdict); below, it stays put. Videos
+are skipped (see _clip_scan).
+"""
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+
+from photosort.modes._clip_scan import ClipScan
+from photosort.naming import TargetAllocator, fit_name, fold
+from photosort.plan import Move, Plan
+from photosort.thresholds import (
+    CLIP_LOGIT_SCALE,
+    CONTENT_SURE,
+    CONTENT_UNSURE,
+    FOLDER_NAME_MAX,
+    FOLDER_NAME_MAX_BYTES,
+)
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """An unsure photo to ask the owner about: is rel a photo of best?"""
+
+    rel: str
+    best: str  # the likeliest category
+    prob: float  # its probability
+    ranked: list[tuple[str, float]]  # every category and its probability, best first
+
+
+def prompts(categories: list[str]) -> list[str]:
+    """The text CLIP compares the photos with, one per category, in order."""
+    return [f"a photo of {name.casefold()}" for name in categories]
+
+
+def judge(scan: ClipScan, categories: list[str],
+          text_embeddings: np.ndarray) -> tuple[dict[str, str], list[Verdict]]:
+    """The sure photos (rel -> category) and the unsure ones (ordered by rel).
+
+    text_embeddings holds the unit embeddings of prompts(categories), one row
+    per category. Photos below CONTENT_UNSURE are in neither.
+    """
+    text = np.asarray(text_embeddings, np.float64)
+    if not categories or text.shape[0] != len(categories):
+        raise ValueError(f"{len(categories)} categories but {text.shape[0]} text embeddings")
+    rels = sorted(scan.embeddings)
+    if not rels:
+        return {}, []
+    images = np.stack([scan.embeddings[rel] for rel in rels]).astype(np.float64)
+    logits = CLIP_LOGIT_SCALE * images @ text.T
+    probs = np.exp(logits - logits.max(axis=1, keepdims=True))
+    probs /= probs.sum(axis=1, keepdims=True)
+
+    sure: dict[str, str] = {}
+    unsure: list[Verdict] = []
+    for rel, row in zip(rels, probs):
+        order = np.argsort(-row, kind="stable")  # ties keep the categories' order
+        best = int(order[0])
+        p = float(row[best])
+        if p >= CONTENT_SURE:
+            sure[rel] = categories[best]
+        elif p >= CONTENT_UNSURE:
+            ranked = [(categories[k], float(row[k])) for k in order]
+            unsure.append(Verdict(rel, categories[best], p, ranked))
+    return sure, unsure
+
+
+def plan_content(root: Path, scan: ClipScan, sure: dict[str, str],
+                 answers: dict[str, str | None]) -> Plan:
+    """Plan the moves for scan's photos.
+
+    sure maps a rel to its category; answers maps an unsure rel to the
+    category the owner chose, or to None to leave it where it is. An unsure
+    photo not answered stays put. Each category's folder is
+    fit_name(category) at the root; a photo already in it is left there.
+    """
+    root = Path(root)
+    chosen = dict(sure)
+    for rel, category in answers.items():
+        if category is None:
+            chosen.pop(rel, None)
+        else:
+            chosen[rel] = category
+
+    allocator = TargetAllocator(root)
+    moves: list[Move] = []
+    folders: set[str] = set()
+    unchanged = 0
+    for rel in sorted(chosen):
+        if rel not in scan.embeddings:
+            continue  # not a photo of this scan
+        folder = fit_name(chosen[rel], FOLDER_NAME_MAX, FOLDER_NAME_MAX_BYTES)
+        parent, _, name = rel.rpartition("/")
+        if fold(parent) == fold(folder):
+            unchanged += 1
+            continue
+        moves.append(Move(rel, allocator.allocate(f"{folder}/{name}")))
+        folders.add(fold(folder))
+
+    stay = scan.photos - scan.unreadable - len(moves) - unchanged
+    summary = [f"{len(moves)} photos → {len(folders)} category folders"]
+    if stay:
+        summary.append(f"{stay} photos stay where they are")
+    if scan.unreadable:
+        summary.append(f"{scan.unreadable} photos couldn't be read")
+    if unchanged:
+        summary.append(f"{unchanged} already in place")
+    return Plan("content", moves, summary, unchanged)

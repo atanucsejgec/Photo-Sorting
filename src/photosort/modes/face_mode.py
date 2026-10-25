@@ -14,7 +14,6 @@ and a face at most one person, the most similar pairs first.
 
 import logging
 import threading
-import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +23,7 @@ from photosort.cache import AnalysisCache
 from photosort.faces import FACES_KIND, Box, Face, pack_faces, unpack_faces
 from photosort.imageinfo import UnreadableImage
 from photosort.media import kind
-from photosort.naming import TargetAllocator, fold, resolve_existing_dir, safe_name
+from photosort.naming import TargetAllocator, fit_name, fits, fold, resolve_existing_dir
 from photosort.people import Person, person_scores
 from photosort.plan import Move, Plan
 from photosort.scanner import scan, skipped_folder
@@ -82,43 +81,17 @@ def together_folder(names: Iterable[str]) -> str:
     """
     names = sorted(names, key=str.casefold)
     full = " & ".join(names)
-    if _fits(full, FACE_FOLDER_MAX, FACE_FOLDER_MAX_BYTES):
+    if fits(full, FACE_FOLDER_MAX, FACE_FOLDER_MAX_BYTES):
         return full
     if len(names) == 1:
-        return _cut(names[0], FACE_FOLDER_MAX, FACE_FOLDER_MAX_BYTES)
+        return fit_name(names[0], FACE_FOLDER_MAX, FACE_FOLDER_MAX_BYTES)
     for kept in range(len(names) - 1, 0, -1):
         folder = " & ".join(names[:kept]) + f" & {len(names) - kept} more"
-        if _fits(folder, FACE_FOLDER_MAX, FACE_FOLDER_MAX_BYTES):
+        if fits(folder, FACE_FOLDER_MAX, FACE_FOLDER_MAX_BYTES):
             return folder
     more = f" & {len(names) - 1} more"
-    return _cut(names[0], FACE_FOLDER_MAX - len(more),
-                FACE_FOLDER_MAX_BYTES - len(more.encode())) + more
-
-
-def _fits(name: str, max_chars: int, max_bytes: int) -> bool:
-    return len(name) <= max_chars and len(name.encode("utf-8", "surrogatepass")) <= max_bytes
-
-
-def _cut(name: str, max_chars: int, max_bytes: int) -> str:
-    """name cut short to fit, never splitting a character, as a valid folder
-    name that the scanner still looks into."""
-    end = min(len(name), max_chars)
-    while True:
-        folder = _clean_cut(name[:end])
-        if _fits(folder, max_chars, max_bytes):
-            return folder
-        end -= 1
-
-
-def _clean_cut(part: str) -> str:
-    """A cut-off part of a name as a folder name: no dangling dot, space or
-    combining mark (a vowel sign cut off from its letter, say), Windows-valid,
-    and not one the scanner skips."""
-    while part and (part[-1] in ". \u200c\u200d"
-                    or unicodedata.category(part[-1]).startswith("M")):
-        part = part[:-1]
-    part = safe_name(part)
-    return "_" + part if skipped_folder(part) else part
+    return fit_name(names[0], FACE_FOLDER_MAX - len(more),
+                    FACE_FOLDER_MAX_BYTES - len(more.encode())) + more
 
 
 def _assign(faces: list[Face], people: list[Person]) -> list[tuple[Face, Person, float]]:

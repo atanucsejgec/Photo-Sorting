@@ -51,6 +51,39 @@ def test_preprocess_small_image_is_upscaled():
     np.testing.assert_allclose(x[:, 214, 112], black, rtol=1e-5)
 
 
+def _spy(monkeypatch, method):
+    """Record the arguments of each call to PIL Image.<method>, still running it."""
+    calls = []
+    real = getattr(Image.Image, method)
+
+    def spy(self, *args, **kwargs):
+        calls.append((self.mode, self.size, args))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Image.Image, method, spy)
+    return calls
+
+
+@pytest.mark.parametrize("size, resized", [
+    ((300, 225), (298, 224)),  # 298.67 is cut, not rounded, as OpenCLIP does
+    ((225, 300), (224, 298)),
+    ((448, 224), (448, 224)),
+])
+def test_preprocess_resizes_the_long_side_cut_short(monkeypatch, size, resized):
+    calls = _spy(monkeypatch, "resize")
+    preprocess(Image.new("RGB", size, (10, 20, 30)))
+    assert [args[0] for _, _, args in calls] == [resized]
+
+
+def test_preprocess_converts_only_what_is_not_rgb(monkeypatch):
+    calls = _spy(monkeypatch, "convert")
+    preprocess(Image.new("RGB", (300, 260), (128, 128, 128)))
+    assert calls == []
+    x = preprocess(Image.new("L", (300, 260), 128))
+    assert [(mode, args) for mode, _, args in calls] == [("L", ("RGB",))]
+    np.testing.assert_allclose(x[:, 100, 100], (128 / 255 - MEAN) / STD, rtol=1e-6)
+
+
 def test_preprocess_normalises_with_clip_mean_and_std():
     x = preprocess(Image.new("RGB", (300, 260), (128, 128, 128)))
     expected = (128 / 255 - MEAN) / STD
@@ -78,6 +111,14 @@ def test_load_for_clip_uses_jpeg_draft(tmp_path):
                 format="JPEG")
     loaded = load_for_clip(path)
     assert 224 <= min(loaded.size) < 3000
+
+
+def test_load_for_clip_draft_keeps_224_just_above_a_step(tmp_path):
+    # 1799 is just above 8 x 224: the eighth-size decode is 225 x 225, not smaller.
+    path = save(Image.new("RGB", (1800, 1799), (90, 90, 90)), tmp_path / "step.jpg",
+                format="JPEG")
+    loaded = load_for_clip(path)
+    assert 224 <= min(loaded.size) < 1799
 
 
 @pytest.mark.parametrize("name, img, kwargs", [
