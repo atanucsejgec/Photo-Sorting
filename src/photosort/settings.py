@@ -20,7 +20,9 @@ class Settings:
     include_subfolders: bool = False
     use_gpu: bool = True
     last_folder: str | None = None
-    face_people: list[str] = field(default_factory=list)  # ids ticked on the Face setup page
+    # Was the people last ticked for Face mode; no longer used (everyone now
+    # comes up unticked), kept so that settings files that have it still load.
+    face_people: list[str] = field(default_factory=list)
 
 
 _VALID = {

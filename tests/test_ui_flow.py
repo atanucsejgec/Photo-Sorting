@@ -667,7 +667,7 @@ def test_face_end_to_end(qtbot, make_window, photos, make_jpeg, store, errors,
     rather_zoe /= np.linalg.norm(rather_zoe)
     engine = _Faces({"a.jpg": [_face(atanu.embeddings[0])],
                      "b.jpg": [_face(atanu.embeddings[0]), _face(zoe.embeddings[0], 110)],
-                     "c.jpg": [_face(rather_zoe)]})
+                     "c.jpg": [_face(atanu.embeddings[0]), _face(rather_zoe, 110)]})
     w = make_window()
     w.engine_factory = lambda use_gpu: engine
 
@@ -675,6 +675,9 @@ def test_face_end_to_end(qtbot, make_window, photos, make_jpeg, store, errors,
     w.mode_buttons["face"].setChecked(True)
     w.start_button.click()
     assert w.current_page() is w.face_setup_page
+    people = w.face_setup_page.people_list
+    for n in range(people.count()):
+        people.item(n).setCheckState(Qt.CheckState.Checked)
     w.face_setup_page.start_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.face_question_page)
     page = w.face_question_page
@@ -682,20 +685,20 @@ def test_face_end_to_end(qtbot, make_window, photos, make_jpeg, store, errors,
     assert page.counter_label.text() == "1 of 1"
     page.yes_button.click()
     assert w.current_page() is w.summary_page
-    assert w.summary_label.text().splitlines()[0] == (
-        "3 photos → 2 person folders, 1 together folders")
+    assert w.summary_label.text().splitlines()[:2] == [
+        "2 photos → 0 person folders, 1 together folders",
+        "1 photos stay where they are"]  # a.jpg: Atanu alone
 
     w.go_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.done_page)
-    assert "Moved 3 files." in w.done_label.text()
-    assert (photos / "Atanu" / "a.jpg").is_file()
+    assert "Moved 2 files." in w.done_label.text()
+    assert (photos / "a.jpg").is_file()
     assert (photos / "Atanu & Zoe" / "b.jpg").is_file()
-    assert (photos / "Zoe" / "c.jpg").is_file()
-    assert not any((photos / n).exists() for n in ("a.jpg", "b.jpg", "c.jpg"))
+    assert (photos / "Atanu & Zoe" / "c.jpg").is_file()
+    assert not any((photos / n).exists() for n in ("b.jpg", "c.jpg"))
 
     w.undo_button.click()
     qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
     assert all((photos / n).is_file() for n in ("a.jpg", "b.jpg", "c.jpg"))
-    for folder in ("Atanu", "Atanu & Zoe", "Zoe"):
-        assert not (photos / folder).exists()
+    assert not (photos / "Atanu & Zoe").exists()
     assert errors == []

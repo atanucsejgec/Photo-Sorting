@@ -1,15 +1,18 @@
 """Face mode: move photos of the named people into a folder per person or group.
 
-A photo with one named person goes to "<Name>/"; with two or more, to a
-together folder "<A> & <B>/" (names sorted case-insensitively; a long one
-ends "& 3 more"). Faces of
-nobody named (strangers) are ignored, and a photo with none of the named
-people stays put. Videos are skipped.
+The people looked for are the ones ticked. With one, every photo with them
+goes to "<Name>/". With two or more, only group photos are sorted: a photo
+with at least two of them goes to a together folder "<A> & <B>/" (names
+sorted case-insensitively; a long one ends "& 3 more"), and a photo with
+just one of them stays put. Faces of nobody named (strangers) are ignored,
+and a photo with none of the named people stays put. Videos are skipped.
 
 A face matches a person surely at thresholds.FACE_SURE or above; from
 FACE_UNSURE up to that, the owner is asked first (a Question); below it,
 the face is a stranger's. In each photo a person matches at most one face
-and a face at most one person, the most similar pairs first.
+and a face at most one person, the most similar pairs first. When only
+group photos are sorted, a photo's questions are asked only if it could
+still be one: two or more of the people in it, sure or unsure.
 """
 
 import logging
@@ -64,6 +67,7 @@ class FaceScan:
     questions: list[Question]  # ordered by rel, then name
     photos: int  # photos looked at, unreadable ones included
     unreadable: int
+    groups_only: bool = False  # two or more people looked for: sort group photos only
 
 
 def confidence_percent(similarity: float) -> int:
@@ -207,9 +211,12 @@ def find_face_matches(
     can't). A photo it fails on otherwise is counted as unreadable, unless
     the first photos all fail (see _Analyser). progress(i, total) is called after
     each photo; videos are not looked at. With a cache, a photo analysed
-    before is not analysed again.
+    before is not analysed again. With two or more people, only group photos
+    are sorted (FaceScan.groups_only), so a photo's unsure matches are asked
+    about only if it has at least two of the people, sure and unsure together.
     """
     root = Path(root)
+    groups_only = len(people) >= 2
     analyser = _Analyser(analyse)
     photos = [rel for rel in scan(root, include_subfolders) if kind(rel) == "photo"]
     total = len(photos)
@@ -223,18 +230,21 @@ def find_face_matches(
         if faces is None:
             unreadable += 1
         else:
+            unsure = []
             for f, person, score in _assign(faces, people):
                 if score >= FACE_SURE:
                     sure.setdefault(rel, set()).add(person.id)
                 else:
-                    questions.append(Question(rel, person.id, person.name, f.box,
-                                              f.image_size, score, confidence_percent(score)))
+                    unsure.append(Question(rel, person.id, person.name, f.box,
+                                           f.image_size, score, confidence_percent(score)))
+            if not groups_only or len(sure.get(rel, ())) + len(unsure) >= 2:
+                questions.extend(unsure)
         if progress is not None:
             progress(i, total)
     if cancel is not None and cancel.is_set():
         return None
     questions.sort(key=lambda q: (q.rel, q.name.casefold(), q.name))
-    return FaceScan(sure, questions, total, unreadable)
+    return FaceScan(sure, questions, total, unreadable, groups_only)
 
 
 def plan_faces(root: Path, scan: FaceScan, people: list[Person],
@@ -244,7 +254,8 @@ def plan_faces(root: Path, scan: FaceScan, people: list[Person],
     answers maps (rel, person_id) to "yes" (add that person to the photo),
     "no" (leave them out) or "skip" (leave the whole photo where it is). A
     photo with a question not yet answered stays put too. People no longer
-    in people, or named like a folder the scanner skips, are left out.
+    in people, or named like a folder the scanner skips, are left out. When
+    scan.groups_only, a photo left with fewer than two people stays put.
     """
     root = Path(root)
     # A name the scanner skips would hide the photos from later runs.
@@ -265,7 +276,7 @@ def plan_faces(root: Path, scan: FaceScan, people: list[Person],
         ids = set(scan.sure.get(rel, set()))
         ids |= {q.person_id for q, reply in zip(asked.get(rel, []), replies) if reply == "yes"}
         in_photo = [names[i] for i in ids if i in names]
-        if not in_photo:
+        if len(in_photo) < (2 if scan.groups_only else 1):
             continue
         folder = resolve_existing_dir(root, together_folder(in_photo))
         parent, _, name = rel.rpartition("/")

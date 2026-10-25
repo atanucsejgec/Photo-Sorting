@@ -1,16 +1,18 @@
 """The Face setup page: the remembered people, ticked for this sort.
 
-All are ticked the first time; after that the last ticks are remembered in
-Settings.face_people (a person not among them comes up unticked, unless
-none of the people listed is among them). A photo dropped on the page is
-named like one picked with "Add person…". The same list, without ticks,
-drops and with only Forget, is the Settings "Remembered people…" dialog.
+Everyone comes up unticked: the owner ticks the people to sort by, one for
+their photos, two or more for the photos of them together. Only the people
+load() is asked to tick (say, ones just named) come up ticked. A photo
+dropped on the page is named like one picked with "Add person…". The same
+list, without ticks, drops and with only Forget, is the Settings
+"Remembered people…" dialog.
 
 The face pictures are small JPEGs in the app's own data folder, so they are
 read on the GUI thread.
 """
 
 import logging
+from collections.abc import Iterable
 
 from PIL import Image
 from PySide6.QtCore import QSize, Qt, Signal
@@ -21,7 +23,6 @@ from PySide6.QtWidgets import (
 )
 
 from photosort.people import PeopleError, PeopleStore, Person
-from photosort.settings import Settings
 from photosort.ui.face_naming_dialog import dropped_photo
 from photosort.ui.qimage import pil_to_qimage
 
@@ -29,7 +30,8 @@ _log = logging.getLogger("photosort")
 
 ICON_PX = 64
 HEADING = "Sort by face"
-HINT = "Tick the people whose photos should go into their own folders."
+HINT = ("Tick a person to sort their photos into their own folder. Tick two or more "
+        "to sort only the photos of them together.")
 NOBODY = "No one is remembered yet. Add a person: pick a photo of them and type their name."
 PEOPLE_HINT = "The people Photo Sorter knows by face, for sorting by face."
 NOBODY_LEFT = "No one is remembered."
@@ -51,9 +53,7 @@ class FaceSetupPage(QWidget):
     """Lists the remembered people; emits start(ids) with the ticked ones.
 
     add_requested, photo_dropped(path) and more_requested(person id) ask
-    the owner of the page (the main window) to name faces in a photo. selection_changed is emitted
-    when the owner changes the ticks (or forgets someone), after
-    settings.face_people is updated, so the settings can be saved.
+    the owner of the page (the main window) to name faces in a photo.
     With delete_only, there are no ticks and Forget is the only button.
     """
 
@@ -61,12 +61,9 @@ class FaceSetupPage(QWidget):
     add_requested = Signal()
     photo_dropped = Signal(object)  # Path: a photo to add a person from
     more_requested = Signal(str)
-    selection_changed = Signal()
 
-    def __init__(self, settings: Settings | None = None, parent: QWidget | None = None,
-                 *, delete_only: bool = False) -> None:
+    def __init__(self, parent: QWidget | None = None, *, delete_only: bool = False) -> None:
         super().__init__(parent)
-        self._settings = settings
         self._delete_only = delete_only
         self._store: PeopleStore | None = None
         self._people: dict[str, Person] = {}
@@ -126,8 +123,8 @@ class FaceSetupPage(QWidget):
 
     # ----- loading ---------------------------------------------------------
 
-    def load(self, store: PeopleStore) -> None:
-        """List the people remembered in store, ticked as last time."""
+    def load(self, store: PeopleStore, ticked: Iterable[str] = ()) -> None:
+        """List the people remembered in store, unticked but for the ids in ticked."""
         self._store = store
         self.status_label.setText("")
         try:
@@ -136,8 +133,7 @@ class FaceSetupPage(QWidget):
             people = []
             self.status_label.setText(str(e))
         self._people = {p.id: p for p in people}
-        remembered = set(self._settings.face_people) if self._settings else set()
-        ticked = remembered & self._people.keys() or set(self._people)
+        ticked = set(ticked)
 
         self._loading = True
         self.people_list.clear()
@@ -159,7 +155,6 @@ class FaceSetupPage(QWidget):
             self.hint_label.setText(PEOPLE_HINT if people else NOBODY_LEFT)
         else:
             self.hint_label.setText(HINT if people else NOBODY)
-        self._remember_ticks()
         self._update_buttons()
 
     def has_people(self) -> bool:
@@ -180,16 +175,9 @@ class FaceSetupPage(QWidget):
 
     # ----- ticks and buttons -----------------------------------------------
 
-    def _remember_ticks(self) -> None:
-        if self._settings is not None and not self._delete_only:
-            self._settings.face_people = self.ticked_ids()
-
     def _ticks_changed(self, _item: QListWidgetItem) -> None:
-        if self._loading:
-            return
-        self._remember_ticks()
-        self._update_buttons()
-        self.selection_changed.emit()
+        if not self._loading:
+            self._update_buttons()
 
     def _update_buttons(self, *_) -> None:
         person = self._current()
@@ -239,9 +227,7 @@ class FaceSetupPage(QWidget):
         except PeopleError as e:
             self.status_label.setText(str(e))
             return
-        self.load(self._store)
-        if not self._delete_only:
-            self.selection_changed.emit()
+        self.load(self._store, self.ticked_ids())  # the others' ticks kept
 
 
 class RememberedPeopleDialog(QDialog):

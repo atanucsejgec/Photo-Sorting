@@ -99,8 +99,9 @@ Success means the owner can pick a folder, choose a mode, look over what will ha
 - **Remembered people:** names and face data are saved in the app's own data folder (not the sorted folder), so they can be reused next time without giving the face again. The start screen lists remembered people with tick boxes, and the owner can add a new person **(my call on the tick-box UI)**. The owner can delete a remembered person. *Also my call:* the owner can add more photos of an existing person to improve recognition.
 - Sorting starts automatically after naming.
 - **Sure** matches are planned for moving. **Unsure** matches are collected and shown one at a time ("Is this Atanu? 63% sure", with Yes / No / Skip) **before anything moves**. Skip means the photo stays put.
-- A photo with **one** named person goes to `<Name>/`.
-- A photo with **two or more** named people goes to a **together folder**: `<Name1> & <Name2>/`, with names in alphabetical order **(my call on ordering)**.
+- The owner ticks the people to sort by; everyone starts unticked, except people just named, who come up ticked (owner's request).
+- With **one** person ticked, a photo with them goes to `<Name>/`.
+- With **two or more** people ticked, only **group photos** are sorted (owner's request): a photo with at least two of them goes to a **together folder**: `<Name1> & <Name2>/`, with names in alphabetical order **(my call on ordering)**. A photo with only one of them stays put, and its unsure matches are not asked about unless the photo could still have two of them.
 - Faces the app doesn't recognise (strangers, background people) are ignored.
 - Photos with none of the named people stay where they are.
 

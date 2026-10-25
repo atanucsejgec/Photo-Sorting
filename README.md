@@ -14,8 +14,9 @@ Working now:
   compare (arrow keys, side by side, zoom), and moves the ones you don't keep into
   `Repeated Shots/`.
 - **Face** mode: give it one photo and type the names of the people in it. It remembers
-  them, finds them in every photo, and moves each photo into a folder named after the
-  person (`Atanu/`), or `Atanu & Zoe/` when several of them are in it. When it isn't
+  them; tick the people to sort by. With one ticked, it moves every photo of them into
+  a folder named after them (`Atanu/`); with two or more, only the photos of them
+  together, into `Atanu & Zoe/` (photos of just one of them stay put). When it isn't
   sure, it asks ("Is this Atanu? 72% sure"). Strangers are ignored. Face data stays on
   this computer.
 
