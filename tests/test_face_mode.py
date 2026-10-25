@@ -371,7 +371,7 @@ def test_unusable_cache_entry_analysed_again(tmp_path):
     assert scan.sure == {"x.jpg": {ATANU.id}}
 
 
-def test_face_mode_registered_but_not_yet_offered():
-    assert ("face", "Face", False) in MODES
+def test_face_mode_registered_and_offered():
+    assert ("face", "Face", True) in MODES
     assert MODE_SPECS["face"].kind == "face"
 

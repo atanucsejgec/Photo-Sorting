@@ -62,14 +62,14 @@ def test_start_disabled_without_folder(make_window, photos):
     assert w.start_button.isEnabled()
 
 
-def test_three_modes_available(make_window):
+def test_four_modes_available(make_window):
     w = make_window()
     buttons = _mode_buttons(w)
     enabled = [b for b in buttons if b.isEnabled()]
     disabled = [b for b in buttons if not b.isEnabled()]
-    assert [b.text() for b in enabled] == ["Date", "Duplicates", "Repeated shots"]
+    assert [b.text() for b in enabled] == ["Date", "Face", "Duplicates", "Repeated shots"]
     assert enabled[0].isChecked()
-    assert len(disabled) == 8
+    assert len(disabled) == 7
     assert all("coming soon" in b.text() for b in disabled)
     assert all(key in MODE_SPECS for key, _, available in MODES if available)
 

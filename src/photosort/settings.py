@@ -9,7 +9,7 @@ a half-written file.
 import json
 import os
 import tempfile
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 import platformdirs
@@ -20,12 +20,14 @@ class Settings:
     include_subfolders: bool = False
     use_gpu: bool = True
     last_folder: str | None = None
+    face_people: list[str] = field(default_factory=list)  # ids ticked on the Face setup page
 
 
 _VALID = {
     "include_subfolders": lambda v: isinstance(v, bool),
     "use_gpu": lambda v: isinstance(v, bool),
     "last_folder": lambda v: v is None or isinstance(v, str),
+    "face_people": lambda v: isinstance(v, list) and all(isinstance(i, str) for i in v),
 }
 
 

@@ -3,8 +3,9 @@
 A mode of kind "plan" prepares a Plan straight away. A mode of kind
 "groups" finds Groups for the owner to review; the files not kept are then
 set aside, flat, in set_aside_folder. A mode of kind "face" finds face
-matches to ask the owner about, then plans (see modes.face_mode); it is
-not run through prepare yet. Every prepare function is called as
+matches to ask the owner about, then plans (see modes.face_mode); it needs
+the people picked and a face engine, so the main window runs it through
+modes.face_mode, never through prepare. Every prepare function is called as
 prepare(root, include_subfolders, progress=..., cancel=...) and returns None
 if cancelled. The mode modules are imported when a mode first runs.
 """
@@ -17,7 +18,7 @@ from typing import Literal
 
 MODES: list[tuple[str, str, bool]] = [
     ("date", "Date", True),
-    ("face", "Face", False),
+    ("face", "Face", True),
     ("duplicates", "Duplicates", True),
     ("repeated", "Repeated shots", True),
     ("notes", "Notes & Pages", False),
@@ -67,7 +68,7 @@ def _find_repeated(root: Path, include_subfolders: bool, progress: Progress = No
 def _find_faces(root: Path, include_subfolders: bool, progress: Progress = None,
                 cancel: threading.Event | None = None):
     # Face mode also needs the people picked and a face engine; the main
-    # window runs it through modes.face_mode directly once that is wired up.
+    # window runs it through modes.face_mode directly.
     raise NotImplementedError("Face mode is run through modes.face_mode")
 
 
