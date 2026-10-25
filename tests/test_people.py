@@ -236,3 +236,19 @@ def test_entries_not_ours_are_kept_raw_and_never_used(tmp_path):
     store.add("Hal", _unit(5), _thumb())
     assert _listed(tmp_path)[1:len(raw)] == raw[1:]
     assert outside.is_file()
+
+
+def test_repeated_id_is_kept_raw_so_delete_spares_the_files(tmp_path):
+    shared = "0123456789abcdef"
+    np.save(tmp_path / f"{shared}.npy", _unit(1)[None])
+    _thumb().save(tmp_path / f"{shared}.jpg")
+    raw = [
+        {"id": shared, "name": "Amy", "thumb": f"{shared}.jpg"},
+        {"id": shared, "name": "Bob", "thumb": f"{shared}.jpg"},  # the same files
+    ]
+    (tmp_path / "people.json").write_text(json.dumps({"people": raw}))
+    store = PeopleStore(tmp_path)
+    assert [p.name for p in store.people()] == ["Amy"]
+    assert store.best_match(_unit(1), [shared])[0] == shared
+    store.delete(shared)  # Amy's entry goes; Bob's stays, raw
+    assert _listed(tmp_path) == raw[1:]

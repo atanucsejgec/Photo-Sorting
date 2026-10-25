@@ -170,17 +170,26 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+_SIDE_SUFFIXES = ("-journal", "-wal", "-shm")  # SQLite's side files
+
+
 def _set_aside(path: Path) -> Path:
-    """Rename path to <name>.broken-<n>, the smallest n free, and return the new path."""
+    """Rename path and its side files to <name>.broken-<n>[<suffix>], the
+    smallest n for which none of those names is taken, and return the new path.
+
+    The side files go with the database so a stale journal never pairs with
+    the fresh database started in its place.
+    """
     n = 1
     while True:
         broken = path.with_name(f"{path.name}.broken-{n}")
-        if not broken.exists():
+        if not any(os.path.lexists(broken.with_name(broken.name + suffix))
+                   for suffix in ("", *_SIDE_SUFFIXES)):
             break
         n += 1
     os.rename(path, broken)
-    for suffix in ("-journal", "-wal", "-shm"):  # SQLite's side files go with it
+    for suffix in _SIDE_SUFFIXES:
         side = path.with_name(path.name + suffix)
-        if side.exists():
+        if os.path.lexists(side):
             os.rename(side, broken.with_name(broken.name + suffix))
     return broken

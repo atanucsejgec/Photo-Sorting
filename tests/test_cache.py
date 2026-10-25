@@ -5,7 +5,7 @@ import sqlite3
 import numpy as np
 import pytest
 
-from photosort.cache import AnalysisCache
+from photosort.cache import AnalysisCache, _set_aside
 from photosort.faces import Face, pack_faces, unpack_faces
 from photosort.modes import _analysis
 
@@ -100,6 +100,46 @@ def test_corrupt_database_set_aside(tmp_path, caplog):
     assert (db.parent / "cache.db.broken-2").read_bytes() == b"this is not a database" * 100
     assert (db.parent / "cache.db.broken-1").read_bytes() == b"an earlier one"
     assert any("cache" in r.getMessage().lower() for r in caplog.records)
+
+
+def test_side_files_set_aside_with_the_database(tmp_path):
+    folder = _cache_db(tmp_path).parent
+    folder.mkdir()
+    (folder / "cache.db").write_bytes(b"this is not a database" * 100)
+    (folder / "cache.db-journal").write_bytes(b"stale journal")
+    (folder / "cache.db-wal").write_bytes(b"stale wal")
+    (folder / "cache.db.broken-1").write_bytes(b"an earlier one")
+    (folder / "cache.db.broken-2-journal").write_bytes(b"a stray side file")
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"photo bytes")
+    with AnalysisCache(tmp_path) as cache:
+        cache.put("photo-v1", photo, b"data")
+        assert cache.get("photo-v1", photo) == b"data"
+    # broken-2 is taken by a side file, so the set comes out as broken-3.
+    assert (folder / "cache.db.broken-3").read_bytes() == b"this is not a database" * 100
+    assert (folder / "cache.db.broken-2-journal").read_bytes() == b"a stray side file"
+    assert (folder / "cache.db.broken-1").read_bytes() == b"an earlier one"
+    # SQLite discards side files it can't use (the journal on opening, the
+    # WAL on closing), and _set_aside takes any left: none stays stale beside
+    # the fresh database. (test_set_aside_takes_every_side_file_... covers
+    # side files still there when it runs.)
+    for suffix, stale in [("-journal", b"stale journal"), ("-wal", b"stale wal")]:
+        side = folder / f"cache.db{suffix}"
+        assert not side.exists() or side.read_bytes() != stale
+
+
+def test_set_aside_takes_every_side_file_under_one_free_number(tmp_path):
+    db = tmp_path / "cache.db"
+    for suffix, data in [("", b"db"), ("-journal", b"j"), ("-wal", b"w"), ("-shm", b"s")]:
+        (tmp_path / f"cache.db{suffix}").write_bytes(data)
+    (tmp_path / "cache.db.broken-1").write_bytes(b"older db")
+    (tmp_path / "cache.db.broken-2-shm").write_bytes(b"older shm")
+    assert _set_aside(db) == tmp_path / "cache.db.broken-3"
+    for suffix, data in [("", b"db"), ("-journal", b"j"), ("-wal", b"w"), ("-shm", b"s")]:
+        assert (tmp_path / f"cache.db.broken-3{suffix}").read_bytes() == data
+        assert not (tmp_path / f"cache.db{suffix}").exists()
+    assert (tmp_path / "cache.db.broken-1").read_bytes() == b"older db"
+    assert (tmp_path / "cache.db.broken-2-shm").read_bytes() == b"older shm"
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root can write to read-only folders")

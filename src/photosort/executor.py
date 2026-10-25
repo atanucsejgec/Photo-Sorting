@@ -7,7 +7,9 @@ source. Each move is journalled before it happens.
 
 import errno
 import os
+import re
 import shutil
+import stat
 import tempfile
 import threading
 from collections.abc import Callable
@@ -107,6 +109,13 @@ def _is_empty_dir(path: Path) -> bool:
         return False
 
 
+# The exact names photosort.cache creates in a .photosort folder: the
+# database, SQLite's side files, and set-aside copies of both. Matched
+# case-sensitively and in full, so an owner's look-alike is never taken.
+_CACHE_FILE = re.compile(
+    re.escape(CACHE_NAME) + r"(\.broken-[0-9]+)?(-journal|-wal|-shm)?")
+
+
 def _cache_only(path: Path) -> Path | None:
     """The .photosort in folder path if it is all path holds and it holds
     nothing but analysis-cache files (cache.db and its side and broken
@@ -114,31 +123,43 @@ def _cache_only(path: Path) -> Path | None:
     try:
         with os.scandir(path) as entries:
             found = list(entries)
-        if (len(found) != 1 or found[0].name.casefold() != PHOTOSORT_DIR
-                or not found[0].is_dir(follow_symlinks=False)):
+        if len(found) != 1 or found[0].name != PHOTOSORT_DIR:
             return None
-        with os.scandir(found[0].path) as entries:
-            if all(_is_cache_file(e) for e in entries):
-                return Path(found[0].path)
+        photosort_dir = Path(found[0].path)
+        if _cache_files(photosort_dir) is None:
+            return None
+        return photosort_dir
     except OSError:
-        pass
+        return None
+
+
+def _cache_files(photosort_dir: Path) -> list[str] | None:
+    """The paths of the cache files in photosort_dir if that is a real folder
+    (not a symlink) holding nothing else; else None."""
+    if not stat.S_ISDIR(os.lstat(photosort_dir).st_mode):
+        return None
+    with os.scandir(photosort_dir) as entries:
+        found = list(entries)
+    if all(_CACHE_FILE.fullmatch(e.name) and e.is_file(follow_symlinks=False)
+           for e in found):
+        return [e.path for e in found]
     return None
-
-
-def _is_cache_file(entry: os.DirEntry) -> bool:
-    return (entry.name.casefold().startswith(CACHE_NAME)
-            and entry.is_file(follow_symlinks=False))
 
 
 def _remove_cache(photosort_dir: Path) -> None:
     """Remove the analysis-cache files in photosort_dir, then the folder itself.
 
-    Raises OSError if anything else has appeared in it meanwhile.
+    Checks afresh that photosort_dir is still a real folder holding only
+    cache files; raises OSError, removing nothing, if it is not.
     """
-    with os.scandir(photosort_dir) as entries:
-        for entry in entries:
-            if _is_cache_file(entry):
-                os.unlink(entry.path)
+    files = _cache_files(photosort_dir)
+    if files is None:
+        raise OSError(errno.ENOTEMPTY, "not only the analysis cache", str(photosort_dir))
+    for file in files:
+        try:
+            os.unlink(file)
+        except FileNotFoundError:
+            pass  # gone meanwhile, as SQLite's side files may be
     os.rmdir(photosort_dir)  # fails unless empty
 
 

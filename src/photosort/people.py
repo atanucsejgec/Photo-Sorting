@@ -161,22 +161,30 @@ class PeopleStore:
             raise PeopleError("The remembered people can't be read.")
         entries: list[_Entry] = []
         taken: set[str] = set()  # casefolded names of earlier entries
+        used_ids: set[str] = set()  # ids of earlier usable entries
         for raw in listed:
-            person = self._person(raw, taken)
+            person = self._person(raw, taken, used_ids)
             entries.append(raw if person is None else person)
+            if person is not None:
+                used_ids.add(person.id)
             name = _name_of(raw)
             if name:
                 taken.add(name.casefold())
         self._loaded = (stamp, entries)
         return list(entries)
 
-    def _person(self, raw: object, taken: set[str]) -> Person | None:
-        """The Person an entry of people.json describes, or None (logged) if unusable."""
+    def _person(self, raw: object, taken: set[str],
+                used_ids: set[str]) -> Person | None:
+        """The Person an entry of people.json describes, or None (logged) if
+        unusable. An id an earlier usable entry has is refused, so deleting one
+        person never removes files another uses."""
         if not isinstance(raw, dict):
             return _unusable(raw, "not an entry")
         person_id, name = raw.get("id"), raw.get("name")
         if not isinstance(person_id, str) or not _ID.fullmatch(person_id):
             return _unusable(raw, "bad id")
+        if person_id in used_ids:
+            return _unusable(raw, "id repeats an earlier one")
         if raw.get("thumb") != f"{person_id}.jpg":
             return _unusable(raw, "bad thumbnail file")
         if (not isinstance(name, str) or not name.replace(".", "").strip()
