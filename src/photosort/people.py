@@ -7,10 +7,12 @@ picture). Every file is written atomically, people.json last, so a crash
 never leaves a half-written file and people.json only names complete people.
 
 Names are cleaned with naming.safe_name (they become folder names) and are
-unique case-insensitively.
+unique case-insensitively. A name the scanner never looks into (hidden, or
+one of the app's own folders such as "Duplicates") is refused, so sorted
+photos never vanish from later runs.
 
 An entry of people.json that can't be used (its samples can't be read, its
-name isn't a clean one or repeats an earlier one, its id is not ours) is
+name isn't a clean one, is refused or repeats an earlier one, its id is not ours) is
 neither offered nor dropped: it is written back unchanged on every save, and
 its name stays taken, so a passing fault (say, a file another program holds)
 never makes the app forget anyone.
@@ -32,6 +34,7 @@ from PIL import Image
 
 from photosort.faces import similarity
 from photosort.naming import safe_name
+from photosort.scanner import skipped_folder
 from photosort.thresholds import PERSON_THUMB_PX
 
 _log = logging.getLogger("photosort")
@@ -81,6 +84,9 @@ class PeopleStore:
         if not name.replace(".", "").strip():
             raise PeopleError("Type a name.")
         name = safe_name(name.strip())
+        if skipped_folder(name):
+            raise PeopleError("Photo Sorter uses that name for its own folder. "
+                              "Pick another name.")
         entries = self._load()
         if name.casefold() in {n.casefold() for n in map(_name_of, entries) if n}:
             raise PeopleError(f"A person called {name} already exists.")
@@ -114,16 +120,13 @@ class PeopleStore:
                    person_ids: list[str]) -> tuple[str, float] | None:
         """(id, score) of the person in person_ids most like embedding, or None.
 
-        A person's score is their most similar sample's similarity. Ids of
-        people not remembered are ignored; ties go to the earlier id.
+        A person's score is as in person_scores. Ids of people not
+        remembered are ignored; ties go to the earlier id.
         """
         by_id = {p.id: p for p in _people(self._load())}
+        chosen = [by_id[i] for i in dict.fromkeys(person_ids) if i in by_id]
         best: tuple[str, float] | None = None
-        for person_id in person_ids:
-            person = by_id.get(person_id)
-            if person is None:
-                continue
-            score = max(similarity(row, embedding) for row in person.embeddings)
+        for person_id, score in person_scores(embedding, chosen).items():
             if best is None or score > best[1]:
                 best = (person_id, score)
         return best
@@ -192,6 +195,8 @@ class PeopleStore:
             return _unusable(raw, "bad name")
         if name.casefold() in taken:
             return _unusable(raw, "name repeats an earlier one")
+        if skipped_folder(name):
+            return _unusable(raw, "name is one of the app's own folders")
         try:
             embeddings = _as_rows(np.load(self._npy(person_id), allow_pickle=False))
         except (OSError, ValueError, PeopleError) as e:
@@ -208,6 +213,11 @@ class PeopleStore:
         _write_atomic(self.folder / LIST_NAME,
                       json.dumps(listing, indent=1, ensure_ascii=False).encode("utf-8"))
         self._loaded = None  # read back (and stamped) on next use
+
+
+def person_scores(embedding: np.ndarray, people: list[Person]) -> dict[str, float]:
+    """Each person's similarity to embedding: that of their most similar sample."""
+    return {p.id: max(similarity(row, embedding) for row in p.embeddings) for p in people}
 
 
 def _people(entries: list[_Entry]) -> list[Person]:

@@ -13,6 +13,11 @@ SKIP_DIRS: frozenset[str] = frozenset({
 })
 
 
+def skipped_folder(name: str) -> bool:
+    """Whether a folder called name is never scanned: hidden, or one of SKIP_DIRS."""
+    return name.startswith(".") or name.casefold() in SKIP_DIRS
+
+
 def scan(root: Path, include_subfolders: bool) -> list[str]:
     """Return media files under root as sorted POSIX paths relative to root.
 

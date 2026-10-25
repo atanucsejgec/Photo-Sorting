@@ -71,6 +71,28 @@ def test_empty_name_refused(tmp_path, name):
         PeopleStore(tmp_path).add(name, _unit(1), _thumb())
 
 
+@pytest.mark.parametrize("name", ["Duplicates", "repeated shots", "Bad Photos.",
+                                  ".photosort", ".Secret", "  .x"])
+def test_names_of_skipped_folders_refused(tmp_path, name):
+    with pytest.raises(PeopleError, match=r"^Photo Sorter uses that name for its own "
+                                          r"folder\. Pick another name\.$"):
+        PeopleStore(tmp_path).add(name, _unit(1), _thumb())
+    assert PeopleStore(tmp_path).people() == []
+
+
+def test_skipped_folder_name_on_disk_kept_raw(tmp_path):
+    good_id, odd_id = "0123456789abcdef", "fedcba9876543210"
+    np.save(tmp_path / f"{good_id}.npy", _unit(1)[None])
+    np.save(tmp_path / f"{odd_id}.npy", _unit(2)[None])
+    raw = [{"id": good_id, "name": "Amy", "thumb": f"{good_id}.jpg"},
+           {"id": odd_id, "name": "Duplicates", "thumb": f"{odd_id}.jpg"}]
+    (tmp_path / "people.json").write_text(json.dumps({"people": raw}))
+    store = PeopleStore(tmp_path)
+    assert [p.name for p in store.people()] == ["Amy"]
+    store.add("Bob", _unit(3), _thumb())
+    assert _listed(tmp_path)[1] == raw[1]  # written back as it was
+
+
 def test_duplicate_in_other_case_refused(tmp_path):
     store = PeopleStore(tmp_path)
     store.add("Atanu", _unit(1), _thumb())

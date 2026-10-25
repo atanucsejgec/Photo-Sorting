@@ -1,7 +1,8 @@
 """Face mode: move photos of the named people into a folder per person or group.
 
 A photo with one named person goes to "<Name>/"; with two or more, to a
-together folder "<A> & <B>/" (names sorted case-insensitively). Faces of
+together folder "<A> & <B>/" (names sorted case-insensitively; a long one
+ends "& 3 more"). Faces of
 nobody named (strangers) are ignored, and a photo with none of the named
 people stays put. Videos are skipped.
 
@@ -17,17 +18,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-import numpy as np
-
 from photosort.cache import AnalysisCache
 from photosort.faces import FACES_KIND, Box, Face, pack_faces, unpack_faces
 from photosort.imageinfo import UnreadableImage
 from photosort.media import kind
 from photosort.naming import TargetAllocator, resolve_existing_dir
-from photosort.people import Person
+from photosort.people import Person, person_scores
 from photosort.plan import Move, Plan
-from photosort.scanner import scan
-from photosort.thresholds import FACE_SURE, FACE_UNSURE
+from photosort.scanner import scan, skipped_folder
+from photosort.thresholds import FACE_FOLDER_MAX, FACE_SURE, FACE_UNSURE
 
 Answer = Literal["yes", "no", "skip"]
 
@@ -65,13 +64,29 @@ def confidence_percent(similarity: float) -> int:
 
 
 def together_folder(names: Iterable[str]) -> str:
-    """The folder for photos of these people: "A & B", sorted case-insensitively."""
-    return " & ".join(sorted(names, key=str.casefold))
+    """The folder for photos of these people: "A & B", sorted case-insensitively.
+
+    It is at most FACE_FOLDER_MAX characters: a longer one keeps as many of
+    the first names as fit and ends " & <k> more"; a name too long by itself
+    is cut short.
+    """
+    names = sorted(names, key=str.casefold)
+    full = " & ".join(names)
+    if len(full) <= FACE_FOLDER_MAX:
+        return full
+    if len(names) == 1:
+        return _cut(names[0], FACE_FOLDER_MAX)
+    for kept in range(len(names) - 1, 0, -1):
+        folder = " & ".join(names[:kept]) + f" & {len(names) - kept} more"
+        if len(folder) <= FACE_FOLDER_MAX:
+            return folder
+    more = f" & {len(names) - 1} more"
+    return _cut(names[0], FACE_FOLDER_MAX - len(more)) + more
 
 
-def person_scores(embedding: np.ndarray, people: list[Person]) -> dict[str, float]:
-    """Each person's similarity to embedding: that of their most similar sample."""
-    return {p.id: float(np.max(p.embeddings @ embedding)) for p in people}
+def _cut(name: str, length: int) -> str:
+    """name cut to length characters, still a valid folder name (no trailing dot or space)."""
+    return name[:length].rstrip(". ") or "_"
 
 
 def _assign(faces: list[Face], people: list[Person]) -> list[tuple[Face, Person, float]]:
@@ -167,10 +182,11 @@ def plan_faces(root: Path, scan: FaceScan, people: list[Person],
     answers maps (rel, person_id) to "yes" (add that person to the photo),
     "no" (leave them out) or "skip" (leave the whole photo where it is). A
     photo with a question not yet answered stays put too. People no longer
-    in people are left out.
+    in people, or named like a folder the scanner skips, are left out.
     """
     root = Path(root)
-    names = {p.id: p.name for p in people}
+    # A name the scanner skips would hide the photos from later runs.
+    names = {p.id: p.name for p in people if not skipped_folder(p.name)}
     asked: dict[str, list[Question]] = {}
     for q in scan.questions:
         asked.setdefault(q.rel, []).append(q)

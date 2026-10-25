@@ -24,6 +24,7 @@ THUMB_PX = 240  # longest side of review thumbnails
 # Faces: matching a face to a remembered person by embedding similarity.
 FACE_SURE = 0.45  # at or above: surely that person
 FACE_UNSURE = 0.30  # from here up to FACE_SURE: ask the owner; below: a stranger
+FACE_FOLDER_MAX = 100  # longest person or together folder name, in characters
 # Face detection (SCRFD).
 FACE_DET_SCORE = 0.5  # min detector score for a face
 FACE_NMS_IOU = 0.4  # a detection overlapping a better one at or above this IoU is dropped

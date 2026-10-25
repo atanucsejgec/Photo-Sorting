@@ -5,19 +5,20 @@ import numpy as np
 import pytest
 
 from photosort.cache import AnalysisCache
-from photosort.faces import Face
+from photosort.faces import FACES_KIND, Face
 from photosort.imageinfo import UnreadableImage
 from photosort.modes import MODE_SPECS, MODES
 from photosort.modes.face_mode import (
     Question,
     confidence_percent,
     find_face_matches,
-    person_scores,
     plan_faces,
     together_folder,
 )
-from photosort.people import Person
+from photosort.naming import safe_name
+from photosort.people import Person, person_scores
 from photosort.plan import Move
+from photosort.thresholds import FACE_FOLDER_MAX
 
 # Each person's one sample is a basis vector; a face's similarity to them is
 # exactly its weight on that axis (dot product with a unit basis vector).
@@ -33,7 +34,7 @@ def face(sims: dict[int, float], box=(10.0, 20.0, 50.0, 70.0), size=(800, 600)) 
     v = np.zeros(512, np.float64)
     for axis, s in sims.items():
         v[axis] = s
-    v[_SPARE] = np.sqrt(1.0 - float(np.sum(v**2)))
+    v[_SPARE] = np.sqrt(max(0.0, 1.0 - float(np.sum(v**2))))
     return Face(box, np.zeros((5, 2), np.float32), 0.9, v.astype(np.float32), size)
 
 
@@ -89,6 +90,24 @@ def test_two_people_go_to_together_folder_sorted(tmp_path):
 def test_together_folder_sorts_case_insensitively():
     assert together_folder(["Zoe", "atanu", "Bob"]) == "atanu & Bob & Zoe"
     assert together_folder(["Zoe"]) == "Zoe"
+
+
+def test_together_folder_capped():
+    names = [f"{letter}{'x' * 18}" for letter in "LKJIHGFEDCBA"]  # 12 names of 19
+    folder = together_folder(names)
+    sorted_names = sorted(names)
+    assert folder == " & ".join(sorted_names[:4]) + " & 8 more"
+    assert len(folder) <= FACE_FOLDER_MAX
+    assert safe_name(folder) == folder
+
+
+def test_long_name_cut_short():
+    long = "A" * 98 + ". " + "b" * 50  # the cut at 100 leaves a trailing ". "
+    assert len(long) == 150
+    assert together_folder([long]) == "A" * 98
+    with_zoe = together_folder([long, "Zoe"])  # even one name and "& 1 more" is too long
+    assert with_zoe == "A" * 91 + " & 1 more"
+    assert len(with_zoe) == FACE_FOLDER_MAX
 
 
 def test_stranger_ignored(tmp_path):
@@ -247,6 +266,18 @@ def test_unknown_person_ignored_when_planning(tmp_path):
     assert plan.moves == [Move("x.jpg", "Zoe/x.jpg")]
 
 
+@pytest.mark.parametrize("name", ["Duplicates", "repeated shots", "BAD PHOTOS",
+                                  ".photosort", ".hidden"])
+def test_names_of_skipped_folders_never_planned(tmp_path, name):
+    # PeopleStore refuses such names; a Person made some other way is dropped.
+    odd = Person("d" * 32, name, ZOE.embeddings, ZOE.thumb)
+    touch(tmp_path, "both.jpg", "alone.jpg")
+    _, plan = sort(tmp_path, {"both.jpg": [face({0: 0.9}), face({1: 0.9})],
+                              "alone.jpg": [face({1: 0.9})]}, people=(ATANU, odd))
+    assert plan.moves == [Move("both.jpg", "Atanu/both.jpg")]
+    assert plan.summary[1] == "1 photos stay where they are"
+
+
 def test_cancel_returns_none(tmp_path):
     touch(tmp_path, "a.jpg", "b.jpg")
     cancel = threading.Event()
@@ -285,6 +316,17 @@ def test_cache_used_on_second_scan(tmp_path):
     assert second.sure == first.sure == {"x.jpg": {ATANU.id}}
     assert second.questions == first.questions
     assert second.unreadable == 1
+
+
+def test_unusable_cache_entry_analysed_again(tmp_path):
+    touch(tmp_path, "x.jpg")
+    engine = FakeEngine({"x.jpg": [face({0: 0.9})]})
+    with AnalysisCache(tmp_path) as cache:
+        cache.put(FACES_KIND, tmp_path / "x.jpg", b"garbage")
+        scan = find_face_matches(tmp_path, False, [ATANU], engine, cache=cache)
+        assert cache.get(FACES_KIND, tmp_path / "x.jpg") != b"garbage"  # replaced
+    assert engine.calls == ["x.jpg"]
+    assert scan.sure == {"x.jpg": {ATANU.id}}
 
 
 def test_face_mode_registered_but_not_yet_offered():
