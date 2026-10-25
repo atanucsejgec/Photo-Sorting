@@ -80,6 +80,26 @@ def test_names_of_skipped_folders_refused(tmp_path, name):
     assert PeopleStore(tmp_path).people() == []
 
 
+@pytest.mark.parametrize("name", ["x" * 51, "অ" * 41])  # 51 characters; 123 bytes
+def test_too_long_name_refused(tmp_path, name):
+    with pytest.raises(PeopleError, match=r"^That name is too long\.$"):
+        PeopleStore(tmp_path).add(name, _unit(1), _thumb())
+    store = PeopleStore(tmp_path)
+    assert store.add("x" * 50, _unit(1), _thumb()).name == "x" * 50
+    assert store.add("অ" * 40, _unit(2), _thumb()).name == "অ" * 40  # 120 bytes
+
+
+def test_too_long_name_on_disk_kept_raw(tmp_path):
+    odd_id = "fedcba9876543210"
+    np.save(tmp_path / f"{odd_id}.npy", _unit(2)[None])
+    raw = [{"id": odd_id, "name": "x" * 51, "thumb": f"{odd_id}.jpg"}]
+    (tmp_path / "people.json").write_text(json.dumps({"people": raw}))
+    store = PeopleStore(tmp_path)
+    assert store.people() == []
+    store.add("Bob", _unit(3), _thumb())
+    assert _listed(tmp_path)[0] == raw[0]
+
+
 def test_skipped_folder_name_on_disk_kept_raw(tmp_path):
     good_id, odd_id = "0123456789abcdef", "fedcba9876543210"
     np.save(tmp_path / f"{good_id}.npy", _unit(1)[None])

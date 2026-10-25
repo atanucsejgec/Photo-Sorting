@@ -13,6 +13,7 @@ and a face at most one person, the most similar pairs first.
 """
 
 import threading
+import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,11 +23,11 @@ from photosort.cache import AnalysisCache
 from photosort.faces import FACES_KIND, Box, Face, pack_faces, unpack_faces
 from photosort.imageinfo import UnreadableImage
 from photosort.media import kind
-from photosort.naming import TargetAllocator, resolve_existing_dir
+from photosort.naming import TargetAllocator, resolve_existing_dir, safe_name
 from photosort.people import Person, person_scores
 from photosort.plan import Move, Plan
 from photosort.scanner import scan, skipped_folder
-from photosort.thresholds import FACE_FOLDER_MAX, FACE_SURE, FACE_UNSURE
+from photosort.thresholds import FACE_FOLDER_MAX, FACE_FOLDER_MAX_BYTES, FACE_SURE, FACE_UNSURE
 
 Answer = Literal["yes", "no", "skip"]
 
@@ -66,27 +67,49 @@ def confidence_percent(similarity: float) -> int:
 def together_folder(names: Iterable[str]) -> str:
     """The folder for photos of these people: "A & B", sorted case-insensitively.
 
-    It is at most FACE_FOLDER_MAX characters: a longer one keeps as many of
-    the first names as fit and ends " & <k> more"; a name too long by itself
-    is cut short.
+    It is at most FACE_FOLDER_MAX characters and FACE_FOLDER_MAX_BYTES UTF-8
+    bytes: a longer one keeps as many of the first names as fit and ends
+    " & <k> more"; a name too long by itself is cut short.
     """
     names = sorted(names, key=str.casefold)
     full = " & ".join(names)
-    if len(full) <= FACE_FOLDER_MAX:
+    if _fits(full, FACE_FOLDER_MAX, FACE_FOLDER_MAX_BYTES):
         return full
     if len(names) == 1:
-        return _cut(names[0], FACE_FOLDER_MAX)
+        return _cut(names[0], FACE_FOLDER_MAX, FACE_FOLDER_MAX_BYTES)
     for kept in range(len(names) - 1, 0, -1):
         folder = " & ".join(names[:kept]) + f" & {len(names) - kept} more"
-        if len(folder) <= FACE_FOLDER_MAX:
+        if _fits(folder, FACE_FOLDER_MAX, FACE_FOLDER_MAX_BYTES):
             return folder
     more = f" & {len(names) - 1} more"
-    return _cut(names[0], FACE_FOLDER_MAX - len(more)) + more
+    return _cut(names[0], FACE_FOLDER_MAX - len(more),
+                FACE_FOLDER_MAX_BYTES - len(more.encode())) + more
 
 
-def _cut(name: str, length: int) -> str:
-    """name cut to length characters, still a valid folder name (no trailing dot or space)."""
-    return name[:length].rstrip(". ") or "_"
+def _fits(name: str, max_chars: int, max_bytes: int) -> bool:
+    return len(name) <= max_chars and len(name.encode("utf-8", "surrogatepass")) <= max_bytes
+
+
+def _cut(name: str, max_chars: int, max_bytes: int) -> str:
+    """name cut short to fit, never splitting a character, as a valid folder
+    name that the scanner still looks into."""
+    end = min(len(name), max_chars)
+    while True:
+        folder = _clean_cut(name[:end])
+        if _fits(folder, max_chars, max_bytes):
+            return folder
+        end -= 1
+
+
+def _clean_cut(part: str) -> str:
+    """A cut-off part of a name as a folder name: no dangling dot, space or
+    combining mark (a vowel sign cut off from its letter, say), Windows-valid,
+    and not one the scanner skips."""
+    while part and (part[-1] in ". \u200c\u200d"
+                    or unicodedata.category(part[-1]).startswith("M")):
+        part = part[:-1]
+    part = safe_name(part)
+    return "_" + part if skipped_folder(part) else part
 
 
 def _assign(faces: list[Face], people: list[Person]) -> list[tuple[Face, Person, float]]:

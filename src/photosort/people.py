@@ -7,7 +7,8 @@ picture). Every file is written atomically, people.json last, so a crash
 never leaves a half-written file and people.json only names complete people.
 
 Names are cleaned with naming.safe_name (they become folder names) and are
-unique case-insensitively. A name the scanner never looks into (hidden, or
+unique case-insensitively. They are at most thresholds.PERSON_NAME_MAX
+characters (and PERSON_NAME_MAX_BYTES bytes). A name the scanner never looks into (hidden, or
 one of the app's own folders such as "Duplicates") is refused, so sorted
 photos never vanish from later runs.
 
@@ -35,7 +36,7 @@ from PIL import Image
 from photosort.faces import similarity
 from photosort.naming import safe_name
 from photosort.scanner import skipped_folder
-from photosort.thresholds import PERSON_THUMB_PX
+from photosort.thresholds import PERSON_NAME_MAX, PERSON_NAME_MAX_BYTES, PERSON_THUMB_PX
 
 _log = logging.getLogger("photosort")
 
@@ -84,6 +85,8 @@ class PeopleStore:
         if not name.replace(".", "").strip():
             raise PeopleError("Type a name.")
         name = safe_name(name.strip())
+        if _too_long(name):
+            raise PeopleError("That name is too long.")
         if skipped_folder(name):
             raise PeopleError("Photo Sorter uses that name for its own folder. "
                               "Pick another name.")
@@ -195,6 +198,8 @@ class PeopleStore:
             return _unusable(raw, "bad name")
         if name.casefold() in taken:
             return _unusable(raw, "name repeats an earlier one")
+        if _too_long(name):
+            return _unusable(raw, "name too long")
         if skipped_folder(name):
             return _unusable(raw, "name is one of the app's own folders")
         try:
@@ -218,6 +223,11 @@ class PeopleStore:
 def person_scores(embedding: np.ndarray, people: list[Person]) -> dict[str, float]:
     """Each person's similarity to embedding: that of their most similar sample."""
     return {p.id: max(similarity(row, embedding) for row in p.embeddings) for p in people}
+
+
+def _too_long(name: str) -> bool:
+    return (len(name) > PERSON_NAME_MAX
+            or len(name.encode("utf-8", "surrogatepass")) > PERSON_NAME_MAX_BYTES)
 
 
 def _people(entries: list[_Entry]) -> list[Person]:

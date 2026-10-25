@@ -40,7 +40,7 @@ def scan(root: Path, include_subfolders: bool) -> list[str]:
             if name.startswith(".") or entry.is_symlink():
                 continue
             if entry.is_dir(follow_symlinks=False):
-                if include_subfolders and name.casefold() not in SKIP_DIRS:
+                if include_subfolders and not skipped_folder(name):
                     walk(entry.path, f"{prefix}{name}/")
             elif entry.is_file(follow_symlinks=False) and kind(name) is not None:
                 found.append(prefix + name)

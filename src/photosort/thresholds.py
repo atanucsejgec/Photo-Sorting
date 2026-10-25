@@ -24,7 +24,12 @@ THUMB_PX = 240  # longest side of review thumbnails
 # Faces: matching a face to a remembered person by embedding similarity.
 FACE_SURE = 0.45  # at or above: surely that person
 FACE_UNSURE = 0.30  # from here up to FACE_SURE: ask the owner; below: a stranger
-FACE_FOLDER_MAX = 100  # longest person or together folder name, in characters
+# Person and together folder names: at most this many characters and UTF-8
+# bytes (Linux file systems allow 255 bytes; Bengali takes 3 per character).
+FACE_FOLDER_MAX = 100
+FACE_FOLDER_MAX_BYTES = 200
+PERSON_NAME_MAX = 50  # longest name of a remembered person, in characters
+PERSON_NAME_MAX_BYTES = 120  # ... and in UTF-8 bytes
 # Face detection (SCRFD).
 FACE_DET_SCORE = 0.5  # min detector score for a face
 FACE_NMS_IOU = 0.4  # a detection overlapping a better one at or above this IoU is dropped

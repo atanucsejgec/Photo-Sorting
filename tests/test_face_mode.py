@@ -18,7 +18,7 @@ from photosort.modes.face_mode import (
 from photosort.naming import safe_name
 from photosort.people import Person, person_scores
 from photosort.plan import Move
-from photosort.thresholds import FACE_FOLDER_MAX
+from photosort.thresholds import FACE_FOLDER_MAX, FACE_FOLDER_MAX_BYTES
 
 # Each person's one sample is a basis vector; a face's similarity to them is
 # exactly its weight on that axis (dot product with a unit basis vector).
@@ -108,6 +108,48 @@ def test_long_name_cut_short():
     with_zoe = together_folder([long, "Zoe"])  # even one name and "& 1 more" is too long
     assert with_zoe == "A" * 91 + " & 1 more"
     assert len(with_zoe) == FACE_FOLDER_MAX
+
+
+def _usable_folder(tmp_path, folder):
+    assert len(folder) <= FACE_FOLDER_MAX
+    assert len(folder.encode()) <= FACE_FOLDER_MAX_BYTES
+    assert safe_name(folder) == folder
+    (tmp_path / folder).mkdir()  # a Linux file system takes it
+
+
+def test_together_folder_fits_in_bytes(tmp_path):
+    # 95 characters but 261 bytes in UTF-8: too long for a folder name on ext4.
+    names = ["দেবাশীষ কুমার বন্দ্যোপাধ্যায়", "প্রিয়াঙ্কা রানী চট্টোপাধ্যায়",
+             "অনির্বাণ চন্দ্র মুখোপাধ্যায়ের"]
+    folder = together_folder(names)
+    first, second = sorted(names)[:2]
+    assert folder == f"{first} & {second} & 1 more"
+    _usable_folder(tmp_path, folder)
+
+
+def test_long_name_cut_by_bytes(tmp_path):
+    folder = together_folder(["অ" * 100])
+    assert folder == "অ" * (FACE_FOLDER_MAX_BYTES // 3)
+    _usable_folder(tmp_path, folder)
+
+
+def test_cut_never_leaves_a_dangling_vowel_sign(tmp_path):
+    # "কা" is KA + the vowel sign AA (a combining mark): cut between them, the
+    # vowel sign goes too, rather than ending the name on it.
+    name = "ক" * 65 + "া" + "ক" * 10  # 198 bytes fit: the cut falls just after the sign
+    folder = together_folder([name])
+    assert folder == "ক" * 65
+    _usable_folder(tmp_path, folder)
+
+
+@pytest.mark.parametrize("name, cut", [
+    ("Duplicates" + " " * 95 + "x" * 20, "_Duplicates"),  # would be skipped by scans
+    ("CON" + " " * 100 + "y", "_CON"),  # reserved on Windows
+])
+def test_cut_name_still_a_valid_scanned_folder(tmp_path, name, cut):
+    folder = together_folder([name])
+    assert folder == cut
+    _usable_folder(tmp_path, folder)
 
 
 def test_stranger_ignored(tmp_path):
