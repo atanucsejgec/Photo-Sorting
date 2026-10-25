@@ -427,3 +427,13 @@ def test_failures_after_a_success_never_stop_the_scan(tmp_path):
     scan = find_face_matches(tmp_path, False, [ATANU], FakeEngine(faces))
     assert (scan.photos, scan.unreadable) == (8, 7)
     assert scan.sure == {"0.jpg": {ATANU.id}}
+
+
+def test_folder_spelt_in_another_unicode_form_is_reused(tmp_path):
+    joy = Person("d" * 32, "\u099c\u09af\u09bc", np.eye(512, dtype=np.float32)[[0]],
+                 Path("d.jpg"))  # জয়, as the store keeps it (NFC)
+    touch(tmp_path, "\u099c\u09df/x.jpg", "y.jpg")  # জয়/, spelt another way on disk
+    faces = {"x.jpg": [face({0: 0.9})], "y.jpg": [face({0: 0.9})]}
+    _, plan = sort(tmp_path, faces, people=[joy], subfolders=True)
+    assert plan.moves == [Move("y.jpg", "\u099c\u09df/y.jpg")]
+    assert plan.unchanged == 1

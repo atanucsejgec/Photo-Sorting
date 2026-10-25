@@ -294,3 +294,57 @@ def test_repeated_id_is_kept_raw_so_delete_spares_the_files(tmp_path):
     assert store.best_match(_unit(1), [shared])[0] == shared
     store.delete(shared)  # Amy's entry goes; Bob's stays, raw
     assert _listed(tmp_path) == raw[1:]
+
+
+JOY_COMPOSED = "জয়"  # জয়, typed with য় as one character
+JOY_SPLIT = "জয়"  # জয়, typed as য plus the nukta sign
+
+
+def test_names_typed_two_ways_are_one_person(tmp_path):
+    store = PeopleStore(tmp_path)
+    joy = store.add(JOY_COMPOSED, _unit(1), _thumb())
+    with pytest.raises(PeopleError, match="already exists"):
+        store.add(JOY_SPLIT, _unit(2), _thumb())
+    assert [p.id for p in PeopleStore(tmp_path).people()] == [joy.id]
+
+
+def test_names_are_saved_normalised(tmp_path):
+    store = PeopleStore(tmp_path)
+    assert store.add(JOY_COMPOSED, _unit(1), _thumb()).name == JOY_SPLIT  # NFC
+    assert store.people()[0].name == JOY_SPLIT
+
+
+def test_names_on_disk_are_normalised_when_loaded(tmp_path):
+    first, second = "0123456789abcdef", "fedcba9876543210"
+    np.save(tmp_path / f"{first}.npy", _unit(1)[None])
+    np.save(tmp_path / f"{second}.npy", _unit(2)[None])
+    raw = [{"id": first, "name": JOY_COMPOSED, "thumb": f"{first}.jpg"},
+           {"id": second, "name": JOY_SPLIT.upper(), "thumb": f"{second}.jpg"}]
+    (tmp_path / "people.json").write_text(json.dumps({"people": raw}))
+    store = PeopleStore(tmp_path)
+    (joy,) = store.people()  # the second is the same name: kept raw, not used
+    assert (joy.id, joy.name) == (first, JOY_SPLIT)
+    with pytest.raises(PeopleError, match="already exists"):
+        store.add(JOY_COMPOSED, _unit(3), _thumb())
+    store.add("Bob", _unit(4), _thumb())
+    assert _listed(tmp_path)[1] == raw[1]
+
+
+@pytest.mark.parametrize("name", ["Atanu & Zoe", "A & B & C", " Mum & Dad "])
+def test_names_with_an_ampersand_between_spaces_refused(tmp_path, name):
+    with pytest.raises(PeopleError, match=r'^A name can\'t contain " & "\. Photo Sorter '
+                                          r"uses it for photos with several people\.$"):
+        PeopleStore(tmp_path).add(name, _unit(1), _thumb())
+    assert PeopleStore(tmp_path).people() == []
+    assert PeopleStore(tmp_path).add("Tom&Jerry", _unit(1), _thumb()).name == "Tom&Jerry"
+
+
+def test_name_with_an_ampersand_on_disk_kept_raw(tmp_path):
+    odd_id = "fedcba9876543210"
+    np.save(tmp_path / f"{odd_id}.npy", _unit(2)[None])
+    raw = [{"id": odd_id, "name": "Atanu & Zoe", "thumb": f"{odd_id}.jpg"}]
+    (tmp_path / "people.json").write_text(json.dumps({"people": raw}))
+    store = PeopleStore(tmp_path)
+    assert store.people() == []
+    store.add("Bob", _unit(3), _thumb())
+    assert _listed(tmp_path)[0] == raw[0]

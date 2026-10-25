@@ -24,7 +24,7 @@ from photosort.cache import AnalysisCache
 from photosort.faces import FACES_KIND, Box, Face, pack_faces, unpack_faces
 from photosort.imageinfo import UnreadableImage
 from photosort.media import kind
-from photosort.naming import TargetAllocator, resolve_existing_dir, safe_name
+from photosort.naming import TargetAllocator, fold, resolve_existing_dir, safe_name
 from photosort.people import Person, person_scores
 from photosort.plan import Move, Plan
 from photosort.scanner import scan, skipped_folder
@@ -269,7 +269,7 @@ def plan_faces(root: Path, scan: FaceScan, people: list[Person],
             continue
         folder = resolve_existing_dir(root, together_folder(in_photo))
         parent, _, name = rel.rpartition("/")
-        if parent.casefold() == folder.casefold():
+        if fold(parent) == fold(folder):
             unchanged += 1
             continue
         moves.append(Move(rel, allocator.allocate(f"{folder}/{name}")))

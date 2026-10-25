@@ -6,11 +6,13 @@ has <id>.npy (their sample embeddings, one row each) and <id>.jpg (a face
 picture). Every file is written atomically, people.json last, so a crash
 never leaves a half-written file and people.json only names complete people.
 
-Names are cleaned with naming.safe_name (they become folder names) and are
-unique case-insensitively. They are at most thresholds.PERSON_NAME_MAX
-characters (and PERSON_NAME_MAX_BYTES bytes). A name the scanner never looks into (hidden, or
-one of the app's own folders such as "Duplicates") is refused, so sorted
-photos never vanish from later runs.
+Names are cleaned with naming.safe_name (they become folder names), kept in
+Unicode's NFC form (so one name typed with two keyboards, as Bengali can be,
+is one name) and are unique case-insensitively (naming.fold). They are at most
+thresholds.PERSON_NAME_MAX characters (and PERSON_NAME_MAX_BYTES bytes). A
+name the scanner never looks into (hidden, or one of the app's own folders
+such as "Duplicates") is refused, so sorted photos never vanish from later
+runs; so is one with " & " in it, which would be taken for a together folder.
 
 An entry of people.json that can't be used (its samples can't be read, its
 name isn't a clean one, is refused or repeats an earlier one, its id is not ours) is
@@ -25,6 +27,7 @@ import logging
 import os
 import re
 import tempfile
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,7 +37,7 @@ import platformdirs
 from PIL import Image
 
 from photosort.faces import similarity
-from photosort.naming import safe_name
+from photosort.naming import fold, safe_name
 from photosort.scanner import skipped_folder
 from photosort.thresholds import PERSON_NAME_MAX, PERSON_NAME_MAX_BYTES, PERSON_THUMB_PX
 
@@ -42,6 +45,7 @@ _log = logging.getLogger("photosort")
 
 LIST_NAME = "people.json"
 _ID = re.compile(r"[0-9a-f]{8,64}")  # ids are used in file names: nothing else is
+TOGETHER = " & "  # joins the names of a together folder (face_mode.together_folder)
 
 
 class PeopleError(Exception):
@@ -84,14 +88,17 @@ class PeopleStore:
         """Remember a new person with one sample embedding and a face picture."""
         if not name.replace(".", "").strip():
             raise PeopleError("Type a name.")
-        name = safe_name(name.strip())
+        name = clean_name(name)
         if _too_long(name):
             raise PeopleError("That name is too long.")
         if skipped_folder(name):
             raise PeopleError("Photo Sorter uses that name for its own folder. "
                               "Pick another name.")
+        if TOGETHER in name:
+            raise PeopleError(f'A name can\'t contain "{TOGETHER}". Photo Sorter uses it '
+                              "for photos with several people.")
         entries = self._load()
-        if name.casefold() in {n.casefold() for n in map(_name_of, entries) if n}:
+        if fold(name) in {fold(n) for n in map(_name_of, entries) if n}:
             raise PeopleError(f"A person called {name} already exists.")
         embeddings = _as_rows(embedding)
         person_id = uuid.uuid4().hex
@@ -166,7 +173,7 @@ class PeopleStore:
         if not isinstance(listed, list):
             raise PeopleError("The remembered people can't be read.")
         entries: list[_Entry] = []
-        taken: set[str] = set()  # casefolded names of earlier entries
+        taken: set[str] = set()  # folded names of earlier entries
         used_ids: set[str] = set()  # ids of earlier usable entries
         for raw in listed:
             person = self._person(raw, taken, used_ids)
@@ -175,7 +182,7 @@ class PeopleStore:
                 used_ids.add(person.id)
             name = _name_of(raw)
             if name:
-                taken.add(name.casefold())
+                taken.add(fold(name))
         self._loaded = (stamp, entries)
         return list(entries)
 
@@ -187,6 +194,8 @@ class PeopleStore:
         if not isinstance(raw, dict):
             return _unusable(raw, "not an entry")
         person_id, name = raw.get("id"), raw.get("name")
+        if isinstance(name, str):
+            name = _nfc(name)
         if not isinstance(person_id, str) or not _ID.fullmatch(person_id):
             return _unusable(raw, "bad id")
         if person_id in used_ids:
@@ -196,12 +205,14 @@ class PeopleStore:
         if (not isinstance(name, str) or not name.replace(".", "").strip()
                 or safe_name(name) != name):
             return _unusable(raw, "bad name")
-        if name.casefold() in taken:
+        if fold(name) in taken:
             return _unusable(raw, "name repeats an earlier one")
         if _too_long(name):
             return _unusable(raw, "name too long")
         if skipped_folder(name):
             return _unusable(raw, "name is one of the app's own folders")
+        if TOGETHER in name:
+            return _unusable(raw, "name has \" & \" in it")
         try:
             embeddings = _as_rows(np.load(self._npy(person_id), allow_pickle=False))
         except (OSError, ValueError, PeopleError) as e:
@@ -223,6 +234,15 @@ class PeopleStore:
 def person_scores(embedding: np.ndarray, people: list[Person]) -> dict[str, float]:
     """Each person's similarity to embedding: that of their most similar sample."""
     return {p.id: max(similarity(row, embedding) for row in p.embeddings) for p in people}
+
+
+def clean_name(name: str) -> str:
+    """name as PeopleStore.add saves it: stripped, NFC, valid as a folder name."""
+    return safe_name(_nfc(name.strip()))
+
+
+def _nfc(text: str) -> str:
+    return unicodedata.normalize("NFC", text)
 
 
 def _too_long(name: str) -> bool:

@@ -4,8 +4,8 @@ The photo is analysed on a pool thread (the face models take a while to
 open, and so does decoding a big photo); its faces and their pictures
 arrive at FaceNamingDialog._analysed. Save adds each named face as a new
 person, or, when the name is that of a remembered person, as another
-sample of them. Names are compared as they will be saved (naming.safe_name,
-case-insensitively), so "Zoe." is Zoe. A row saved once is locked, so
+sample of them. Names are compared as they will be saved (people.clean_name,
+then naming.fold), so "Zoe." is Zoe, whichever way a Bengali name is typed. A row saved once is locked, so
 pressing Save again after fixing another row never saves it twice.
 
 The dialog lets go of its face engine when it closes (an analysis still
@@ -26,8 +26,8 @@ from PySide6.QtWidgets import (
 from photosort.faces import Face, face_crop
 from photosort.imageinfo import UnreadableImage
 from photosort.media import PHOTO_EXTS, kind
-from photosort.naming import safe_name
-from photosort.people import PeopleError, PeopleStore, Person
+from photosort.naming import fold
+from photosort.people import PeopleError, PeopleStore, Person, clean_name
 from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.worker import Task
 
@@ -60,7 +60,7 @@ def _name_key(name: str) -> str:
     there is no name to save."""
     if not name.replace(".", "").strip():
         return ""
-    return safe_name(name.strip()).casefold()
+    return fold(clean_name(name))
 
 
 def _find_faces(engine, path: Path, ended: threading.Event, progress=None, cancel=None):

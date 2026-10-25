@@ -390,6 +390,18 @@ def test_naming_dialog_matches_names_as_they_are_saved(qtbot, store, photo):
     assert person.id == zoe.id and len(person.embeddings) == 2
 
 
+def test_naming_dialog_matches_a_name_typed_another_way(qtbot, store, photo):
+    joy = _remember(store, "\u099c\u09af\u09bc", 2)  # জয়, as য plus the nukta
+    d = _make_dialog(qtbot, photo, _two_faces(photo), store)
+    qtbot.waitUntil(lambda: len(d.rows) == 2)
+    d.rows[0].name_edit.setText("\u099c\u09df")  # জয়, য় as one character
+    d.rows[1].skip_check.setChecked(True)
+    d.save_button.click()
+    assert d.result() == QDialog.DialogCode.Accepted
+    (person,) = store.people()
+    assert person.id == joy.id and len(person.embeddings) == 2
+
+
 def test_naming_dialog_same_saved_name_twice_is_refused(qtbot, store, photo):
     d = _make_dialog(qtbot, photo, _two_faces(photo), store)
     qtbot.waitUntil(lambda: len(d.rows) == 2)
