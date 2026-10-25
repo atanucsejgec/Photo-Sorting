@@ -121,15 +121,21 @@ def test_load_for_clip_draft_keeps_224_just_above_a_step(tmp_path):
     assert 224 <= min(loaded.size) < 1799
 
 
-@pytest.mark.parametrize("name, img, kwargs", [
-    ("pano.jpg", Image.new("RGB", (10000, 500), (40, 80, 120)), {"format": "JPEG"}),
-    ("alpha.png", Image.new("RGBA", (300, 300), (40, 80, 120, 100)), {"format": "PNG"}),
-    ("dot.png", Image.new("RGB", (1, 1), (40, 80, 120)), {"format": "PNG"}),
+# A 16-bit grey scan: black on the left to white on the right.
+_DEEP = Image.fromarray(np.tile(np.linspace(0, 65535, 300).astype(np.uint16), (300, 1)))
+
+
+@pytest.mark.parametrize("name, img, kwargs, grey", [
+    ("pano.jpg", Image.new("RGB", (10000, 500), (40, 80, 120)), {"format": "JPEG"}, 74),
+    ("alpha.png", Image.new("RGBA", (300, 300), (40, 80, 120, 100)), {"format": "PNG"}, 74),
+    ("dot.png", Image.new("RGB", (1, 1), (40, 80, 120)), {"format": "PNG"}, 74),
+    ("deep.png", _DEEP, {"format": "PNG"}, 127),  # was 254, nearly white
 ])
-def test_load_for_clip_odd_photos_work(tmp_path, name, img, kwargs):
+def test_load_for_clip_odd_photos_work(tmp_path, name, img, kwargs, grey):
     loaded = load_for_clip(save(img, tmp_path / name, **kwargs))
     assert loaded.mode == "RGB"
     assert min(loaded.size) >= min(224, min(img.size))
+    assert abs(np.asarray(loaded.convert("L")).mean() - grey) < 3
     assert preprocess(loaded).shape == (3, 224, 224)
 
 
@@ -185,7 +191,7 @@ def test_unpack_wrong_length_raises():
 
 
 def test_clip_kind():
-    assert clip.CLIP_KIND == "clip-v1"
+    assert clip.CLIP_KIND == "clip-v2"  # v2: 16-bit and float photos scaled to 8-bit
 
 
 # --- the engine with fake sessions --------------------------------------------

@@ -3,26 +3,46 @@
 A desktop app that sorts the photos and videos in any folder you pick. It moves the
 original files into tidy folders and keeps an Undo for every run.
 
-Working now:
+It has 11 ways of sorting:
 - **Date** mode: `2025/02-February/20-02-2025/`. A day with 3 or more files gets its
-  own day folder; a day with 1–2 files goes loose into the month folder.
-
+  own day folder; a day with 1–2 files goes loose into the month folder. Files with no
+  date go to `No Date/`.
+- **Face** mode: give it one photo and type the names of the people in it. It remembers
+  them, finds them in every photo, and moves each photo into a folder named after the
+  person (`Atanu/`). Tick two or more people and only the photos with two or more of
+  them are sorted, into `Atanu & Zoe/`. When it isn't sure, it asks ("Is this Atanu?
+  72% sure"). Strangers are ignored. Face data stays on this computer.
 - **Duplicates** mode: finds exact copies and re-saved or resized copies (for example
   `IMG…~2.jpg` edits, WhatsApp copies), shows them side by side, and moves the ones you
   don't keep into `Duplicates/`.
 - **Repeated shots** mode: finds burst shots taken seconds apart, with a full-screen
   compare (arrow keys, side by side, zoom), and moves the ones you don't keep into
   `Repeated Shots/`.
-- **Face** mode: give it one photo and type the names of the people in it. It remembers
-  them; tick the people to sort by. With one ticked, it moves every photo of them into
-  a folder named after them (`Atanu/`). With two or more ticked, only photos with two
-  or more of them are sorted, into a folder named after the people in each photo
-  (`Atanu & Zoe/`); photos with just one of them stay put. When it isn't
-  sure, it asks ("Is this Atanu? 72% sure"). Strangers are ignored. Face data stays on
-  this computer.
+- **Notes & Pages** mode: finds photos of paper and moves them into
+  `Notes & Pages/Handwritten/`, `Book Pages/`, `Printed Documents/` or `Receipts/`.
+  When it isn't sure, it asks first.
+- **Type / source** mode: `Camera Photos/`, `Screenshots/`, `WhatsApp/`, `Videos/` and
+  `Other/`, from the file names and the camera info.
+- **Content** mode: moves each photo into the folder of what it shows: `Food/`,
+  `Pets & Animals/`, `Nature & Landscapes/` and so on. You can change the list in
+  Settings → **Content categories…**. When it isn't sure, it asks first; photos that fit
+  none of them stay where they are.
+- **Bad photos** mode: finds blurry, very dark, burnt-out and accidental shots (pocket
+  shots, a finger over the lens) and shows them with the reason. The ones you tick go
+  to `Bad Photos/`. Only camera photos are judged: screenshots, stickers and other
+  graphics are left alone.
+- **Events** mode: groups photos and videos taken close together into events (a new
+  event after a 6-hour gap, at least 10 files; both can be changed in Settings). You
+  can name, merge, split or skip each event; each one goes to its own folder, by
+  default `Event 20-02-2025/`.
+- **Location** mode: `India/Kolkata/`, from the GPS position in each photo and video.
+  The place is looked up offline, in a city list that comes with the app (GeoNames data,
+  through the `reverse_geocode` library); nothing is sent anywhere.
+- **Camera** mode: one folder per phone or camera, such as `OPPO CPH2581/`.
 
-Nothing is ever deleted. Coming later: Notes & Pages, Type, Content, Bad photos,
-Events, Location, Camera.
+In the other modes, files the mode can't place stay where they are. You always see what
+will move before anything does. Nothing is ever deleted: the files you set aside go to a
+folder (`Duplicates/`, `Repeated Shots/`, `Bad Photos/`), and Undo puts everything back.
 
 ## Set up on a new computer (Linux)
 
@@ -70,8 +90,10 @@ uv sync
 ## Good to know
 
 - The first time you use Face mode it downloads its face models (about 190 MB) into
-  `~/.local/share/photo-sorter/models`, after asking. The people you name are kept in
-  `~/.local/share/photo-sorter/people`. Neither is part of this repository.
+  `~/.local/share/photo-sorter/models`, after asking. The first time you use Content or
+  Notes & Pages it downloads the picture model they share (OpenCLIP, about 609 MB) into
+  the same folder, once, after you say Yes. The people you name are kept in
+  `~/.local/share/photo-sorter/people`. None of this is part of this repository.
 - Settings → **Use GPU** switches Face mode between the graphics card and the CPU.
 - Undo records live in a hidden `.photosort` folder inside each folder you sort.
   Keep it if you want Undo to work later.

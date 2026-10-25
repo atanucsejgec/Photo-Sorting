@@ -12,19 +12,18 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-    QSizePolicy, QVBoxLayout, QWidget,
+    QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
+    QVBoxLayout, QWidget,
 )
 
 from photosort.modes.content import Verdict
 from photosort.thresholds import THUMB_PX
-from photosort.ui.fullscreen_viewer import _render_image
+from photosort.ui.photo_preview import PhotoPreview
 from photosort.ui.review_page import LOADING, render_thumbnail
 from photosort.ui.worker import Task
 
 LEAVE = "Leave it where it is"
 _SPACING = 12  # between the cards of the grid
-_PREVIEW_SHARE = 0.8  # the preview opens this share of the screen wide and high
 
 
 class _Thumbnail(QLabel):
@@ -95,67 +94,6 @@ class CategoryCard(QFrame):
             self.thumb_label.setText(value)
 
 
-class _PhotoPreview(QDialog):
-    """One photo, large and fitted to the window; Esc closes it. The photo is
-    decoded on a pool thread; the dialog deletes itself once closed and that
-    decode has reported. (Stage 4's ui/photo_preview.PhotoPreview does the
-    same and replaces it when the two are merged.)"""
-
-    def __init__(self, path: Path, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(Path(path).name)
-        self.photo: QPixmap | None = None  # once loaded
-        self._closed = False
-        self._loading = True
-
-        self.image_label = QLabel(LOADING)
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        self.image_label.setStyleSheet("background: #202020; color: #dddddd;")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.image_label)
-        screen = self.screen().availableGeometry()
-        self.resize(int(screen.width() * _PREVIEW_SHARE), int(screen.height() * _PREVIEW_SHARE))
-
-        self._task = Task(_render_image, 0, Path(path))  # kept alive until it reports
-        self._task.signals.result.connect(self._ready)
-        self._task.start()
-
-    def _ready(self, result: tuple[int, QImage | str | None]) -> None:
-        self._loading = False
-        value = result[1]
-        if self._closed:
-            self.deleteLater()
-        elif isinstance(value, QImage):
-            self.photo = QPixmap.fromImage(value)
-            self.image_label.setText("")
-            self._fit()
-        elif value is not None:
-            self.image_label.setText(value)
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self._fit()
-
-    def _fit(self) -> None:
-        """Show the photo as large as fits, never larger than it is."""
-        photo, size = self.photo, self.image_label.size()
-        if photo is None:
-            return
-        if photo.width() > size.width() or photo.height() > size.height():
-            photo = photo.scaled(size, Qt.AspectRatioMode.KeepAspectRatio,
-                                 Qt.TransformationMode.SmoothTransformation)
-        self.image_label.setPixmap(photo)
-
-    def done(self, result: int) -> None:
-        super().done(result)
-        self._closed = True
-        self._task.cancel_event.set()  # not decoded if still waiting for a thread
-        if not self._loading:
-            self.deleteLater()
-
-
 class CategoryReviewPage(QWidget):
     """Shows the unsure photos; emits finished(answers) or cancelled().
 
@@ -172,7 +110,7 @@ class CategoryReviewPage(QWidget):
         self._thumb_tasks: dict[tuple[int, int], Task] = {}  # kept alive until they report
         self._columns = 0  # how many columns the cards are laid out in
         self.cards: list[CategoryCard] = []
-        self.preview: _PhotoPreview | None = None  # while one is open
+        self.preview: PhotoPreview | None = None  # while one is open
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 24, 32, 24)
@@ -287,7 +225,7 @@ class CategoryReviewPage(QWidget):
             card.set_answer(None)
 
     def _open_preview(self, path: Path) -> None:
-        self.preview = _PhotoPreview(path, self)
+        self.preview = PhotoPreview(path, self)
         self.preview.finished.connect(self._preview_closed)
         self.preview.open()
 

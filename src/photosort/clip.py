@@ -14,10 +14,10 @@ import threading
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 
 from photosort.ai import models, runtime
-from photosort.imageinfo import UnreadableImage
+from photosort.imageinfo import decode
 
 _SIZE = 224  # the visual model's square input, in pixels
 _MEAN = np.array([0.48145466, 0.4578275, 0.40821073], np.float32)
@@ -27,14 +27,15 @@ _CONTEXT = 77  # the textual model's token ids per text
 # The analysis cache kind of pack's format. Bump the version (clip-v2, ...)
 # whenever an embedding would come out differently: a new packing, a new
 # model, or a change to load_for_clip or preprocess. Old entries are then
-# never read.
-CLIP_KIND = "clip-v1"
+# never read. clip-v2: load_for_clip scales 16-bit and float photos to 8-bit
+# (clip-v1 clipped them, so a 16-bit scan came out nearly white).
+CLIP_KIND = "clip-v2"
 _DIM = 512
 _PACKED = _DIM * 4  # float32
 
 
 def pack(embedding: np.ndarray) -> bytes:
-    """embedding as bytes in the "clip-v1" format; unpack reverses it exactly."""
+    """embedding as 512 little-endian float32s; unpack reverses it exactly."""
     return np.asarray(embedding, "<f4").reshape(_DIM).tobytes()
 
 
@@ -49,15 +50,11 @@ def load_for_clip(path: Path) -> Image.Image:
     """The photo as RGB, upright, its shortest side at least 224 (unless the photo
     itself is smaller); raises UnreadableImage.
 
-    A JPEG is decoded at the smallest scale that keeps that size, which is
-    much faster than decoding it whole.
+    This is imageinfo.decode: a JPEG is decoded at the smallest scale that
+    keeps that size (much faster than decoding it whole), and 16-bit and
+    float photos are scaled to 8-bit, not clipped.
     """
-    try:
-        with Image.open(path) as img:
-            img.draft("RGB", (_SIZE, _SIZE))
-            return ImageOps.exif_transpose(img).convert("RGB")
-    except Exception as exc:
-        raise UnreadableImage(f"{path}: {exc}") from exc
+    return decode(path, _SIZE)
 
 
 def preprocess(img: Image.Image) -> np.ndarray:

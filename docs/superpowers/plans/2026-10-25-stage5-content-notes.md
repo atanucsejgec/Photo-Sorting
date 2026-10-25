@@ -73,7 +73,7 @@ In both modes, unsure photos are reviewed first, and photos that fit nothing sta
 ```
 src/photosort/ai/models.py             + clip_visual, clip_textual, clip_tokenizer entries; CLIP_MODELS key list
 src/photosort/clip.py                  NEW  ClipEngine (image_embedding, text_embeddings), preprocess, tokenize, CLIP_KIND cache helpers
-src/photosort/thresholds.py            + CONTENT_SURE/UNSURE, NOTES_SURE/UNSURE, CLIP_LOGIT_SCALE
+src/photosort/thresholds.py            + CONTENT_SURE/UNSURE, NOTES_SURE/UNSURE, CLIP_LOGIT_SCALE, CONTENT_BACKGROUND_PROMPTS, NOTES_*_PROMPTS, CLIP_ENGINE_FAILS, category limits
 src/photosort/settings.py              + content_categories
 src/photosort/modes/_clip_scan.py      NEW  embed every photo (cache, progress, cancel) → ClipScan
 src/photosort/modes/content.py         NEW  classify + plan_content
@@ -144,7 +144,7 @@ src/photosort/ui/main_window.py        wiring
     - any other exception follows face mode's rule: log it and count the photo unreadable, but re-raise if the first 5 photos all failed;
     - it returns None if cancelled.
   - `content.Verdict`, a dataclass with `rel`, `best: str`, `prob: float` and `ranked: list[tuple[str, float]]` (all categories, best first).
-  - `content.judge(scan: ClipScan, categories: list[str], text_embeddings: np.ndarray) -> tuple[dict[str, str], list[Verdict]]` gives the sure map (rel to category) and the unsure verdicts, sorted by rel. Photos below `CONTENT_UNSURE` appear in neither.
+  - `content.judge(scan: ClipScan, categories: list[str], category_embeddings: np.ndarray, background_embeddings: np.ndarray) -> tuple[dict[str, str], list[Verdict]]` gives the sure map (rel to category) and the unsure verdicts, sorted by rel. Photos below `CONTENT_UNSURE` appear in neither.
   - `content.plan_content(root, scan, sure: dict[str, str], answers: dict[str, str | None]) -> Plan`:
     - mode `"content"`;
     - `answers` maps an unsure rel to a category name, or to None to leave it put;
@@ -155,7 +155,7 @@ src/photosort/ui/main_window.py        wiring
 
 - [ ] **Step 1: Write failing tests** (fake embeddings: unit basis vectors for photos and categories, so the probabilities are known exactly):
   - `judge` with a photo aligned to "Food":
-    - sure when p ≥ 0.75;
+    - sure when p ≥ 0.60 (`CONTENT_SURE`);
     - a photo between two categories is unsure, with `ranked` correct;
     - an orthogonal photo goes nowhere.
   - `embed_photos`:
@@ -193,7 +193,7 @@ src/photosort/ui/main_window.py        wiring
 **Interfaces:**
 - Consumes: Task 2's `ClipScan`, `embed_photos` and `Verdict`; `TargetAllocator`.
 - Produces:
-  - `notes.KINDS = ["Handwritten", "Book Pages", "Printed Documents", "Receipts"]`, `notes.PAPER_PROMPTS` (4 prompts, in the same order) and `notes.OTHER_PROMPTS` (6 prompts). All values are from the Global Constraints.
+  - `notes.KINDS = ["Handwritten", "Book Pages", "Printed Documents", "Receipts"]`, `notes.PAPER_PROMPTS` (4 prompts, in the same order) and `notes.OTHER_PROMPTS` (10 prompts). All values are from the Global Constraints.
   - `notes.judge(scan, text_embeddings_paper, text_embeddings_other) -> tuple[dict[str, str], list[Verdict]]`:
     - the sure map is rel to kind;
     - each unsure `Verdict` has `best` = kind, `prob` = paper, and `ranked` = the 4 kinds by probability.
