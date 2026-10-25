@@ -203,6 +203,7 @@ dependencies = [
     { name = "pillow-heif" },
     { name = "platformdirs" },
     { name = "pyside6-essentials" },
+    { name = "reverse-geocode" },
 ]
 
 [package.dev-dependencies]
@@ -224,6 +225,7 @@ requires-dist = [
     { name = "pillow-heif", specifier = ">=0.20" },
     { name = "platformdirs", specifier = ">=4" },
     { name = "pyside6-essentials", specifier = ">=6.8" },
+    { name = "reverse-geocode", specifier = "==1.6.6" },
 ]
 
 [package.metadata.requires-dev]
@@ -379,6 +381,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/5f/9a57ad0f2a4a15ec5c2dce859f0b502ed360f6da6ccd0f3b97cb2fc38a58/pywavelets-1.10.0-cp312-cp312-win32.whl", hash = "sha256:9cfb974fc316fbca735761474c92cd1d6be2d98bc72c37ddc7ac7a2ae83e221b", size = 4177188, upload-time = "2026-09-07T17:13:51.604Z" },
     { url = "https://files.pythonhosted.org/packages/5b/4c/6490c47aefdc3d210db3e071a9592ca453d01c55a1338682da970792bfad/pywavelets-1.10.0-cp312-cp312-win_amd64.whl", hash = "sha256:5be6bdee86f8088eb15becaefabfecaa6336cd6103c58f46d2466d127b4f08cc", size = 4281235, upload-time = "2026-09-07T17:13:53.234Z" },
     { url = "https://files.pythonhosted.org/packages/a5/63/bae289a235152e54c757049da0cb6e73ca996ae131d3382ddf4608a028d1/pywavelets-1.10.0-cp312-cp312-win_arm64.whl", hash = "sha256:fab763c551e33c1bdb567688d08bf33d8d79410f2cc0cf0f964c567bf2495639", size = 4175595, upload-time = "2026-09-07T17:13:54.763Z" },
+]
+
+[[package]]
+name = "reverse-geocode"
+version = "1.6.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ba/a6/be1e9403cd4b668ff2ec7fd532b534f8f4b31e62637ce7476fbb20ae1b37/reverse_geocode-1.6.6.tar.gz", hash = "sha256:14165815816cc639dd74eb660a74e464aeebcd1d0814de74a897d62071c99f2a", size = 3469126, upload-time = "2025-05-15T08:43:34.204Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/95/94/8df60b4efe9edc8934218bac4764024ac423d2a2ed082bd0eb48d9321fe6/reverse_geocode-1.6.6-py3-none-any.whl", hash = "sha256:f639fdb99cc88c08d2ffaf39dfb1eb5a0ecc2860c50288c4613eea30826d6a9f", size = 3466565, upload-time = "2025-05-15T08:43:29.518Z" },
 ]
 
 [[package]]

@@ -26,7 +26,7 @@ MODES: list[tuple[str, str, bool]] = [
     ("content", "Content", False),
     ("bad", "Bad photos", False),
     ("events", "Events", False),
-    ("location", "Location", False),
+    ("location", "Location", True),
     ("camera", "Camera", True),
 ]
 
@@ -65,6 +65,14 @@ def _prepare_camera(root: Path, include_subfolders: bool, progress: Progress = N
                                            cancel=cancel)
 
 
+def _prepare_location(root: Path, include_subfolders: bool, progress: Progress = None,
+                      cancel: threading.Event | None = None):
+    from photosort.modes import location_mode
+
+    return location_mode.prepare_location_plan(root, include_subfolders, progress=progress,
+                                               cancel=cancel)
+
+
 def _find_duplicates(root: Path, include_subfolders: bool, progress: Progress = None,
                      cancel: threading.Event | None = None):
     from photosort.modes import duplicates
@@ -95,5 +103,6 @@ MODE_SPECS: dict[str, ModeSpec] = {
     "repeated": ModeSpec("groups", _find_repeated, "Repeated Shots",
                          "No repeated shots found."),
     "type": ModeSpec("plan", _prepare_type),
+    "location": ModeSpec("plan", _prepare_location),
     "camera": ModeSpec("plan", _prepare_camera),
 }

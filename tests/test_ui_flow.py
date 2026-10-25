@@ -77,9 +77,9 @@ def test_available_modes(make_window):
     enabled = [b for b in buttons if b.isEnabled()]
     disabled = [b for b in buttons if not b.isEnabled()]
     assert [b.text() for b in enabled] == [
-        "Date", "Face", "Duplicates", "Repeated shots", "Type / source", "Camera"]
+        "Date", "Face", "Duplicates", "Repeated shots", "Type / source", "Location", "Camera"]
     assert enabled[0].isChecked()
-    assert len(disabled) == 5
+    assert len(disabled) == 4
     assert all("coming soon" in b.text() for b in disabled)
     assert all(key in MODE_SPECS for key, _, available in MODES if available)
 
@@ -745,6 +745,32 @@ def test_camera_end_to_end(qtbot, make_window, photos, errors):
     ]
     _go_and_undo(qtbot, w, photos, "camera", {"a.jpg": "OPPO CPH2581", "b.jpg": "Pixel 7"})
     assert (photos / "c.jpg").is_file()
+    assert errors == []
+
+
+def _gps_jpeg(path: Path, lat: tuple[float, float, float], lon: tuple[float, float, float]):
+    """A JPEG taken at lat, lon (degrees, minutes, seconds; north and east)."""
+    exif = Image.Exif()
+    exif[0x8825] = {1: "N", 2: lat, 3: "E", 4: lon}
+    Image.new("RGB", (16, 16), "red").save(path, "JPEG", exif=exif)
+    return path
+
+
+def test_location_end_to_end(qtbot, make_window, photos, errors):
+    _gps_jpeg(photos / "a.jpg", (22.0, 34.0, 21.4), (88.0, 21.0, 50.0))  # Kolkata
+    _gps_jpeg(photos / "b.jpg", (22.0, 34.0, 20.0), (88.0, 21.0, 49.0))
+    _gps_jpeg(photos / "c.jpg", (48.0, 51.0, 24.0), (2.0, 21.0, 8.0))  # Paris
+    _camera_jpeg(photos / "d.jpg", "OPPO", "CPH2581")  # no GPS
+    w = make_window()
+    _start_mode(qtbot, w, photos, "location")
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page, timeout=10000)
+    assert w.summary_label.text().splitlines() == [
+        "3 files → 2 countries, 2 cities",
+        "1 files have no location and stay where they are",
+    ]
+    _go_and_undo(qtbot, w, photos, "location", {
+        "a.jpg": "India/Kolkata", "b.jpg": "India/Kolkata", "c.jpg": "France/Paris"})
+    assert (photos / "d.jpg").is_file()
     assert errors == []
 
 
