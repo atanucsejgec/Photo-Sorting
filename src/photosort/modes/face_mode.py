@@ -275,10 +275,12 @@ def plan_faces(root: Path, scan: FaceScan, people: list[Person],
         moves.append(Move(rel, allocator.allocate(f"{folder}/{name}")))
         (person_folders if len(in_photo) == 1 else together_folders).add(folder.casefold())
 
-    stay = scan.photos - scan.unreadable - len(moves)
+    stay = scan.photos - scan.unreadable - len(moves) - unchanged
     summary = [f"{len(moves)} photos → {len(person_folders)} person folders, "
                f"{len(together_folders)} together folders",
                f"{stay} photos stay where they are"]
+    if unchanged:
+        summary.append(f"{unchanged} photos are already in their folders")
     if scan.unreadable:
         summary.append(f"{scan.unreadable} photos couldn't be read")
     return Plan("face", moves, summary, unchanged)

@@ -284,7 +284,19 @@ def test_already_in_person_folder_unchanged(tmp_path):
     assert plan.moves == [Move("Old/Atanu/z.jpg", "Atanu/z.jpg")]
     assert plan.unchanged == 2
     assert plan.summary == ["1 photos → 1 person folders, 0 together folders",
-                            "2 photos stay where they are"]
+                            "0 photos stay where they are",
+                            "2 photos are already in their folders"]
+
+
+def test_summary_counts_add_up_to_the_photos(tmp_path):
+    touch(tmp_path, "Atanu/in.jpg", "move.jpg", "nobody.jpg", "bad.jpg")
+    faces = {"in.jpg": [face({0: 0.9})], "move.jpg": [face({0: 0.9})],
+             "bad.jpg": UnreadableImage("bad")}
+    _, plan = sort(tmp_path, faces, subfolders=True)
+    assert plan.summary == ["1 photos → 1 person folders, 0 together folders",
+                            "1 photos stay where they are",
+                            "1 photos are already in their folders",
+                            "1 photos couldn't be read"]
 
 
 def test_move_clashes_get_numbered(tmp_path):
