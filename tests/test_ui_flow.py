@@ -71,14 +71,15 @@ def test_start_disabled_without_folder(make_window, photos):
     assert w.start_button.isEnabled()
 
 
-def test_four_modes_available(make_window):
+def test_available_modes(make_window):
     w = make_window()
     buttons = _mode_buttons(w)
     enabled = [b for b in buttons if b.isEnabled()]
     disabled = [b for b in buttons if not b.isEnabled()]
-    assert [b.text() for b in enabled] == ["Date", "Face", "Duplicates", "Repeated shots"]
+    assert [b.text() for b in enabled] == [
+        "Date", "Face", "Duplicates", "Repeated shots", "Type / source", "Camera"]
     assert enabled[0].isChecked()
-    assert len(disabled) == 7
+    assert len(disabled) == 5
     assert all("coming soon" in b.text() for b in disabled)
     assert all(key in MODE_SPECS for key, _, available in MODES if available)
 
@@ -698,4 +699,67 @@ def test_face_end_to_end(qtbot, make_window, photos, make_jpeg, store, errors,
     assert all((photos / n).is_file() for n in ("a.jpg", "b.jpg", "c.jpg"))
     for folder in ("Atanu", "Atanu & Zoe", "Zoe"):
         assert not (photos / folder).exists()
+    assert errors == []
+
+
+def _camera_jpeg(path: Path, make: str | None = None, model: str | None = None) -> Path:
+    exif = Image.Exif()
+    if make is not None:
+        exif[271] = make
+    if model is not None:
+        exif[272] = model
+    Image.new("RGB", (16, 16), "red").save(path, "JPEG", exif=exif)
+    return path
+
+
+def _go_and_undo(qtbot, w, photos, mode: str, moved: dict[str, str]):
+    """Go, check each file in moved landed in its folder, then Undo and check
+    the folder is as it was."""
+    from photosort.journal import load_runs
+
+    before = sorted(p.name for p in photos.iterdir())
+    w.go_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.done_page)
+    assert f"Moved {len(moved)} files." in w.done_label.text()
+    for name, folder in moved.items():
+        assert (photos / folder / name).is_file()
+        assert not (photos / name).exists()
+    assert [run.mode for run in load_runs(photos)] == [mode]
+
+    w.undo_button.click()
+    qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
+    assert f"Undo complete: {len(moved)} files put back." in w.undo_label.text()
+    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == before
+
+
+def test_camera_end_to_end(qtbot, make_window, photos, errors):
+    _camera_jpeg(photos / "a.jpg", "OPPO", "CPH2581")
+    _camera_jpeg(photos / "b.jpg", model="Pixel 7")
+    _camera_jpeg(photos / "c.jpg")
+    w = make_window()
+    _start_mode(qtbot, w, photos, "camera")
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    assert w.summary_label.text().splitlines() == [
+        "2 files → 2 camera folders",
+        "1 files have no camera info and stay where they are",
+    ]
+    _go_and_undo(qtbot, w, photos, "camera", {"a.jpg": "OPPO CPH2581", "b.jpg": "Pixel 7"})
+    assert (photos / "c.jpg").is_file()
+    assert errors == []
+
+
+def test_type_end_to_end(qtbot, make_window, photos, errors):
+    _camera_jpeg(photos / "IMG-20250315-WA0036.jpg")
+    _camera_jpeg(photos / "IMG20250627.jpg", "OPPO", "CPH2581")
+    Image.new("RGB", (16, 16), "red").save(photos / "Screenshot_2025.png", "PNG")
+    _camera_jpeg(photos / "plain.jpg")
+    w = make_window()
+    _start_mode(qtbot, w, photos, "type")
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    assert w.summary_label.text().splitlines() == [
+        "4 files → Camera Photos 1, Screenshots 1, WhatsApp 1, Other 1"]
+    _go_and_undo(qtbot, w, photos, "type", {
+        "IMG-20250315-WA0036.jpg": "WhatsApp", "IMG20250627.jpg": "Camera Photos",
+        "Screenshot_2025.png": "Screenshots", "plain.jpg": "Other",
+    })
     assert errors == []

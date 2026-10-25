@@ -67,8 +67,8 @@ def gps_of(path: Path) -> tuple[float, float] | None:
     """(latitude, longitude) where the file was taken, in degrees, or None.
 
     Photos use the EXIF GPS block; videos an ISO 6709 location (©xyz, or
-    Apple's location key). Out of range values, and exactly (0, 0) (what
-    some phones store when they have no fix), give None.
+    Apple's location key, whichever parses first). Out of range values, and
+    exactly (0, 0) (what some phones store when they have no fix), give None.
     """
     try:
         match kind(path):
@@ -77,8 +77,9 @@ def gps_of(path: Path) -> tuple[float, float] | None:
                     found = _exif_gps(img.getexif().get_ifd(GPS_IFD))
             case "video":
                 tags = mp4_tags(Path(path))
-                found = next((_iso6709(tags[t]) for t in _VIDEO_LOCATION_TAGS if t in tags),
-                             None)
+                # The first tag that parses: a junk ©xyz doesn't hide Apple's key.
+                found = next((parsed for t in _VIDEO_LOCATION_TAGS if t in tags
+                              if (parsed := _iso6709(tags[t])) is not None), None)
             case _:
                 return None
     except Exception:
@@ -99,19 +100,24 @@ def camera_folder(make: str, model: str) -> str:
 
     The name is Windows-valid, fits FOLDER_NAME_MAX characters and
     FOLDER_NAME_MAX_BYTES bytes, and gets a "_" prefix if the scanner would
-    skip it. With neither make nor model it is "" (no folder).
+    skip it. With neither make nor model, or no letter or digit in them, it
+    is "" (no folder).
     """
     make, model = make.strip(_STRIP), model.strip(_STRIP)
     if make and fold(model).startswith(fold(make)):
         name = model
     else:
         name = " ".join(part for part in (make, model) if part)
-    if not name:
-        return ""
+    if not any(char.isalnum() for char in name):
+        return ""  # nothing usable, "..." or "::" say
     return fit_name(safe_name(name), FOLDER_NAME_MAX, FOLDER_NAME_MAX_BYTES)
 
 
 def _clean(value: object) -> str:
+    """value as text with whitespace and NULs stripped; "" if it is not text.
+    Bytes (a tag stored with the wrong type) are decoded as UTF-8."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
     return value.strip(_STRIP) if isinstance(value, str) else ""
 
 
@@ -123,12 +129,20 @@ def _exif_gps(gps: dict) -> tuple[float, float] | None:
 
 def _degrees(value: object, ref: object, plus: str, minus: str) -> float | None:
     """An EXIF GPS coordinate (degrees, minutes, seconds as rationals) in
-    signed degrees, or None."""
+    signed degrees, or None.
+
+    Each part must be finite and not negative, and minutes and seconds
+    under 60.
+    """
     sign = {plus: 1.0, minus: -1.0}.get(_clean(ref).upper())
     if sign is None or not isinstance(value, tuple) or not 1 <= len(value) <= 3:
         return None
-    total = sum(float(part) / 60**n for n, part in enumerate(value))
-    return sign * total
+    parts = [float(part) for part in value]
+    if not all(math.isfinite(part) and part >= 0 for part in parts):
+        return None
+    if any(part >= 60 for part in parts[1:]):
+        return None
+    return sign * sum(part / 60**n for n, part in enumerate(parts))
 
 
 def _iso6709(text: str) -> tuple[float, float] | None:

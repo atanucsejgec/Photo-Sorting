@@ -53,8 +53,10 @@ def fit_name(name: str, max_chars: int, max_bytes: int) -> str:
     The cut never splits a character, and leaves no dangling dot, space or
     combining mark (a vowel sign cut off from its letter, say). The result
     is Windows-valid (safe_name) and not a folder the scanner skips (such a
-    name gets a "_" prefix).
+    name gets a "_" prefix). Both limits must be at least 1 (ValueError).
     """
+    if max_chars < 1 or max_bytes < 1:
+        raise ValueError(f"fit_name limits must be at least 1: {max_chars}, {max_bytes}")
     end = min(len(name), max_chars)
     while True:
         folder = _clean_cut(name[:end])

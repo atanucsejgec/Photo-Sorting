@@ -22,12 +22,12 @@ MODES: list[tuple[str, str, bool]] = [
     ("duplicates", "Duplicates", True),
     ("repeated", "Repeated shots", True),
     ("notes", "Notes & Pages", False),
-    ("type", "Type / source", False),
+    ("type", "Type / source", True),
     ("content", "Content", False),
     ("bad", "Bad photos", False),
     ("events", "Events", False),
     ("location", "Location", False),
-    ("camera", "Camera", False),
+    ("camera", "Camera", True),
 ]
 
 Progress = Callable[[int, int], None] | None
@@ -47,6 +47,22 @@ def _prepare_date(root: Path, include_subfolders: bool, progress: Progress = Non
 
     return date_mode.prepare_date_plan(root, include_subfolders, progress=progress,
                                        cancel=cancel)
+
+
+def _prepare_type(root: Path, include_subfolders: bool, progress: Progress = None,
+                  cancel: threading.Event | None = None):
+    from photosort.modes import type_mode
+
+    return type_mode.prepare_type_plan(root, include_subfolders, progress=progress,
+                                       cancel=cancel)
+
+
+def _prepare_camera(root: Path, include_subfolders: bool, progress: Progress = None,
+                    cancel: threading.Event | None = None):
+    from photosort.modes import camera_mode
+
+    return camera_mode.prepare_camera_plan(root, include_subfolders, progress=progress,
+                                           cancel=cancel)
 
 
 def _find_duplicates(root: Path, include_subfolders: bool, progress: Progress = None,
@@ -78,4 +94,6 @@ MODE_SPECS: dict[str, ModeSpec] = {
     "duplicates": ModeSpec("groups", _find_duplicates, "Duplicates", "No duplicates found."),
     "repeated": ModeSpec("groups", _find_repeated, "Repeated Shots",
                          "No repeated shots found."),
+    "type": ModeSpec("plan", _prepare_type),
+    "camera": ModeSpec("plan", _prepare_camera),
 }

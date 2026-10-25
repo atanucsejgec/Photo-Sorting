@@ -157,6 +157,12 @@ def test_fit_name_cuts_by_characters():
     assert fit_name("abcdef", 3, 200) == "abc"
 
 
+@pytest.mark.parametrize("max_chars, max_bytes", [(0, 200), (100, 0), (-1, -1)])
+def test_fit_name_refuses_impossible_limits(max_chars, max_bytes):
+    with pytest.raises(ValueError):
+        fit_name("abc", max_chars, max_bytes)
+
+
 def test_fit_name_cuts_by_bytes(tmp_path):
     folder = _fit("অ" * 100)
     assert folder == "অ" * (FOLDER_NAME_MAX_BYTES // 3)

@@ -1,9 +1,12 @@
+import math
+import struct
+
 import pytest
 from mp4util import box, mdta_meta, mp4, udta_text, write
 from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
 
-from photosort.metadata import camera_folder, camera_of, gps_of
+from photosort.metadata import _degrees, camera_folder, camera_of, gps_of
 from photosort.naming import fold, safe_name
 from photosort.thresholds import FOLDER_NAME_MAX_BYTES
 
@@ -25,6 +28,16 @@ def jpeg(path, make=None, model=None, gps=None):
     return path
 
 
+def raw_exif(*entries: tuple[int, int, int, bytes]) -> bytes:
+    """EXIF bytes with one IFD of (tag, type, count, value of at most 4 bytes)
+    entries, for tags Pillow would not write with that type."""
+    ifd = struct.pack(">H", len(entries)) + b"".join(
+        struct.pack(">HHI", tag, typ, count) + value.ljust(4, b"\x00")
+        for tag, typ, count, value in entries
+    ) + struct.pack(">I", 0)
+    return b"Exif\x00\x00" + b"MM\x00\x2a" + struct.pack(">I", 8) + ifd
+
+
 def gps(lat_ref="N", lat=KOLKATA[0], lon_ref="E", lon=KOLKATA[1]):
     return {1: lat_ref, 2: lat, 3: lon_ref, 4: lon}
 
@@ -35,6 +48,14 @@ def gps(lat_ref="N", lat=KOLKATA[0], lon_ref="E", lon=KOLKATA[1]):
 def test_camera_from_exif_stripped(tmp_path):
     path = jpeg(tmp_path / "x.jpg", "OPPO\x00", " CPH2581 ")
     assert camera_of(path) == ("OPPO", "CPH2581")
+
+
+def test_camera_from_bytes_exif(tmp_path):
+    # Make and Model stored as UNDEFINED (type 7) come back as bytes.
+    path = tmp_path / "x.jpg"
+    Image.new("RGB", (8, 8)).save(path, "JPEG",
+                                  exif=raw_exif((271, 7, 4, b"OPPO"), (272, 7, 4, b"X\xffY ")))
+    assert camera_of(path) == ("OPPO", "X\ufffdY")
 
 
 def test_camera_model_only(tmp_path):
@@ -98,10 +119,25 @@ def test_gps_south_and_west_are_negative(tmp_path):
     gps(lat=(95.0, 0.0, 0.0)),
     gps(lon=(181.0, 0.0, 0.0)),
     gps(lat_ref="X"),
+    gps(lat=(22.0, 60.0, 0.0)),  # minutes must be under 60
+    gps(lon=(88.0, 21.0, 60.0)),  # and seconds
     {1: "N", 2: KOLKATA[0]},  # no longitude
 ])
 def test_bad_gps_gives_none(tmp_path, bad):
     assert gps_of(jpeg(tmp_path / "x.jpg", gps=bad)) is None
+
+
+@pytest.mark.parametrize("value", [
+    (-22.0, 34.0, 21.4), (22.0, -34.0, 21.4), (22.0, 34.0, -1.0),
+    (math.inf, 0.0, 0.0), (22.0, math.nan, 0.0), (22.0, 34.0, 60.0), (22.0, 61.0),
+])
+def test_bad_dms_gives_none(value):
+    assert _degrees(value, "N", "N", "S") is None
+
+
+def test_dms_in_range():
+    expected = -(22 + 59 / 60 + 59.9 / 3600)
+    assert _degrees((22.0, 59.0, 59.9), "S", "N", "S") == pytest.approx(expected)
 
 
 def test_no_gps(tmp_path):
@@ -118,6 +154,12 @@ def test_gps_from_video_udta(tmp_path):
 def test_gps_from_apple_video_with_altitude(tmp_path):
     meta = mdta_meta({"com.apple.quicktime.location.ISO6709": "+22.5726+088.3639+012.345/"})
     assert gps_of(write(tmp_path / "v.mov", mp4(meta))) == pytest.approx((22.5726, 88.3639))
+
+
+def test_video_gps_skips_a_tag_that_does_not_parse(tmp_path):
+    meta = mdta_meta({"com.apple.quicktime.location.ISO6709": "+22.5726+088.3639/"})
+    udta = box("udta", udta_text("©xyz", "junk"))
+    assert gps_of(write(tmp_path / "v.mov", mp4(meta, udta))) == pytest.approx((22.5726, 88.3639))
 
 
 @pytest.mark.parametrize("xyz", ["+00.0000+000.0000/", "+95.0000+088.3639/",
@@ -160,3 +202,6 @@ def test_camera_folder_long_model_fits(tmp_path):
 def test_camera_folder_empty():
     assert camera_folder("", "") == ""
     assert camera_folder(" ", "  ") == ""
+    assert camera_folder("...", "::") == ""  # nothing usable: no letter or digit
+    assert camera_folder("-", "") == ""
+    assert camera_folder("", "অ") == "অ"
