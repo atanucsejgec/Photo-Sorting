@@ -11,7 +11,7 @@ from photosort.faces import Face
 from photosort.modes import MODE_SPECS, MODES, date_mode
 from photosort.people import PeopleStore
 from photosort.settings import Settings, load_settings
-from photosort.ui import main_window
+from photosort.ui import history_page, main_window
 from photosort.ui.flows import face as face_flow
 from photosort.ui.flows import groups as groups_flow
 from photosort.ui.main_window import MainWindow
@@ -247,7 +247,7 @@ def test_undo_blocked_shows_newer_runs(qtbot, make_window, photos, make_jpeg,
         raise UndoBlocked([BlockingRun("20261024-130000-date", "2025/02-February"),
                            BlockingRun("20261024-120000-date", "")])
 
-    monkeypatch.setattr(main_window, "undo_run", blocked)
+    monkeypatch.setattr(history_page, "undo_run", blocked)  # the one undo, with its wording
     w.undo_button.click()
     qtbot.waitUntil(lambda: errors != [])
     assert errors == [
@@ -255,6 +255,51 @@ def test_undo_blocked_shows_newer_runs(qtbot, make_window, photos, make_jpeg,
         "20261024-120000-date"
     ]
     assert w.undo_button.isEnabled()
+
+
+def test_a_failed_undo_on_done_says_so_as_history_does(qtbot, make_window, photos,
+                                                       make_jpeg, errors, monkeypatch):
+    make_jpeg(photos / "a.jpg", EXIF)
+    w = make_window()
+    _sort_to_done(qtbot, w, photos)
+
+    def broken(root, run_id, progress=None):
+        raise OSError("disk unplugged")
+
+    monkeypatch.setattr(history_page, "undo_run", broken)
+    w.undo_button.click()
+    qtbot.waitUntil(lambda: errors != [])
+    assert errors == ["Could not undo: disk unplugged"]
+    assert w.undo_button.isEnabled()
+
+
+def test_go_forgets_the_plan_once_the_run_starts(qtbot, make_window, photos, make_jpeg,
+                                                 errors, monkeypatch):
+    from photosort.journal import load_runs
+
+    release = threading.Event()
+    real_execute = main_window.execute
+
+    def slow(root, plan, journal, progress=None, cancel=None):
+        assert release.wait(10)
+        return real_execute(root, plan, journal, progress=progress, cancel=cancel)
+
+    monkeypatch.setattr(main_window, "execute", slow)
+    make_jpeg(photos / "a.jpg", EXIF)
+    w = make_window()
+    w.folder_edit.setText(str(photos))
+    w.mode_buttons["date"].click()
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    w.go_button.click()
+    assert w.current_page() is w.progress_page
+    assert w._plan is None  # the run has it; nothing else can run it again
+    release.set()
+    qtbot.waitUntil(lambda: w.current_page() is w.done_page)
+    w._go()  # a Go after the run: nothing left to run
+    qtbot.wait(50)
+    assert len(load_runs(photos)) == 1
+    assert w.current_page() is w.done_page
+    assert errors == []
 
 
 def test_cancelled_move_says_so(qtbot, make_window, photos, make_jpeg, monkeypatch):
@@ -557,8 +602,22 @@ def test_cancel_review_returns_home(qtbot, make_window, photos, make_pattern_jpe
     qtbot.waitUntil(lambda: w.current_page() is w.review_page)
     w.review_page.cancel_button.click()
     assert w.current_page() is w.home
+    assert w.flow_state is None and w.back_to is None  # the groups are let go
     # the analysis cache is in .photosort; no photo moved
     assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == ["a.jpg", "b.jpg"]
+
+
+@pytest.mark.parametrize("page", ["review_page", "bad_page", "events_page",
+                                  "category_review_page"])
+def test_cancel_on_a_review_ends_the_sort(make_window, page):
+    w = make_window()
+    w.flow_state = ["the groups or candidates"]
+    w.back_to = lambda: None
+    review = getattr(w, page)
+    w.show_page(review)
+    review.cancelled.emit()  # its Cancel or Back button
+    assert w.current_page() is w.home
+    assert w.flow_state is None and w.back_to is None
 
 
 def test_cancelled_finder_returns_home(qtbot, make_window, photos, monkeypatch):

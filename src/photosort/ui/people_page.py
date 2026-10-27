@@ -32,7 +32,7 @@ class PeoplePage(QWidget):
 
         shortcuts.describe(self.people_list, "↑↓", "choose")
         self._forget_key = shortcuts.bind(self, "Delete", "Delete", "forget",
-                                          self.delete_button.click)
+                                          self.delete_button.click, repeat=False)
         self.people_list.model().rowsInserted.connect(self._update_keys)
         self.people_list.model().rowsRemoved.connect(self._update_keys)
         self.people_list.model().modelReset.connect(self._update_keys)

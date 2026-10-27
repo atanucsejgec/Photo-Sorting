@@ -268,6 +268,25 @@ def test_s_switches_subfolders_and_saves(qtbot, make_window, settings_path):
     assert not w.home.subfolders_switch.isChecked()
 
 
+def test_a_held_f_or_s_acts_once(qtbot, make_window, monkeypatch, settings_path):
+    from keys import _hold
+
+    picked = []
+    monkeypatch.setattr(home_page.QFileDialog, "getExistingDirectory",
+                        lambda *a: picked.append(1) or "")
+    w = _show(qtbot, make_window())
+    _focus(qtbot, w.mode_buttons["date"])
+    qtbot.keyClick(_focused(), Qt.Key.Key_F)
+    _hold(Qt.Key.Key_F)
+    assert picked == [1]
+    toggled = []
+    w.home.subfolders_switch.toggled.connect(toggled.append)
+    qtbot.keyClick(_focused(), Qt.Key.Key_S)
+    _hold(Qt.Key.Key_S)  # its repeats do not flip it back and forth
+    assert toggled == [True]
+    assert load_settings(settings_path).include_subfolders is True
+
+
 def test_a_pasted_path_is_trimmed(qtbot, make_window):
     w = _show(qtbot, make_window())
     _focus(qtbot, w.folder_edit)

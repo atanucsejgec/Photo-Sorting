@@ -229,8 +229,9 @@ class HomePage(QWidget):
         # the arrows, Enter, F, S, then Tab (which only the tiles send to the
         # sidebar).
         self._letter_keys = [
-            shortcuts.bind(self, "F", "F", "folder", self.browse),
-            shortcuts.bind(self, "S", "S", "subfolders", self.subfolders_switch.toggle),
+            shortcuts.bind(self, "F", "F", "folder", self.browse, repeat=False),
+            shortcuts.bind(self, "S", "S", "subfolders", self.subfolders_switch.toggle,
+                           repeat=False),
         ]
         for label, word in (("←↑↓→", "choose"), ("Enter", "start"), ("F", "folder"),
                             ("S", "subfolders"), ("Tab", "sidebar")):

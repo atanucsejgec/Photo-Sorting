@@ -127,8 +127,8 @@ def test_history_blocks_older_dependent_run(make_history, tmp_path):
     d = make_history(tmp_path)
     d.runs_table.selectRow(1)
     assert not d.undo_button.isEnabled()
-    assert d.undo_button.toolTip() == f"Undo these runs first: {run2}"
-    assert d.blocked_label.text() == f"Undo these runs first: {run2}"
+    assert d.undo_button.toolTip() == f"Undo the newer run(s) first: {run2}"
+    assert d.blocked_label.text() == f"Undo the newer run(s) first: {run2}"
     d.runs_table.selectRow(0)
     assert d.undo_button.isEnabled()
     assert d.undo_button.toolTip() == ""
@@ -143,7 +143,7 @@ def test_history_names_folder_of_blocking_run_inside(make_history, tmp_path):
     d = make_history(tmp_path)
     d.runs_table.selectRow(0)
     assert not d.undo_button.isEnabled()
-    assert d.blocked_label.text() == f"Undo these runs first: {inner} (in d)"
+    assert d.blocked_label.text() == f"Undo the newer run(s) first: {inner} (in d)"
 
 
 def test_history_shows_interrupted_run(make_history, tmp_path):
@@ -180,6 +180,25 @@ def test_history_undo_error_is_shown(qtbot, make_history, tmp_path, dialog_error
     assert dialog_errors == ["Could not undo: disk unplugged"]
     assert d.undo_button.isEnabled()
     assert _column(d, STATUS) == ["Done"]
+
+
+def test_history_says_a_blocked_undo_as_done_does(qtbot, make_history, tmp_path,
+                                                  dialog_errors, monkeypatch):
+    from photosort.undo import BlockingRun, UndoBlocked
+
+    _write(tmp_path / "a.jpg", b"a")
+    _run(tmp_path, [("a.jpg", "d/a.jpg")])
+
+    def blocked(root, run_id, progress=None):  # a newer run came after the page loaded
+        raise UndoBlocked([BlockingRun("20261024-130000-date", "2025/02-February")])
+
+    monkeypatch.setattr(history_page, "undo_run", blocked)
+    d = make_history(tmp_path)
+    d.runs_table.selectRow(0)
+    d.undo_button.click()
+    qtbot.waitUntil(lambda: dialog_errors != [])
+    assert dialog_errors == [
+        "Undo the newer run(s) first: 20261024-130000-date (in 2025/02-February)"]
 
 
 def test_history_says_while_it_undoes(qtbot, make_history, tmp_path, monkeypatch):

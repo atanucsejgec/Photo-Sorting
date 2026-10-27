@@ -21,11 +21,31 @@ from photosort.modes import MODES
 from photosort.ui import dialogs, shortcuts
 from photosort.ui.theme import heading, page_spacing
 from photosort.ui.worker import Task
-from photosort.undo import UndoResult, blocking_runs, related_folders, undo_run
+from photosort.undo import (
+    BlockingRun, UndoBlocked, UndoResult, blocking_runs, related_folders, undo_run,
+)
 
 _MODE_LABELS = {key: label for key, label, _ in MODES}
 _STATUS_LABELS = {"done": "Done", "cancelled": "Cancelled", "failed": "Failed"}
 _UNREADABLE = (OSError, ValueError, KeyError, TypeError)
+
+
+def blocked_text(blocking: list[BlockingRun]) -> str:
+    """Why a run can't be undone yet: the newer runs (each says which
+    folder's history it is in), in the words the Done page and this page
+    both use."""
+    return f"Undo the newer run(s) first: {', '.join(map(str, blocking))}"
+
+
+def undo_with_message(root: Path, run_id: str, progress=None) -> UndoResult:
+    """undo_run, its failure in the owner's words: the one undo of the Done
+    page and this page."""
+    try:
+        return undo_run(root, run_id, progress=progress)
+    except UndoBlocked as e:
+        raise RuntimeError(blocked_text(e.blocking)) from e
+    except Exception as e:
+        raise RuntimeError(f"Could not undo: {str(e) or type(e).__name__}") from e
 
 
 def undo_summary(result: UndoResult) -> str:
@@ -136,7 +156,8 @@ class HistoryPage(QWidget):
         layout.addLayout(row)
 
         shortcuts.describe(self.runs_table, "↑↓", "choose")
-        self._undo_key = shortcuts.bind(self, "Return", "Enter", "undo", self._undo)
+        self._undo_key = shortcuts.bind(self, "Return", "Enter", "undo", self._undo,
+                                        repeat=False)
         self.load(None)
 
     def show_error(self, text: str) -> None:
@@ -198,8 +219,7 @@ class HistoryPage(QWidget):
                 tip = "This run's undo record can't be read"
             else:
                 if blocking:
-                    # Each says which folder's history it is in.
-                    tip = f"Undo these runs first: {', '.join(map(str, blocking))}"
+                    tip = blocked_text(blocking)
                 else:
                     enabled = True
         self.undo_button.setEnabled(enabled)
@@ -220,7 +240,7 @@ class HistoryPage(QWidget):
         self._undoing = True
         self._update_undo_button()
         self.result_label.setText("Putting files back…")
-        task = Task(undo_run, self.root, row.run_id, cancellable=False)
+        task = Task(undo_with_message, self.root, row.run_id, cancellable=False)
         task.signals.result.connect(self._on_undone)
         task.signals.error.connect(self._on_undo_error)
         self._task = task  # keep it alive while it runs
@@ -241,4 +261,4 @@ class HistoryPage(QWidget):
         self.result_label.setText("")
         self.refresh()
         self.undo_running.emit(False)
-        self.show_error(f"Could not undo: {message}")
+        self.show_error(message)

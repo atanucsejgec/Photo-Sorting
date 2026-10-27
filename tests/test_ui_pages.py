@@ -246,6 +246,23 @@ def test_history_undo_asks_first(qtbot, make_window, tmp_path, asked):
     assert len(asked.calls) == 2
 
 
+def test_a_held_enter_on_history_asks_once(qtbot, make_window, tmp_path, asked):
+    from keys import _hold
+
+    root = tmp_path / "photos"
+    root.mkdir()
+    (root / "a.jpg").write_bytes(b"a")
+    _run(root, [("a.jpg", "d/a.jpg")])
+    w = make_window()
+    w.folder_edit.setText(str(root))
+    w.sidebar.items["history"].click()
+    _focus(qtbot, w.history_page.runs_table)
+    asked.answer = False
+    _key(qtbot, Qt.Key.Key_Return)
+    _hold(Qt.Key.Key_Return)  # its repeats ask nothing more
+    assert len(asked.calls) == 1
+
+
 def test_history_locks_the_sidebar_while_it_undoes(qtbot, make_window, tmp_path, asked,
                                                    monkeypatch):
     from photosort.ui import history_page
@@ -308,6 +325,23 @@ def test_people_delete_asks_then_forgets(qtbot, make_window, store, asked):
     _key(qtbot, Qt.Key.Key_Delete)
     assert [p.name for p in store.people()] == ["Atanu"]
     assert page.people_list.count() == 1
+
+
+def test_a_held_delete_on_people_asks_once(qtbot, make_window, store, asked):
+    from keys import _hold
+
+    _remember(store, "Atanu", 1)
+    _remember(store, "Zoe", 2)
+    w = make_window()
+    w.sidebar.items["people"].click()
+    page = w.people_page
+    page.people_list.setCurrentRow(0)
+    _focus(qtbot, page.people_list)
+    asked.answer = False
+    _key(qtbot, Qt.Key.Key_Delete)
+    _hold(Qt.Key.Key_Delete)  # its repeats ask nothing more
+    assert len(asked.calls) == 1
+    assert [p.name for p in store.people()] == ["Atanu", "Zoe"]
 
 
 def test_people_with_nobody_has_no_forget_key(qtbot, make_window):

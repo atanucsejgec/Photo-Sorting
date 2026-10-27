@@ -55,7 +55,7 @@ from photosort.ui.events_page import EventsPage
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
 from photosort.ui.flows import bad, clip, events, face, files, groups, no_people, plain
-from photosort.ui.history_page import HistoryPage, undo_summary
+from photosort.ui.history_page import HistoryPage, undo_summary, undo_with_message
 from photosort.ui.home_page import HomePage
 from photosort.ui.model_download import ensure_models
 from photosort.ui.people_page import PeoplePage
@@ -67,7 +67,7 @@ from photosort.ui.sidebar import Sidebar
 from photosort.ui.summary_page import SummaryPage
 from photosort.ui.theme import PAGE_MARGINS
 from photosort.ui.worker import Task
-from photosort.undo import UndoBlocked, UndoResult, undo_run
+from photosort.undo import UndoResult
 
 TITLE = "Photo Sorter"
 # Small enough for 1024 × 600 at 125 % scaling (819 × 480); the tiles and cards reflow.
@@ -77,15 +77,6 @@ MIN_WIDTH, MIN_HEIGHT = 800, 460
 _FLOWS = {"plan": plain, "files": files, "groups": groups, "bad": bad, "events": events,
           "face": face, "nopeople": no_people, "content": clip, "notes": clip}
 _MODE_LABELS = {key: label for key, label, _ in MODES}
-
-
-def _undo_with_message(root: Path, run_id: str, progress=None) -> UndoResult:
-    """undo_run, with the owner's wording for a blocked undo."""
-    try:
-        return undo_run(root, run_id, progress=progress)
-    except UndoBlocked as e:
-        runs = ", ".join(map(str, e.blocking))  # each says which folder's history
-        raise RuntimeError(f"Undo the newer run(s) first: {runs}") from e
 
 
 class MainWindow(QMainWindow):
@@ -204,7 +195,7 @@ class MainWindow(QMainWindow):
     def _build_review(self) -> ReviewPage:
         page = ReviewPage()
         page.finished.connect(lambda keep: groups.on_reviewed(self, keep))
-        page.cancelled.connect(lambda: self.show_page(self.home))
+        page.cancelled.connect(self.leave_review)
         page.left.connect(self.leave_review)
         page.keys_changed.connect(self.strip.refresh)
         return page
@@ -212,7 +203,7 @@ class MainWindow(QMainWindow):
     def _build_bad(self) -> BadPhotosPage:
         page = BadPhotosPage()
         page.finished.connect(lambda move: bad.on_ticked(self, move))
-        page.cancelled.connect(lambda: self.show_page(self.home))
+        page.cancelled.connect(self.leave_review)
         page.left.connect(self.leave_review)
         return page
 
@@ -220,7 +211,7 @@ class MainWindow(QMainWindow):
         page = EventsPage()
         page.finished.connect(
             lambda named, names, skipped: events.on_named(self, named, names, skipped))
-        page.cancelled.connect(lambda: self.show_page(self.home))
+        page.cancelled.connect(self.leave_review)
         page.left.connect(self.leave_review)
         page.keys_changed.connect(self.strip.refresh)
         return page
@@ -231,7 +222,7 @@ class MainWindow(QMainWindow):
         page.add_requested.connect(lambda: face.add_person(self))
         page.photo_dropped.connect(lambda path: face.add_person(self, path))
         page.more_requested.connect(lambda person_id: face.add_photos(self, person_id))
-        page.back_button.clicked.connect(lambda: self.show_page(self.home))
+        page.back_button.clicked.connect(self.leave_review)
         page.keys_changed.connect(self.strip.refresh)
         return page
 
@@ -245,7 +236,7 @@ class MainWindow(QMainWindow):
     def _build_category_review(self) -> CategoryReviewPage:
         page = CategoryReviewPage()
         page.finished.connect(lambda answers: clip.plan_moves(self, answers))
-        page.cancelled.connect(lambda: self.show_page(self.home))
+        page.cancelled.connect(self.leave_review)
         page.left.connect(self.leave_review)
         return page
 
@@ -328,7 +319,9 @@ class MainWindow(QMainWindow):
         dialogs.warn(self, TITLE, text)
 
     def leave_review(self) -> None:
-        """The owner left a review (Esc, then Leave): Home, the sort forgotten."""
+        """The owner left a sort before its summary (a review's Cancel or
+        Back, Face setup's Back, or Esc then Leave): Home, the sort
+        forgotten, so its groups and candidates are let go."""
         self.end_flow()
         self.show_page(self.home)
 
@@ -509,6 +502,7 @@ class MainWindow(QMainWindow):
             self.show_error(f"Could not start: {e}")
             return
         self._run_id = journal.run_id
+        self._plan = None  # the run has it now: nothing can run it again
         self.end_flow()
         self.events_page.stop_thumbnails()
         self.begin_progress("Moving…", len(plan.moves))
@@ -549,7 +543,7 @@ class MainWindow(QMainWindow):
             return
         self.done_page.undo_started()
         self.run_task(
-            Task(_undo_with_message, self.root, self._run_id, cancellable=False),
+            Task(undo_with_message, self.root, self._run_id, cancellable=False),
             self._on_undone, self._on_undo_error,
         )
 
