@@ -210,7 +210,7 @@ def test_every_button_and_buddy_label_shows_its_ampersands(qtbot, tmp_path):
     texts = [button.text() for widget in shown for button in widget.findChildren(QAbstractButton)]
     texts += [label.text() for widget in shown for label in widget.findChildren(QLabel)
               if label.buddy() is not None]
-    assert "Confirm && next group" in texts
+    assert "Confirm && next" in texts
     assert [t for t in texts if "&" in t.replace("&&", "")] == []
 
 

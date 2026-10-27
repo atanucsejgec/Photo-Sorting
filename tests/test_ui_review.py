@@ -58,8 +58,7 @@ def test_card_details(qtbot, tmp_path, make_pattern_jpeg):
     assert path.is_file()
     assert card.details_label.text().splitlines() == [
         "IMG1.jpg",
-        "800 × 600",
-        "4.1 MB",
+        "800 × 600 · 4.1 MB",
         "20 Feb 2025, 18:13:25",
         "Sharpness: best",
         "Exact copy",
@@ -73,6 +72,23 @@ def test_card_details(qtbot, tmp_path, make_pattern_jpeg):
     assert "no date inside" in lines
     assert "Sharpness: blurry" in lines
     assert lines[-1] == "(top folder)"
+
+
+def test_the_folder_line_shows_only_when_the_folders_differ(qtbot, tmp_path):
+    def card(group, n=0):
+        made = CandidateCard(tmp_path, group.members[n], group)
+        qtbot.addWidget(made)
+        return made.details_label.text().splitlines()
+
+    same = [Candidate(f"trip/{n}.jpg", "photo", 800, 600, 10, None, None) for n in "ab"]
+    assert card(Group("exact", same, {same[0].rel})) == [
+        "a.jpg", "800 × 600 · 0.0 MB", "no date inside"]  # all in trip: not said
+    mixed = [Candidate(rel, "photo", 800, 600, 10, None, None) for rel in ("trip/a.jpg", "b.jpg")]
+    group = Group("exact", mixed, {mixed[0].rel})
+    assert card(group, 0)[-1] == "trip"
+    assert card(group, 1)[-1] == "(top folder)"
+    size_only = Candidate("c.mp4", "video", None, None, 2_500_000, None, None)
+    assert card(Group("exact", [size_only], {size_only.rel}))[1] == "2.5 MB"
 
 
 def test_date_line_has_no_leading_zero(qtbot, tmp_path):

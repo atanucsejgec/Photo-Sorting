@@ -33,6 +33,7 @@ from photosort.ui.flows import face as face_flow
 from photosort.ui.flows import groups as groups_flow
 from photosort.ui.main_window import MainWindow
 from photosort.ui.photo_preview import PhotoPreview
+from photosort.ui.widgets import SHORTEST_THUMB_PX
 
 CTRL = Qt.KeyboardModifier.ControlModifier
 SHIFT = Qt.KeyboardModifier.ShiftModifier
@@ -893,15 +894,32 @@ def test_a_screen_lands_with_the_focused_cards_answers_in_view(qtbot, make_windo
         assert _answers_in_view(page, screen)
 
 
-def _wheel(page, dy: int, times: int) -> None:
-    """The mouse wheel over the view, as the owner turns it (the focus stays put)."""
+def _wheel(page, dy: int, times: int, dx: int = 0) -> None:
+    """The mouse wheel over the view, as the owner turns it (the focus stays put);
+    dx: tilted sideways."""
     view = page.scroll.viewport()
     at = QPoint(50, 50)
     for _ in range(times):
         QApplication.sendEvent(view, QWheelEvent(
-            QPointF(at), QPointF(view.mapToGlobal(at)), QPoint(0, 0), QPoint(0, dy),
+            QPointF(at), QPointF(view.mapToGlobal(at)), QPoint(0, 0), QPoint(dx, dy),
             Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
             Qt.ScrollPhase.NoScrollPhase, False))
+
+
+def _owner_bar(page, screen: str):
+    """The scroll bar the owner moves: a group's cards fit the view's height,
+    so on a review of groups that is the sideways one."""
+    if screen == "duplicates":
+        return page.scroll.horizontalScrollBar()
+    return page.scroll.verticalScrollBar()
+
+
+def _owner_scrolls(page, screen: str) -> None:
+    """The wheel turned away from the focused (first) card."""
+    if screen == "duplicates":
+        _wheel(page, 0, 3, dx=-120)
+    else:
+        _wheel(page, -120, 6)
 
 
 @pytest.mark.parametrize("screen", ["duplicates", "bad", "content"])
@@ -918,9 +936,9 @@ def test_a_resize_never_pulls_the_view_back_after_the_owner_scrolled(qtbot, make
         page = _review_on_first_item(qtbot, w, root, screen)
     card = _on_card(qtbot, page, 0)
     qtbot.wait(300)  # landed and settled
-    bar = page.scroll.verticalScrollBar()
+    bar = _owner_bar(page, screen)
     landed = bar.value()
-    _wheel(page, 120 if screen == "duplicates" else -120, 3 if screen == "duplicates" else 6)
+    _owner_scrolls(page, screen)
     qtbot.wait(50)
     scrolled = bar.value()
     assert scrolled != landed and _focused() is card
@@ -965,9 +983,9 @@ def _scrolled_away(qtbot, w, root, screen):
     page = _open_review(qtbot, w, root, screen)
     card = _on_card(qtbot, page, 0)
     qtbot.wait(300)
-    bar = page.scroll.verticalScrollBar()
+    bar = _owner_bar(page, screen)
     landed = bar.value()
-    _wheel(page, 120 if screen == "duplicates" else -120, 3 if screen == "duplicates" else 6)
+    _owner_scrolls(page, screen)
     qtbot.wait(50)
     assert bar.value() != landed and _focused() is card
     return page, card, bar.value()
@@ -983,11 +1001,11 @@ def test_switching_windows_never_moves_the_review_view(qtbot, make_window, root,
     _other_app(qtbot)
     qtbot.wait(100)
     assert w.strip.text() == strip  # the keys stay, so the view keeps its height
-    assert page.scroll.verticalScrollBar().value() == scrolled
+    assert _owner_bar(page, screen).value() == scrolled
     _activate(qtbot, w)
     qtbot.wait(300)
     assert _focused() is card
-    assert page.scroll.verticalScrollBar().value() == scrolled
+    assert _owner_bar(page, screen).value() == scrolled
     assert w.strip.text() == strip
 
 
@@ -1003,7 +1021,7 @@ def test_closing_a_popup_never_moves_the_review_view(qtbot, make_window, root, s
     menu.close()
     qtbot.wait(300)
     assert _focused() is card
-    assert page.scroll.verticalScrollBar().value() == scrolled
+    assert _owner_bar(page, screen).value() == scrolled
 
 
 @pytest.mark.parametrize("screen", ["duplicates", "bad", "content"])
@@ -1044,3 +1062,84 @@ def test_cards_are_cards(qtbot, make_window, root):
     card = _on_card(qtbot, w.bad_page, 0)
     assert card.objectName() == "card"
     assert card.graphicsEffect() is not None  # the focus glow
+
+
+# ----- Duplicates and Repeated shots: the photo in view, at the app's font ----------------
+
+def _group_of_three(root: Path, prefix: str, kind: str, mixed: bool = False) -> Group:
+    """Three photos with every detail a card can show (a date, a sharpness, a
+    note), in one folder; mixed: in three (so the folder is said too)."""
+    members = []
+    folders = ("trip/", "beach/", "") if mixed else ("trip/",) * 3
+    for n, (sharpness, folder) in enumerate(zip((100.0, 50.0, 90.0), folders)):
+        path = _jpeg(root / f"{folder}{prefix}{n}.jpg", (640, 480))
+        members.append(Candidate(f"{folder}{prefix}{n}.jpg", "photo", 640, 480,
+                                 path.stat().st_size, datetime(2025, 2, 20, 18, 13),
+                                 sharpness, "Exact copy" if kind == "exact" else ""))
+    return Group(kind, members, {members[0].rel})
+
+
+def _in_view(widget, view) -> bool:
+    top_left = widget.mapTo(view, widget.rect().topLeft())
+    bottom_right = widget.mapTo(view, widget.rect().bottomRight())
+    return (top_left.y() >= 0 and top_left.x() >= 0 and bottom_right.y() <= view.height()
+            and bottom_right.x() <= view.width())
+
+
+@pytest.mark.parametrize("mixed", [False, True], ids=["one-folder", "mixed-folders"])
+@pytest.mark.parametrize("size", [(819, 480), (1024, 600)], ids=["819x480", "1024x600"])
+@pytest.mark.parametrize("mode", ["duplicates", "repeated"])
+def test_the_focused_photo_and_its_keep_are_in_view(qtbot, make_window, root, mode, size,
+                                                    mixed):
+    w = make_window(size=size)
+    qtbot.waitUntil(lambda: (w.width(), w.height()) == size)
+    kind = "repeated" if mode == "repeated" else "exact"
+    _start(qtbot, w, root, mode)
+    groups_flow._on_found(w, [_group_of_three(root, "x", kind, mixed),
+                              _group_of_three(root, "y", kind, mixed)])
+    page = w.review_page
+    view = page.scroll.viewport()
+    _on_card(qtbot, page, 0)
+    qtbot.wait(300)  # settled, as long before the owner's first key
+    for n in (0, 1):
+        if n:
+            _key(qtbot, Qt.Key.Key_Right)
+            qtbot.wait(50)
+        card = page.cards[n]
+        assert _focused() is card
+        thumb_top = card.thumb_label.mapTo(view, card.thumb_label.rect().topLeft()).y()
+        assert 0 <= thumb_top < view.height(), (n, thumb_top)
+        assert _in_view(card.keep_check, view), (n, card.height(), view.height())
+        assert card.thumb_label.width() >= SHORTEST_THUMB_PX
+        folder_line = card.details_label.text().splitlines()[-1]
+        assert (folder_line == ("trip", "beach")[n]) == mixed, folder_line
+    rows = {b.mapTo(w, b.rect().topLeft()).y()
+            for b in page.findChildren(QPushButton) if b.isVisible()}
+    assert len(rows) <= 2, rows  # the buttons in two rows at most
+
+
+def test_a_short_view_lays_the_details_beside_the_photo(qtbot, make_window, root):
+    w = make_window(size=(819, 480))
+    _start(qtbot, w, root, "repeated")
+    groups_flow._on_found(w, [_group_of_three(root, "x", "repeated")])
+    page = w.review_page
+    card = _on_card(qtbot, page, 0)
+    qtbot.wait(300)
+    assert card.is_beside()  # a stacked card can't fit the short view
+    thumb, details = card.thumb_label, card.details_label
+    assert details.mapTo(card, details.rect().topLeft()).x() > thumb.mapTo(
+        card, thumb.rect().topRight()).x()
+    w.resize(1280, 800)  # the view grows: stacked again, the details under the photo
+    qtbot.wait(300)  # laid out again
+    assert not card.is_beside()
+    assert details.mapTo(card, details.rect().topLeft()).y() > thumb.mapTo(
+        card, thumb.rect().bottomLeft()).y()
+
+
+def test_the_review_buttons_are_short(qtbot, make_window, root):
+    w = make_window()
+    _start(qtbot, w, root, "repeated")
+    groups_flow._on_found(w, [_group(root, "1", "repeated")])
+    page = w.review_page
+    assert page.keep_one_button.text() == "Keep sharpest"
+    assert page.confirm_button.text() == "Confirm && next"

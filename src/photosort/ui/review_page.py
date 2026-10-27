@@ -20,7 +20,8 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QFont, QImage
 from PySide6.QtWidgets import (
-    QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QBoxLayout, QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout,
+    QWidget,
 )
 
 from photosort.groups import Candidate, Group, sharpest, sharpness_label
@@ -36,7 +37,9 @@ from photosort.ui.photo_preview import PhotoPreview
 from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.shortcuts import GridNavigator
 from photosort.ui.theme import CARD_LINE_SPACING, page_spacing, styled
-from photosort.ui.widgets import ButtonBar, Thumbnail, fitting_thumb_side, needed_height
+from photosort.ui.widgets import (
+    SHORTEST_THUMB_PX, ButtonBar, Thumbnail, fitting_thumb_side, needed_height,
+)
 from photosort.ui.worker import Task
 
 _log = logging.getLogger("photosort")
@@ -48,6 +51,8 @@ KIND_LABEL = {
 }
 LOADING = "Loading…"
 CARD_SPACING = 12  # between the cards of a group
+BESIDE_GAP = 12  # between a card's thumbnail and its details, side by side
+CARD_BORDER_PX = 2  # a card's border at its widest (focused)
 VIDEO = "Video"
 CANT_SHOW = "Can't show"
 
@@ -78,7 +83,11 @@ def render_thumbnail(token: tuple[int, int], path: Path, progress=None, cancel=N
 
 class CandidateCard(QFrame):
     """One file of a group: its thumbnail, what is known about it, and Keep.
-    The card takes the focus; the Keep tick is Space's."""
+    The card takes the focus; the Keep tick is Space's.
+
+    The details and Keep sit under the thumbnail, or beside it (set_beside)
+    in a view too short for a card stacked that way. The folder is said only
+    when the group's files are in different folders."""
 
     def __init__(self, root: Path, candidate: Candidate, group: Group,
                  parent: QWidget | None = None) -> None:
@@ -93,16 +102,18 @@ class CandidateCard(QFrame):
         c = candidate
         folder, _, name = c.rel.rpartition("/")
         lines = [name]
+        size = f"{c.size / 1_000_000:.1f} MB"
         if c.width is not None and c.height is not None:
-            lines.append(f"{c.width} × {c.height}")
-        lines.append(f"{c.size / 1_000_000:.1f} MB")
+            size = f"{c.width} × {c.height} · {size}"
+        lines.append(size)
         lines.append(_taken_text(c.taken))
         label = sharpness_label(c, group)
         if label:
             lines.append(f"Sharpness: {label}")
         if c.note:
             lines.append(c.note)
-        lines.append(folder or "(top folder)")
+        if len({m.rel.rpartition("/")[0] for m in group.members}) > 1:
+            lines.append(folder or "(top folder)")  # where it is tells them apart
         self.details_label = QLabel("\n".join(lines))
         self.details_label.setFixedWidth(THUMB_PX)
         self.details_label.setWordWrap(True)
@@ -111,13 +122,34 @@ class CandidateCard(QFrame):
         self.keep_check = QCheckBox("Keep")
         self.keep_check.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # Space on the card ticks
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(CARD_LINE_SPACING)
-        layout.addWidget(self.thumb_label, 0, Qt.AlignmentFlag.AlignHCenter)
-        layout.addWidget(self.details_label)
-        layout.addWidget(self.keep_check)
-        layout.addStretch()
+        self._layout = QBoxLayout(QBoxLayout.Direction.TopToBottom, self)
+        self._layout.setContentsMargins(10, 10, 10, 10)
+        self._layout.setSpacing(CARD_LINE_SPACING)
+        self._layout.addWidget(self.thumb_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        text = QVBoxLayout()
+        text.setSpacing(CARD_LINE_SPACING)
+        text.addWidget(self.details_label)
+        text.addWidget(self.keep_check)
+        text.addStretch()
+        self._layout.addLayout(text, 1)
+
+    def is_beside(self) -> bool:
+        return self._layout.direction() == QBoxLayout.Direction.LeftToRight
+
+    def set_beside(self, beside: bool) -> None:
+        """The details and Keep beside the thumbnail, or under it."""
+        if beside == self.is_beside():
+            return
+        self._layout.setDirection(QBoxLayout.Direction.LeftToRight if beside
+                                  else QBoxLayout.Direction.TopToBottom)
+        self._layout.setSpacing(BESIDE_GAP if beside else CARD_LINE_SPACING)
+        self._layout.setAlignment(self.thumb_label, Qt.AlignmentFlag.AlignTop if beside
+                                  else Qt.AlignmentFlag.AlignHCenter)
+
+    def chrome_height(self) -> int:
+        """The card's height beyond what is inside its margins."""
+        margins = self._layout.contentsMargins()
+        return margins.top() + margins.bottom() + 2 * CARD_BORDER_PX
 
     def path(self) -> Path:
         return self.root / self.candidate.rel
@@ -179,9 +211,9 @@ class ReviewPage(QWidget):
         self.cancel_button = QPushButton("Cancel")
         self.fullscreen_button = QPushButton("Full screen…")
         self.keep_all_button = QPushButton("Keep all")
-        self.keep_one_button = QPushButton("Keep one (sharpest)")
+        self.keep_one_button = QPushButton("Keep sharpest")
         self.skip_button = QPushButton("Skip")
-        self.confirm_button = QPushButton(literal("Confirm & next group"))
+        self.confirm_button = QPushButton(literal("Confirm & next"))
         self.confirm_button.setDefault(True)
         layout.addWidget(ButtonBar(
             [self.back_button, self.stop_button, self.cancel_button],
@@ -278,9 +310,18 @@ class ReviewPage(QWidget):
         if it can (a card still taller shows its answers: see GridNavigator)."""
         if not self.cards:
             return
-        rest = max(needed_height(card) - card.thumb_label.minimumWidth() for card in self.cards)
-        side = fitting_thumb_side(THUMB_PX, rest, self.scroll.viewport().height() - 8)
+        room = self.scroll.viewport().height() - 8
         for card in self.cards:
+            card.set_beside(False)
+        rest = max(needed_height(card) - card.thumb_label.minimumWidth() for card in self.cards)
+        beside = rest + SHORTEST_THUMB_PX > room  # stacked, even the smallest won't fit
+        if beside:  # the photo as tall as the view lets it be, the details beside it
+            side = max(SHORTEST_THUMB_PX,
+                       min(THUMB_PX, room - max(card.chrome_height() for card in self.cards)))
+        else:
+            side = fitting_thumb_side(THUMB_PX, rest, room)
+        for card in self.cards:
+            card.set_beside(beside)
             card.thumb_label.set_side(side)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
