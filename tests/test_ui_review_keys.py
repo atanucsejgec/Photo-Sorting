@@ -13,8 +13,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 from PIL import Image
-from PySide6.QtCore import QEvent, Qt, QThreadPool, QTimer
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QThreadPool, QTimer
+from PySide6.QtGui import QKeyEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication, QPushButton
 
 from photosort.groups import Candidate, Group
@@ -891,6 +891,44 @@ def test_a_screen_lands_with_the_focused_cards_answers_in_view(qtbot, make_windo
         assert page.heading_label.text().startswith("Group 2 of 2")
         qtbot.wait(300)
         assert _answers_in_view(page, screen)
+
+
+def _wheel(page, dy: int, times: int) -> None:
+    """The mouse wheel over the view, as the owner turns it (the focus stays put)."""
+    view = page.scroll.viewport()
+    at = QPoint(50, 50)
+    for _ in range(times):
+        QApplication.sendEvent(view, QWheelEvent(
+            QPointF(at), QPointF(view.mapToGlobal(at)), QPoint(0, 0), QPoint(0, dy),
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase, False))
+
+
+@pytest.mark.parametrize("screen", ["duplicates", "bad", "content"])
+def test_a_resize_never_pulls_the_view_back_after_the_owner_scrolled(qtbot, make_window,
+                                                                     root, screen):
+    """The wheel moves the view, not the focus: a resize afterwards leaves the
+    view where the owner put it (no jump back to the focused card)."""
+    w = make_window(size=(819, 480))
+    if screen == "bad":  # enough cards to scroll a long way
+        _start(qtbot, w, root, "bad")
+        bad_flow._on_found(w, _bad(root, 12))
+        page = w.bad_page
+    else:
+        page = _review_on_first_item(qtbot, w, root, screen)
+    card = _on_card(qtbot, page, 0)
+    qtbot.wait(300)  # landed and settled
+    bar = page.scroll.verticalScrollBar()
+    landed = bar.value()
+    _wheel(page, 120 if screen == "duplicates" else -120, 3 if screen == "duplicates" else 6)
+    qtbot.wait(50)
+    scrolled = bar.value()
+    assert scrolled != landed and _focused() is card
+    for size in ((829, 490), (1280, 800)):
+        w.resize(*size)
+        qtbot.wait(300)
+        assert bar.value() == min(scrolled, bar.maximum()), (screen, size, landed, scrolled)
+        assert _focused() is card
 
 
 def test_grid_columns_fill_the_width(qtbot, make_window, root):

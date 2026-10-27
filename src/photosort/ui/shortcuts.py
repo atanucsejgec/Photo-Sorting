@@ -324,7 +324,9 @@ class GridNavigator(QObject):
     (the others take focus by click), so the cards are one stop for Tab. ↓
     into a short last row lands on its last card. A card given focus is
     scrolled into view (its bottom, with its answers, when it is taller than
-    the view).
+    the view). The view stays pinned to it, scrolled into view again when the
+    view changes size (reveal_soon), until the owner scrolls it (the wheel, a
+    scrollbar) away; a card taking the focus pins it again.
 
     set_cards() swaps in the cards of a reload: the current card stays the
     one with the same key(card) (its identity; by default its place), unless
@@ -344,6 +346,8 @@ class GridNavigator(QObject):
         self.cards: list[QWidget] = []
         self._current = 0
         self._current_key: object = None
+        self._pinned = False  # the view follows the focused card (see reveal_soon)
+        self._areas: list[QScrollArea] = []  # whose scrollbars unpin it
         self.set_cards(cards, 0)
 
     def set_cards(self, cards: list[QWidget], current: int | None = None) -> None:
@@ -375,27 +379,37 @@ class GridNavigator(QObject):
     def reveal_soon(self) -> None:
         """Scroll the focused card into view again once the layout has
         settled: the view has changed size (a scrollbar came or went, the
-        window was resized) since it took the focus."""
+        window was resized) since it took the focus. Not once the owner has
+        scrolled the view elsewhere: it stays where they put it."""
         QTimer.singleShot(0, self, self._reveal)
 
     def _reveal(self) -> None:
         card = self.current()
-        if card is not None and isValid(card) and card.hasFocus():
+        if self._pinned and card is not None and isValid(card) and card.hasFocus():
             self._scroll_to(card)
 
-    @staticmethod
-    def _scroll_to(card: QWidget) -> None:
+    def _unpin(self, _action: int = 0) -> None:
+        """The owner scrolled (a scrollbar action: the wheel, a drag, a click
+        on the bar), not a setValue() or a range shrinking under the value."""
+        self._pinned = False
+
+    def _scroll_to(self, card: QWidget) -> None:
         """Into view in its scroll area; a card taller than the view shows
-        its bottom (the answers), not its middle."""
+        its bottom (the answers), not its middle. The view is pinned to it."""
         area = card.parentWidget()
         while area is not None and not isinstance(area, QScrollArea):
             area = area.parentWidget()
         if area is None:
             return
+        if not any(known is area for known in self._areas):
+            self._areas = [known for known in self._areas if isValid(known)] + [area]
+            for bar in (area.verticalScrollBar(), area.horizontalScrollBar()):
+                bar.actionTriggered.connect(self._unpin)
         area.ensureWidgetVisible(card, 12, 12)
         if card.height() > area.viewport().height():
             bottom = card.mapTo(area.widget(), QPoint(0, card.height())).y()
             area.verticalScrollBar().setValue(bottom + 4 - area.viewport().height())
+        self._pinned = True
 
     def _make_current(self, n: int) -> None:
         self._current = max(n, 0)
