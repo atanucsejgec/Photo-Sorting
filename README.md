@@ -1,7 +1,7 @@
 # Photo Sorter
 
-A desktop app that sorts the photos and videos in any folder you pick. It moves the
-original files into tidy folders and keeps an Undo for every run.
+A desktop app that sorts the photos, videos and other files in any folder you pick. It
+moves the original files into tidy folders and keeps an Undo for every run.
 
 It has 14 ways of sorting:
 - **Date** mode: `2025/02-February/20-02-2025/`. A day with 3 or more files gets its
@@ -42,8 +42,8 @@ It has 14 ways of sorting:
 - **No people** mode: photos with no face in them go to `No people/`; the rest stay.
 - **Extension** mode: every file, of any type, into a folder named after its extension
   (`APK/`, `EXE/`, `PDF/`).
-- **Date (all files)** mode: every file, of any type, into `2025/02-February/`, by the
-  date it was modified or created (you choose each time).
+- **Date (all files)** mode: every file, of any type, into the same folders as Date mode,
+  day folders too, by the date it was modified or created (you choose each time).
 
 In the other modes, files the mode can't place stay where they are. You always see what
 will move before anything does. Nothing is ever deleted: the files you set aside go to a
