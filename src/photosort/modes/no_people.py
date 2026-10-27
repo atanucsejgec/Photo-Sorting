@@ -24,7 +24,7 @@ from photosort.cache import AnalysisCache
 from photosort.faces import Face
 from photosort.media import kind
 from photosort.modes.face_mode import Analyser, faces_of
-from photosort.naming import TargetAllocator, fold, resolve_existing_dir
+from photosort.naming import TargetAllocator, fold, real_dir, resolve_existing_dir
 from photosort.plan import Move, Plan
 from photosort.scanner import scan
 
@@ -36,8 +36,7 @@ def _folder_blocked(root: Path, folder: str) -> bool:
     in root: an entry of that name in any case is a link (a symlink or
     junction, even to a folder) or is not a folder, and folder itself is not
     a real folder."""
-    path = root / folder
-    if os.path.isdir(path) and not (os.path.islink(path) or os.path.isjunction(path)):
+    if real_dir(root / folder):
         return False
     try:
         with os.scandir(root) as entries:
@@ -94,8 +93,10 @@ def find_no_people(
     if cancel is not None and cancel.is_set():
         return None
 
-    summary = [f"{len(moves)} photos without faces → {NO_PEOPLE}",
-               f"{with_people} photos with people stay"]
+    summary = []
+    if moves or not stuck:  # never "0 photos without faces" when some were found
+        summary.append(f"{len(moves)} photos without faces → {NO_PEOPLE}")
+    summary.append(f"{with_people} photos with people stay")
     if unreadable:
         summary.append(f"{unreadable} photos could not be read (they stay)")
     if in_place:

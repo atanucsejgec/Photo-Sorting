@@ -8,7 +8,7 @@ from fstree import tree
 
 from photosort.executor import execute
 from photosort.journal import RunJournal
-from photosort.modes import MODE_SPECS, MODES
+from photosort.modes import MODE_SPECS, MODES, extension_mode
 from photosort.modes.extension_mode import (
     NO_EXTENSION, extension_folder, plan_extension, prepare_extension_plan,
 )
@@ -264,6 +264,27 @@ def test_a_symlink_in_the_way_of_a_folder_keeps_its_files_in_place(tmp_path):
     plan = prepare_extension_plan(tmp_path, False)
     assert "a.pdf" not in _dsts(plan)
     assert "1 files stay: a file or link with their folder's name is in the way" in plan.summary
+
+
+def test_a_folder_in_the_way_is_checked_once_not_once_per_file(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    _touch(tmp_path / "elsewhere.txt", b"e")
+    root.mkdir()
+    os.symlink(tmp_path / "elsewhere.txt", root / "pdf")
+    for name in ("a.pdf", "b.pdf", "c.pdf"):
+        _touch(root / name)
+    checked = []
+    real_folder = extension_mode._real_folder
+
+    def counted(root, folder):
+        checked.append(folder)
+        return real_folder(root, folder)
+
+    monkeypatch.setattr(extension_mode, "_real_folder", counted)
+    plan = prepare_extension_plan(root, False)
+    assert plan.moves == []
+    assert "3 files stay: a file or link with their folder's name is in the way" in plan.summary
+    assert checked == ["PDF"]
 
 
 @pytest.mark.parametrize("link", ["PDF", "pdf"])

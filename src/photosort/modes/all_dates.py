@@ -23,7 +23,7 @@ from typing import Literal
 from photosort.dates import find_date
 from photosort.media import kind
 from photosort.modes.date_mode import DAY_FOLDER_MIN, date_target, day_folder_rule
-from photosort.naming import TargetAllocator, fold, resolve_existing_dir
+from photosort.naming import TargetAllocator, fold, real_dir, resolve_existing_dir
 from photosort.plan import Move, Plan
 from photosort.scanner import walk_all_files
 
@@ -180,8 +180,7 @@ def plan_all_dates(root: Path, files: list[str], dates: dict[str, date], *,
     def is_blocked(target: str) -> bool:
         if target not in blocked:
             blocked[target] = any(
-                os.path.islink(path) or os.path.isjunction(path)
-                or (os.path.lexists(path) and not os.path.isdir(path))
+                os.path.lexists(path) and not real_dir(path)
                 for path in (root / resolve_existing_dir(root, folder)
                              for folder in _prefixes(target)))
         return blocked[target]
