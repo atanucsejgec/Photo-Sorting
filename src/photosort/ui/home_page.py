@@ -13,16 +13,18 @@ A pasted path is trimmed of the spaces and line breaks around it.
 
 The count of photos and videos in the folder runs on a worker Task, one at a
 time, a short while after the folder or the switch last changed; a count
-for a folder or switch that has changed since is dropped.
+for a folder or switch that has changed since is dropped. Counting again
+the folder and switch last counted (on coming back Home) keeps showing the
+last count until the new one arrives. A path that is not a folder says so.
 """
 
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QFont, QPainter
 from PySide6.QtWidgets import (
-    QAbstractButton, QCheckBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QAbstractButton, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QSizePolicy, QStyle, QStyleOption, QVBoxLayout, QWidget,
 )
 
@@ -30,7 +32,8 @@ from photosort.modes import MODES
 from photosort.scanner import walk_media
 from photosort.ui import icons, shortcuts
 from photosort.ui.labels import literal
-from photosort.ui.theme import COLORS, SMALL_SCALE, heading, scaled_font, styled
+from photosort.ui.theme import SMALL_SCALE, heading, scaled_font, styled
+from photosort.ui.widgets import Switch
 from photosort.ui.worker import Task
 
 HEADING = "Sort a folder"
@@ -51,6 +54,7 @@ TILES: tuple[tuple[str, str], ...] = (
 MAX_COLUMNS = 4
 TILE_MIN_WIDTH = 180  # px a tile needs; fewer columns below MAX_COLUMNS of them
 TILE_ICON_PX = 22
+NO_FOLDER = "No such folder"
 _ARROWS = (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down)
 _ENTER = (Qt.Key.Key_Return, Qt.Key.Key_Enter)
 
@@ -82,67 +86,10 @@ def _inserted(old: str, new: str) -> str:
     return new[start:len(new) - end]
 
 
-class Switch(QCheckBox):
-    """A checkbox drawn as an on/off switch: a track with a knob, then the text."""
-
-    TRACK_W, TRACK_H = 30, 16
-    _PAD = 4  # room for the focus ring
-    _GAP = 10
-
-    def __init__(self, text: str, parent: QWidget | None = None) -> None:
-        super().__init__(text, parent)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    def sizeHint(self) -> QSize:
-        metrics = self.fontMetrics()
-        width = self._PAD * 2 + self.TRACK_W + self._GAP + metrics.horizontalAdvance(self.text())
-        return QSize(width, max(self.TRACK_H, metrics.height()) + self._PAD * 2)
-
-    def minimumSizeHint(self) -> QSize:
-        return self.sizeHint()
-
-    def hitButton(self, pos) -> bool:
-        return self.rect().contains(pos)
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        on, enabled = self.isChecked(), self.isEnabled()
-        track = QRectF(self._PAD, (self.height() - self.TRACK_H) / 2, self.TRACK_W,
-                       self.TRACK_H)
-        radius = self.TRACK_H / 2
-        if on and enabled:
-            fill = QLinearGradient(track.topLeft(), track.topRight())
-            fill.setColorAt(0, QColor(COLORS["accent_from"]))
-            fill.setColorAt(1, QColor(COLORS["accent_to"]))
-            painter.setBrush(fill)
-            painter.setPen(Qt.PenStyle.NoPen)
-        else:
-            painter.setBrush(QColor(COLORS["raised"]))
-            painter.setPen(QPen(QColor(COLORS["border"]), 1))
-        painter.drawRoundedRect(track.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
-        knob = self.TRACK_H - 6
-        x = track.right() - 3 - knob if on else track.left() + 3
-        painter.setPen(Qt.PenStyle.NoPen)
-        knob_colour = "on_accent" if on and enabled else ("muted" if enabled else "disabled")
-        painter.setBrush(QColor(COLORS[knob_colour]))
-        painter.drawEllipse(QRectF(x, track.top() + 3, knob, knob))
-        if self.hasFocus():
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(QColor(COLORS["focus"]), 2))
-            painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 6, 6)
-        painter.setPen(QColor(COLORS["text" if on else "muted"] if enabled
-                              else COLORS["disabled"]))
-        text_rect = QRectF(track.right() + self._GAP, 0,
-                           self.width() - track.right() - self._GAP, self.height())
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter, self.text())
-        painter.end()
-
-
 class ModeTile(QAbstractButton):
     """A mode's tile: its icon, name and a one-line hint. A click, or Enter
     while it has focus, clicks it; a held Enter's repeats do nothing (a tile
-    needs a fresh press)."""
+    needs a fresh press). Space does nothing: it ticks, and a tile has no tick."""
 
     def __init__(self, key: str, name: str, hint: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -192,7 +139,16 @@ class ModeTile(QAbstractButton):
                 self.click()
             event.accept()
             return
+        if event.key() == Qt.Key.Key_Space:
+            event.accept()  # Space ticks; there is nothing to tick on a tile
+            return
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Space:
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
 
 
 class HomePage(QWidget):
@@ -274,6 +230,8 @@ class HomePage(QWidget):
         self._counting = False  # a count Task is running
         self._count_generation = 0  # the generation the running count is for
         self._count_again = False  # count once the running one is done
+        self._count_what: tuple[Path, bool] | None = None  # what the running count is of
+        self._last_count: tuple[tuple[Path, bool], str] | None = None  # (what, text)
         self._count_timer = QTimer(self)
         self._count_timer.setSingleShot(True)
         self._count_timer.setInterval(self.COUNT_DELAY_MS)
@@ -395,12 +353,26 @@ class HomePage(QWidget):
 
     # ----- the count -------------------------------------------------------
 
+    def _counted_what(self) -> tuple[Path, bool] | None:
+        """The folder and switch a count is of; None without a folder."""
+        root = self.folder()
+        return None if root is None else (root, self.subfolders_switch.isChecked())
+
+    def _no_folder_text(self) -> str:
+        return NO_FOLDER if self.folder_edit.text().strip() else ""
+
     def refresh_count(self) -> None:
         """Count again soon: the folder, the switch or the files have changed."""
         self._generation += 1
         if self._counting and self._count_task is not None:
             self._count_task.cancel_event.set()  # stale now
-        self._show_count("Counting…" if self.folder() is not None else "")
+        what = self._counted_what()
+        if what is None:
+            self._show_count(self._no_folder_text())
+        elif self._last_count is not None and self._last_count[0] == what:
+            self._show_count(self._last_count[1])  # no flicker; the new count follows
+        else:
+            self._show_count("Counting…")
         self._count_timer.start()
 
     def _count_now(self) -> None:
@@ -413,28 +385,31 @@ class HomePage(QWidget):
             self._count_again = True  # once the running one is done
             return
         self._count_again = False
-        root = self.folder()
-        if root is None:
-            self._show_count("")
+        what = self._counted_what()
+        if what is None:
+            self._show_count(self._no_folder_text())
             return
         self._counting = True
         self._count_generation = self._generation
-        task = Task(count_media, root, self.subfolders_switch.isChecked())
+        self._count_what = what
+        task = Task(count_media, *what)
         task.signals.result.connect(self._counted)
         task.signals.error.connect(self._count_failed)
         self._count_task = task  # kept alive while it runs
         task.start()
 
     def _counted(self, n: int | None) -> None:
-        self._count_done("" if n is None else _files(n))
+        self._count_done(None if n is None else _files(n))
 
     def _count_failed(self, message: str) -> None:
         self._count_done("Can't read this folder")
 
-    def _count_done(self, text: str) -> None:
+    def _count_done(self, text: str | None) -> None:
+        """text: what to show, or None if the count was cancelled."""
         self._counting = False
         if self._count_generation == self._generation:
-            self._show_count(text)
+            self._show_count(text or "")
+            self._last_count = None if text is None else (self._count_what, text)
         if self._count_again:
             self._start_count()
 

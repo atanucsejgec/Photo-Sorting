@@ -81,12 +81,13 @@ class FullscreenViewer(QDialog):
     """Shows one group's photos large; the owner flips through them and picks the keepers."""
 
     def __init__(self, root: Path, group: Group, keep: set[str],
-                 parent: QWidget | None = None) -> None:
+                 parent: QWidget | None = None, start: int = 0) -> None:
+        """Show group's files, those in keep kept, from file start."""
         super().__init__(parent)
         self.root = Path(root)
         self.group = group
         self._keep = set(keep)
-        self.current_index = 0
+        self.current_index = max(0, min(start, len(group.members) - 1))
         self.side_by_side = False
         self.zoom = 1.0
         # index -> photo, or CANT_SHOW; least recently wanted first

@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 from PySide6.QtCore import QMimeData, QPointF, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QDropEvent, QKeySequence
-from PySide6.QtWidgets import QDialog, QFileDialog
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog
 
 from photosort.faces import Face
 from photosort.modes.face_mode import FaceScan, Question
@@ -543,11 +543,16 @@ def asking(tmp_path, store, make_jpeg):
 
 
 def _question_page(qtbot, asking) -> FaceQuestionPage:
+    """The page, shown and focused, so its keys work."""
     root, scan, people = asking
     page = FaceQuestionPage()
     qtbot.addWidget(page)
     page.resize(900, 600)
     page.load(root, scan, people)
+    page.show()
+    qtbot.waitExposed(page)
+    page.activateWindow()
+    qtbot.waitUntil(lambda: QApplication.focusWidget() is page)
     return page
 
 
@@ -616,7 +621,7 @@ def test_keys_answer_and_move_on(qtbot, asking):
     assert page.counter_label.text() == "3 of 3"
     assert page.heading_label.text() == "Is this Zoe? 38% sure"
     assert done == []
-    qtbot.keyClick(page, Qt.Key.Key_S)
+    qtbot.keyClick(page, Qt.Key.Key_Space)
     a, b_atanu, b_zoe = _keys(scan)
     assert done == [{a: "yes", b_atanu: "no", b_zoe: "skip"}]
 
@@ -643,7 +648,7 @@ def test_skip_passes_over_the_photos_other_questions(qtbot, asking, make_jpeg):
     done = []
     page.finished.connect(done.append)
     qtbot.keyClick(page, Qt.Key.Key_Y)
-    qtbot.keyClick(page, Qt.Key.Key_S)  # b.jpg stays put: Zoe in it needn't be asked
+    qtbot.keyClick(page, Qt.Key.Key_Space)  # b.jpg stays put: Zoe in it needn't be asked
     assert page.counter_label.text() == "4 of 4"
     assert page.photo_view.toolTip() == "c.jpg"
     page.back_button.click()  # back onto the question passed over
@@ -664,7 +669,7 @@ def test_skip_on_the_last_photo_finishes(qtbot, asking):
     done = []
     page.finished.connect(done.append)
     qtbot.keyClick(page, Qt.Key.Key_N)
-    qtbot.keyClick(page, Qt.Key.Key_S)
+    qtbot.keyClick(page, Qt.Key.Key_Space)
     a, b_atanu, _ = _keys(scan)
     assert done == [{a: "no", b_atanu: "skip"}]
 
@@ -674,16 +679,16 @@ def test_keys_with_a_modifier_do_nothing(qtbot, asking):
     done = []
     page.finished.connect(done.append)
     qtbot.keyClick(page, Qt.Key.Key_Y)
-    for key, modifier in ((Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier),
+    for key, modifier in ((Qt.Key.Key_Space, Qt.KeyboardModifier.ControlModifier),
                           (Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier),
                           (Qt.Key.Key_N, Qt.KeyboardModifier.AltModifier),
-                          (Qt.Key.Key_S, Qt.KeyboardModifier.ShiftModifier),
-                          (Qt.Key.Key_Left, Qt.KeyboardModifier.ControlModifier)):
+                          (Qt.Key.Key_Space, Qt.KeyboardModifier.ShiftModifier),
+                          (Qt.Key.Key_Escape, Qt.KeyboardModifier.ControlModifier)):
         qtbot.keyClick(page, key, modifier)
         assert page.counter_label.text() == "2 of 3"
         assert page.answer_label.text() == ""
-    qtbot.keyClick(page, Qt.Key.Key_Left, Qt.KeyboardModifier.KeypadModifier)
-    assert page.counter_label.text() == "1 of 3"  # the keypad's arrow works
+    qtbot.keyClick(page, Qt.Key.Key_Escape)
+    assert page.counter_label.text() == "1 of 3"  # Esc: back a question
     assert done == []
 
 
@@ -694,7 +699,7 @@ def test_previous_lets_an_answer_be_changed(qtbot, asking):
     page.finished.connect(done.append)
     qtbot.keyClick(page, Qt.Key.Key_Y)
     qtbot.keyClick(page, Qt.Key.Key_Y)
-    qtbot.keyClick(page, Qt.Key.Key_Left)
+    qtbot.keyClick(page, Qt.Key.Key_Escape)
     assert page.counter_label.text() == "2 of 3"
     assert page.answer_label.text() == "Your answer: Yes"
     page.back_button.click()
@@ -729,7 +734,7 @@ def test_resume_shows_the_last_question_with_its_answer(qtbot, asking):
     page = _question_page(qtbot, asking)
     done = []
     page.finished.connect(done.append)
-    for key in (Qt.Key.Key_Y, Qt.Key.Key_N, Qt.Key.Key_S):
+    for key in (Qt.Key.Key_Y, Qt.Key.Key_N, Qt.Key.Key_Space):
         qtbot.keyClick(page, key)
     page.resume()
     assert page.counter_label.text() == "3 of 3"

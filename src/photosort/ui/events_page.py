@@ -6,6 +6,11 @@ thumbnails. A blank name means the default one, shown greyed in the field.
 Thumbnails are made on pool threads (see review_page.render_thumbnail),
 tagged with the page generation and the row they were asked for; one for a
 row that is gone (merged, split, or a page loaded since) is ignored.
+
+Keys: ↑ and ↓ move between the rows (a GridNavigator, one column); on a row,
+Space skips or unskips it, F2 or Enter renames it (in the name box Enter is
+done and Esc stops editing), M merges it with the next and S splits it.
+Ctrl+Enter continues to the summary and Esc asks whether to leave (left()).
 """
 
 from pathlib import Path
@@ -21,8 +26,13 @@ from photosort.media import kind
 from photosort.modes.date_mode import MONTH_NAMES
 from photosort.modes.events import Event, default_names, merge, split
 from photosort.thresholds import EVENT_THUMB_PX, EVENT_THUMBS
+from photosort.ui import shortcuts
 from photosort.ui.review_page import LOADING, VIDEO, render_thumbnail
+from photosort.ui.shortcuts import GridNavigator
+from photosort.ui.theme import styled
 from photosort.ui.worker import Task
+
+_THUMB_GAP = 6  # between an event's thumbnails
 
 
 def _day_text(day) -> str:
@@ -53,18 +63,24 @@ def _spread[T](items: tuple[T, ...], count: int) -> list[T]:
 
 
 class EventRow(QFrame):
-    """One event: its thumbnails, name field, dates and count, and its buttons."""
+    """One event: its thumbnails, name field, dates and count, and its
+    buttons. The row takes the focus; the name box takes it to be typed in."""
 
     def __init__(self, row_id: int, event: Event, name: str, skipped: bool,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.row_id = row_id  # unique within a page generation
         self.found_event = event  # not .event: that is QWidget.event()
-        self.setFrameShape(QFrame.Shape.StyledPanel)
+        styled(self, "card")
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self.thumb_files = _spread(event.files, EVENT_THUMBS)
         self.thumb_labels: list[QLabel] = []
-        thumbs = QHBoxLayout()
+        strip = QWidget()  # as wide as EVENT_THUMBS thumbnails, so the names line up
+        thumbs = QHBoxLayout(strip)
+        thumbs.setContentsMargins(0, 0, 0, 0)
+        thumbs.setSpacing(_THUMB_GAP)
+        strip.setFixedWidth(EVENT_THUMBS * EVENT_THUMB_PX + (EVENT_THUMBS - 1) * _THUMB_GAP)
         for rel in self.thumb_files:
             label = QLabel(VIDEO if kind(rel) == "video" else LOADING)
             label.setFixedSize(EVENT_THUMB_PX, EVENT_THUMB_PX)
@@ -76,15 +92,21 @@ class EventRow(QFrame):
         thumbs.addStretch()
 
         self.name_edit = QLineEdit(name)
+        self.name_edit.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # F2 or Enter on the row
+        shortcuts.bind(self.name_edit, "Return", "Enter", "done", self.stop_editing)
+        shortcuts.bind(self.name_edit, "Escape", "Esc", "stop editing", self.stop_editing)
         self.range_label = QLabel(range_text(event))
         count = len(event.files)
         self.count_label = QLabel(f"{count} file{'' if count == 1 else 's'}")
+        self.count_label.setObjectName("muted")
         self.merge_button = QPushButton("Merge with next")
         self.split_button = QPushButton("Split")
         self.split_button.setEnabled(_can_split(event))
         self.skip_check = QCheckBox("Skip")
         self.skip_check.setChecked(skipped)
         self.skip_check.setToolTip("Leave this event's files where they are")
+        for widget in (self.merge_button, self.split_button, self.skip_check):
+            widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # the row's keys do these
 
         details = QVBoxLayout()
         details.addWidget(self.name_edit)
@@ -98,8 +120,19 @@ class EventRow(QFrame):
         details.addStretch()
 
         layout = QHBoxLayout(self)
-        layout.addLayout(thumbs, 0)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(12)
+        layout.addWidget(strip, 0)
         layout.addLayout(details, 1)
+
+    def rename(self) -> None:
+        """Type a new name: the name box takes the focus, its text selected."""
+        self.name_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.name_edit.selectAll()
+
+    def stop_editing(self) -> None:
+        """Back to the row; the name typed stays."""
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def set_thumbnail(self, n: int, value: QImage | str) -> None:
         """Show thumbnail n, or a placeholder text such as "Can't show". GUI thread only."""
@@ -115,10 +148,12 @@ class EventRow(QFrame):
 
 class EventsPage(QWidget):
     """Shows the events found; emits finished(events, names typed, indices
-    skipped) or cancelled()."""
+    skipped), cancelled() (Back) or left() (Esc, then Leave)."""
 
     finished = Signal(object, object, object)  # list[Event], list[str], set[int]
     cancelled = Signal()
+    left = Signal()
+    keys_changed = Signal()  # a key was switched on or off: the strip redraws
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -128,9 +163,11 @@ class EventsPage(QWidget):
         self._thumb_tasks: dict[tuple[int, int, int], Task] = {}  # kept alive until they report
         self._left_out = 0
         self.rows: list[EventRow] = []
+        self.navigator = GridNavigator([], lambda: 1, vertical_only=True, parent=self)
+        self.navigator.current_changed.connect(self._update_row_keys)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 24)
+        layout.setContentsMargins(32, 24, 32, 12)
         layout.setSpacing(16)
         self.heading_label = QLabel()
         font = self.heading_label.font()
@@ -144,6 +181,7 @@ class EventsPage(QWidget):
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
+        self.scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # the rows take it
         layout.addWidget(self.scroll, 1)
         self._list = self._new_list()
 
@@ -159,6 +197,23 @@ class EventsPage(QWidget):
         self.back_button.clicked.connect(self._cancel)
         self.continue_button.clicked.connect(self._finish)
 
+        # Keys: the rows' own (while one has focus), then the page's. While a
+        # name is typed, the row keys and Esc are off: the keys type, and
+        # Enter and Esc are the name box's.
+        shortcuts.describe(self.scroll, "↑↓", "move")
+        self._skip_key = shortcuts.bind(self.scroll, "Space", "Space", "skip",
+                                        self._skip_current, repeat=False)
+        self._rename_key = shortcuts.bind(self.scroll, ["F2", "Return"], "F2/Enter",
+                                          "rename", self._rename_current, repeat=False)
+        self._merge_key = shortcuts.bind(self.scroll, "M", "M", "merge",
+                                         self._merge_current, repeat=False)
+        self._split_key = shortcuts.bind(self.scroll, "S", "S", "split",
+                                         self._split_current, repeat=False)
+        shortcuts.bind(self, "Ctrl+Return", "Ctrl+Enter", "continue", self._finish,
+                       repeat=False)
+        self._esc_key = shortcuts.bind(self, "Escape", "Esc", "back", self._leave,
+                                       repeat=False)
+
     def load(self, root: Path, events: list[Event], left_out: int) -> None:
         """Show the events found in root, none named or skipped; left_out
         files are in no event."""
@@ -171,6 +226,11 @@ class EventsPage(QWidget):
         for event in events:
             self._insert_row(len(self.rows), event, "", False)
         self._update_rows()
+        self._focus_row(0)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.navigator.focus()  # the first row, or the one the owner was on
 
     # ----- rows ------------------------------------------------------------
 
@@ -187,8 +247,12 @@ class EventsPage(QWidget):
         self._next_id += 1
         row.merge_button.clicked.connect(lambda: self._merge_with_next(row))
         row.split_button.clicked.connect(lambda: self._split(row))
+        shortcuts.pause_while_focused(
+            row.name_edit, [self._skip_key, self._rename_key, self._merge_key,
+                            self._split_key, self._esc_key], resume=self._update_row_keys)
         self.rows.insert(index, row)
         self._list.insertWidget(index, row)
+        row.show()  # now, not when the layout gets round to it: it may take the focus
         for n, rel in enumerate(row.thumb_files):
             if kind(rel) != "video":
                 self._request_thumbnail(row.row_id, n, self._root / rel)
@@ -228,6 +292,7 @@ class EventsPage(QWidget):
         self._remove_row(following)
         self._insert_row(index, merge(row.found_event, following.found_event), name, skipped)
         self._update_rows()
+        self._focus_row(index)
 
     def _split(self, row: EventRow) -> None:
         """Two rows for row's event cut in two: the name stays on the first,
@@ -242,6 +307,42 @@ class EventsPage(QWidget):
         self._insert_row(index, first, name, skipped)
         self._insert_row(index + 1, second, "", skipped)
         self._update_rows()
+        self._focus_row(index)
+
+    def _focus_row(self, index: int) -> None:
+        """Make row index the current one (after the rows changed), focused if shown."""
+        self.navigator.set_cards(self.rows, index)
+        if self.isVisible():
+            self.navigator.focus()
+        self._update_row_keys()
+
+    def _update_row_keys(self) -> None:
+        """M and S work only where the current row can be merged or split
+        (and not while a name is typed: see _insert_row)."""
+        row = self.navigator.current()
+        editing = row is not None and row.name_edit.hasFocus()
+        merge_ok = not editing and row is not None and row.merge_button.isEnabled()
+        split_ok = not editing and row is not None and row.split_button.isEnabled()
+        if (self._merge_key.isEnabled(), self._split_key.isEnabled()) != (merge_ok, split_ok):
+            self._merge_key.setEnabled(merge_ok)
+            self._split_key.setEnabled(split_ok)
+            self.keys_changed.emit()
+
+    def _skip_current(self) -> None:
+        if (row := self.navigator.current()) is not None:
+            row.skip_check.toggle()
+
+    def _rename_current(self) -> None:
+        if (row := self.navigator.current()) is not None:
+            row.rename()
+
+    def _merge_current(self) -> None:
+        if (row := self.navigator.current()) is not None:
+            self._merge_with_next(row)
+
+    def _split_current(self) -> None:
+        if (row := self.navigator.current()) is not None:
+            self._split(row)
 
     # ----- thumbnails ------------------------------------------------------
 
@@ -278,3 +379,8 @@ class EventsPage(QWidget):
     def _cancel(self) -> None:
         self.stop_thumbnails()
         self.cancelled.emit()
+
+    def _leave(self) -> None:
+        if shortcuts.confirm_leave(self):
+            self.stop_thumbnails()
+            self.left.emit()

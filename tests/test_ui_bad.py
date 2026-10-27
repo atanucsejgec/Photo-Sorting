@@ -49,9 +49,12 @@ def test_one_card_per_photo_all_ticked(qtbot, tmp_path, make_page):
     assert [card.candidate.rel for card in page.cards] == ["a.jpg", "sub/b.jpg", "c.jpg"]
     assert _ticked(page) == {"a.jpg", "sub/b.jpg", "c.jpg"}
     assert all(card.move_check.text() == "Move to Bad Photos" for card in page.cards)
-    assert page.cards[0].details_label.text().splitlines() == [
-        "a.jpg", "accidental shot", "(top folder)"]
-    assert page.cards[1].details_label.text().splitlines() == ["b.jpg", "too dark", "sub"]
+    assert page.cards[0].details_label.text().splitlines() == ["a.jpg", "(top folder)"]
+    assert page.cards[1].details_label.text().splitlines() == ["b.jpg", "sub"]
+    assert [card.tag_label.text() for card in page.cards] == [
+        "accidental shot", "too dark", "blurry"]  # the reason, as a tag
+    assert all(card.objectName() == "card" for card in page.cards)
+    assert page.ticked_label.text() == "3 will be set aside"
     assert page.heading_label.text() == "3 bad photos"
     assert page.subtitle_label.text() == (
         "Tick the ones to move. They go to Bad Photos/ (nothing is deleted). "

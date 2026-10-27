@@ -564,3 +564,16 @@ def test_history_partial_undo_keeps_undo_available(qtbot, make_history, tmp_path
     assert d.result_label.text() == "Undo complete: 1 files put back."
     assert (tmp_path / "b.jpg").read_bytes() == b"b"
     assert dialog_errors == []
+
+
+def test_an_unpatched_dialog_fails_the_test_at_once(_no_waiting_dialogs):
+    """The conftest guard: a dialog nobody answers fails, not hangs."""
+    from photosort.ui.dialogs import MessageDialog
+
+    dialog = MessageDialog(None, "Leave this review?", "Your answers so far will be lost.",
+                           [("Stay", False), ("Leave", True)], default=0, keys=())
+    with pytest.raises(AssertionError, match="MessageDialog 'Leave this review\\?' opened"):
+        dialog.exec()
+    assert not dialog.isVisible()
+    _no_waiting_dialogs.clear()  # seen: this test passes
+    dialog.deleteLater()

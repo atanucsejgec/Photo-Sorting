@@ -70,7 +70,7 @@ def test_a_tile_needs_a_folder(make_window, photos, errors):
     assert errors == ["Choose a folder first."]
     w.folder_edit.setText(str(photos / "missing"))
     w.mode_buttons["date"].click()
-    assert errors[-1] == "This folder doesn't exist any more."
+    assert errors[-1] == "This folder doesn't exist."
     assert w.current_page() is w.home
 
 

@@ -11,6 +11,7 @@ object name:
 - sidebar, sidebarItem: the left column and its page buttons;
 - shortcutStrip: the key strip along the bottom (see shortcuts.ShortcutStrip);
 - muted: quieter text; error: a problem, in the danger colour;
+- tag: a small pill naming what is wrong (a bad photo's reason);
 - thumb: the grey box a thumbnail or photo shows in while it loads;
 - viewer, viewerOverlay: the full-screen viewer and its caption.
 
@@ -48,6 +49,8 @@ COLORS: dict[str, str] = {
     "focus": "#22d3ee",  # the focus ring and glow
     "selection": "#12384a",  # a selected row: a dark cyan
     "danger": "#f85149",
+    "tag_bg": "#3b1d24",  # a bad photo's reason, as a pill
+    "tag_text": "#ff9aa8",
     "thumb_bg": "#1b2230",  # a thumbnail's box while it loads
     "face_box": "#ffd400",  # the box drawn round a face on a photo
 }
@@ -83,6 +86,8 @@ QToolTip {{ background: {c['panel']}; color: {c['text']}; border: 1px solid {c['
 QLabel#muted {{ color: {c['muted']}; }}
 QLabel#error {{ color: {c['danger']}; }}
 QLabel#thumb {{ background: {c['thumb_bg']}; color: {c['muted']}; }}
+QLabel#tag {{ background: {c['tag_bg']}; color: {c['tag_text']}; border-radius: 8px;
+    padding: 1px 8px; }}
 
 QPushButton {{ background: {c['raised']}; color: {c['text']}; border: 1px solid {c['border']};
     border-radius: 8px; padding: 7px 14px; }}

@@ -343,6 +343,27 @@ def test_settings_gap_by_keyboard(qtbot, make_window, settings_path):
     assert load_settings(settings_path).event_gap_hours == 7
 
 
+def test_settings_typed_number_saves_once_when_done(qtbot, make_window, settings_path,
+                                                   monkeypatch):
+    from photosort.ui import settings_page
+
+    saves = []
+    real_save = settings_page.save_settings
+    monkeypatch.setattr(settings_page, "save_settings",
+                        lambda settings, path: saves.append(settings.event_gap_hours)
+                        or real_save(settings, path))
+    w = make_window()
+    w.sidebar.items["settings"].click()
+    spin = w.settings_page.gap_spin
+    _focus(qtbot, spin)
+    spin.selectAll()
+    qtbot.keyClicks(spin, "24")  # not 2, then 24
+    assert saves == []
+    _key(qtbot, Qt.Key.Key_Return)
+    assert saves == [24]
+    assert load_settings(settings_path).event_gap_hours == 24
+
+
 def test_settings_categories_open_the_editor_and_save(qtbot, make_window, settings_path,
                                                       monkeypatch):
     def edit(editor):

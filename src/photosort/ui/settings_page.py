@@ -1,7 +1,7 @@
 """The Settings page: the app-wide preferences that don't belong on Home:
 the GPU switch, the event gap and minimum, and the Content categories.
 
-Each change is saved as it is made; there is no OK. "Content categories…"
+Each change is saved as it is made (a number typed, once it is done); there is no OK. "Content categories…"
 opens the category editor, and its OK saves the list.
 """
 
@@ -17,8 +17,8 @@ from photosort.settings import Settings, save_settings
 from photosort.thresholds import EVENT_GAP_HOURS_RANGE, EVENT_MIN_FILES_RANGE
 from photosort.ui import dialogs, shortcuts
 from photosort.ui.category_editor import CategoryEditor
-from photosort.ui.home_page import Switch
 from photosort.ui.theme import heading, styled
+from photosort.ui.widgets import Switch
 
 SPIN_TEXT_MARGIN_PX = 10  # Qt ignores a spin box's horizontal padding in the stylesheet
 
@@ -98,6 +98,7 @@ class SettingsPage(QWidget):
         label, spin, unit_label = QLabel(text), QSpinBox(), QLabel(unit)
         spin.setRange(*limits)
         spin.setValue(value)
+        spin.setKeyboardTracking(False)  # typed digits save once, when the edit is done
         spin.setMinimumWidth(90)
         spin.lineEdit().setTextMargins(SPIN_TEXT_MARGIN_PX, 0, 0, 0)
         label.setBuddy(spin)

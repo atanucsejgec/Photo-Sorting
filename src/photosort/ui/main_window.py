@@ -16,7 +16,8 @@ kind (see photosort.modes.MODE_SPECS). The window is their shell: it checks
 the folder and the mode, then hands over to the flow, which plans the moves
 (after the owner's review, for some) and shows them on the Summary; Go then
 moves them, and Undo puts them back. Back on the Summary calls the flow's
-back_to, if it set one, else goes Home.
+back_to, if it set one, else goes Home. Esc on a review screen can leave it
+(after asking): Home, with nothing planned.
 
 The window owns the one PeopleStore of the app: the Face setup page, the
 naming dialog and the People page all use it.
@@ -68,6 +69,8 @@ from photosort.ui.worker import Task
 from photosort.undo import UndoBlocked, UndoResult, undo_run
 
 TITLE = "Photo Sorter"
+# Small enough for 1024 × 600 at 125 % scaling (819 × 480); the tiles and cards reflow.
+MIN_WIDTH, MIN_HEIGHT = 800, 460
 
 # The flow that runs each kind of mode.
 _FLOWS = {"plan": plain, "groups": groups, "bad": bad, "events": events, "face": face,
@@ -136,7 +139,7 @@ class MainWindow(QMainWindow):
         self._progress_joiner = "/"
 
         self.setWindowTitle(TITLE)
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
         self.setAcceptDrops(True)
 
         self.sidebar = Sidebar()  # first, so Tab from the last page control wraps to it
@@ -229,12 +232,15 @@ class MainWindow(QMainWindow):
         page = ReviewPage()
         page.finished.connect(lambda keep: groups.on_reviewed(self, keep))
         page.cancelled.connect(lambda: self.show_page(self.home))
+        page.left.connect(self.leave_review)
+        page.keys_changed.connect(self.strip.refresh)
         return page
 
     def _build_bad(self) -> BadPhotosPage:
         page = BadPhotosPage()
         page.finished.connect(lambda move: bad.on_ticked(self, move))
         page.cancelled.connect(lambda: self.show_page(self.home))
+        page.left.connect(self.leave_review)
         return page
 
     def _build_events(self) -> EventsPage:
@@ -242,6 +248,8 @@ class MainWindow(QMainWindow):
         page.finished.connect(
             lambda named, names, skipped: events.on_named(self, named, names, skipped))
         page.cancelled.connect(lambda: self.show_page(self.home))
+        page.left.connect(self.leave_review)
+        page.keys_changed.connect(self.strip.refresh)
         return page
 
     def _build_face_setup(self) -> FaceSetupPage:
@@ -257,12 +265,14 @@ class MainWindow(QMainWindow):
         page = FaceQuestionPage()
         page.finished.connect(lambda answers: face.plan_moves(self, answers))
         page.cancelled.connect(lambda: face.back_to_setup(self))
+        page.left.connect(self.leave_review)
         return page
 
     def _build_category_review(self) -> CategoryReviewPage:
         page = CategoryReviewPage()
         page.finished.connect(lambda answers: clip.plan_moves(self, answers))
         page.cancelled.connect(lambda: self.show_page(self.home))
+        page.left.connect(self.leave_review)
         return page
 
     def _build_summary(self) -> QWidget:
@@ -352,6 +362,11 @@ class MainWindow(QMainWindow):
 
     def show_error(self, text: str) -> None:
         dialogs.warn(self, TITLE, text)
+
+    def leave_review(self) -> None:
+        """The owner left a review (Esc, then Leave): Home, the sort forgotten."""
+        self.end_flow()
+        self.show_page(self.home)
 
     def _save_settings(self) -> None:
         try:
@@ -455,7 +470,7 @@ class MainWindow(QMainWindow):
         self.begin_sort()
         root = self._folder()
         if root is None:
-            self.show_error("This folder doesn't exist any more."
+            self.show_error("This folder doesn't exist."
                             if self.folder_edit.text().strip() else "Choose a folder first.")
             return
         if not os.access(root, os.W_OK):

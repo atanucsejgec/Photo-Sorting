@@ -134,6 +134,7 @@ def _answer(qtbot, *keys):
     return seen
 
 
+@pytest.mark.real_dialogs
 def test_ask_enter_takes_the_default_no(qtbot):
     seen = _answer(qtbot, Qt.Key.Key_Return)
     assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep") is False
@@ -141,6 +142,7 @@ def test_ask_enter_takes_the_default_no(qtbot):
     assert seen["strip"] == "←→ choose · Enter pick · Esc no/close"
 
 
+@pytest.mark.real_dialogs
 def test_ask_arrows_then_enter_picks_yes(qtbot):
     seen = _answer(qtbot, Qt.Key.Key_Right, Qt.Key.Key_Return)
     assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep") is True
@@ -149,12 +151,14 @@ def test_ask_arrows_then_enter_picks_yes(qtbot):
     assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep") is True
 
 
+@pytest.mark.real_dialogs
 def test_ask_escape_is_no(qtbot):
     _answer(qtbot, Qt.Key.Key_Escape)
     assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep",
                        default="yes") is False
 
 
+@pytest.mark.real_dialogs
 def test_ask_default_yes_starts_on_yes(qtbot):
     seen = _answer(qtbot, Qt.Key.Key_Return)
     assert dialogs.ask(None, "Download", "Download now?", yes="Download", no="Not now",
@@ -162,6 +166,7 @@ def test_ask_default_yes_starts_on_yes(qtbot):
     assert seen["focus"] == "Download"
 
 
+@pytest.mark.real_dialogs
 def test_ask_shows_the_title_and_text(qtbot):
     texts = {}
 
@@ -181,6 +186,7 @@ def test_ask_shows_the_title_and_text(qtbot):
     assert "Your answers so far will be lost." in texts["labels"]
 
 
+@pytest.mark.real_dialogs
 @pytest.mark.parametrize("show", [dialogs.warn, dialogs.info])
 @pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Escape])
 def test_warn_and_info_close_with_enter_or_esc(qtbot, show, key):
@@ -201,6 +207,7 @@ def test_a_window_of_its_own_is_not_on_the_screen(qtbot, screen):
     assert shortcuts.keys_for(field, screen) == [("Esc", "back"), ("←→", "move")]
 
 
+@pytest.mark.real_dialogs
 def test_ask_buttons_are_both_plain(qtbot):
     seen = _answer(qtbot, Qt.Key.Key_Escape)
     dialogs.ask(None, "Leave this review?", "Your answers so far will be lost.",
