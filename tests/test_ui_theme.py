@@ -7,7 +7,7 @@ from PySide6.QtGui import QColor, QImage, QKeySequence, QPalette
 from PySide6.QtWidgets import (
     QAbstractButton, QApplication, QCheckBox, QComboBox, QGraphicsDropShadowEffect,
     QHBoxLayout, QLabel, QListWidget, QPushButton, QRadioButton, QSpinBox, QStyle,
-    QStyleOptionSpinBox, QWidget,
+    QStyleOptionSpinBox, QVBoxLayout, QWidget,
 )
 
 from photosort.modes import MODES
@@ -225,3 +225,19 @@ def test_use_min_font_raises_a_small_font_only(qapp):
             assert qapp.font().pointSizeF() == expected
     finally:
         qapp.setFont(font)
+
+
+def test_the_tests_run_at_the_apps_font(qapp):
+    # conftest applies it as main() does: what fits here fits for the owner.
+    assert qapp.font().pointSizeF() >= theme.MIN_POINT_SIZE
+
+
+def test_page_spacing_is_the_themes(qtbot):
+    page = QWidget()
+    qtbot.addWidget(page)
+    layout = QVBoxLayout(page)
+    theme.page_spacing(layout)
+    margins = layout.contentsMargins()
+    assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == \
+        theme.PAGE_MARGINS
+    assert layout.spacing() == theme.PAGE_SPACING

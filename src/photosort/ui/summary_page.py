@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from photosort.plan import Move
 from photosort.ui import icons, shortcuts
-from photosort.ui.theme import heading, styled
+from photosort.ui.theme import heading, page_spacing, styled
 from photosort.ui.widgets import ButtonBar, ButtonKeys
 
 READY = "Ready to sort"
@@ -36,8 +36,7 @@ class SummaryPage(QWidget):
         super().__init__(parent)
         self._moves: Sequence[Move] = ()
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 12)
-        layout.setSpacing(16)
+        page_spacing(layout)
         self.heading_label = heading(READY)
         layout.addWidget(self.heading_label)
 

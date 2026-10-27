@@ -29,7 +29,7 @@ from photosort.thresholds import EVENT_THUMB_PX, EVENT_THUMBS
 from photosort.ui import shortcuts
 from photosort.ui.review_page import LOADING, VIDEO, render_thumbnail
 from photosort.ui.shortcuts import GridNavigator
-from photosort.ui.theme import styled
+from photosort.ui.theme import page_spacing, styled
 from photosort.ui.widgets import ButtonBar
 from photosort.ui.worker import Task
 
@@ -187,8 +187,7 @@ class EventsPage(QWidget):
         self.navigator.current_changed.connect(self._update_row_keys)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 12)
-        layout.setSpacing(16)
+        page_spacing(layout)
         self.heading_label = QLabel()
         font = self.heading_label.font()
         font.setPointSizeF(font.pointSizeF() * 1.6)

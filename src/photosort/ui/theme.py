@@ -60,6 +60,11 @@ COLORS: dict[str, str] = {
 OVERLAY = "rgba(10, 14, 20, 190)"
 
 MIN_POINT_SIZE = 11  # the app's body font is never smaller (see use_min_font)
+# Every page's margins (left, top, right, bottom) and the gap between its
+# parts: kept tight so a page fits 1024 x 600 at 125 % (819 x 480) at 11 pt.
+PAGE_MARGINS = (32, 16, 32, 8)
+PAGE_SPACING = 12
+CARD_LINE_SPACING = 4  # between the parts of a photo card (thumbnail, lines, tick)
 ROW_PAD_Y, ROW_PAD_X = 5, 10  # px round each row of a rowList
 HEADING_SCALE = 1.5  # a page's heading, of the body font
 SMALL_SCALE = 0.85  # hints, as the shortcut strip
@@ -236,6 +241,12 @@ def heading(text: str) -> QLabel:
     font.setWeight(QFont.Weight.Bold)
     label.setFont(font)
     return label
+
+
+def page_spacing(layout) -> None:
+    """Give a page's outer layout the theme's margins and spacing."""
+    layout.setContentsMargins(*PAGE_MARGINS)
+    layout.setSpacing(PAGE_SPACING)
 
 
 def scaled_font(widget: QWidget, scale: float, weight: QFont.Weight | None = None) -> QFont:

@@ -30,7 +30,7 @@ from photosort.ui import dialogs, shortcuts
 from photosort.ui.face_naming_dialog import dropped_photo
 from photosort.ui.labels import literal
 from photosort.ui.qimage import pil_to_qimage
-from photosort.ui.theme import heading
+from photosort.ui.theme import heading, page_spacing
 from photosort.ui.widgets import ButtonBar, ButtonKeys, HintList
 
 _log = logging.getLogger("photosort")
@@ -82,8 +82,7 @@ class FaceSetupPage(QWidget):
 
         layout = QVBoxLayout(self)
         if not delete_only:
-            layout.setContentsMargins(32, 24, 32, 12)
-            layout.setSpacing(14)
+            page_spacing(layout)
             layout.addWidget(heading(HEADING))
         self.hint_label = QLabel()
         self.hint_label.setObjectName("muted")

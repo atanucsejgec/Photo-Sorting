@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
 from photosort.ui import dialogs, shortcuts
-from photosort.ui.theme import heading, styled
+from photosort.ui.theme import heading, page_spacing, styled
 from photosort.ui.widgets import ButtonBar, ButtonKeys
 
 HEADING = "Done"
@@ -31,8 +31,7 @@ class DonePage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 12)
-        layout.setSpacing(16)
+        page_spacing(layout)
         layout.addWidget(heading(HEADING))
         panel = styled(QWidget(), "section")
         inner = QVBoxLayout(panel)

@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
 from photosort.ui import shortcuts
-from photosort.ui.theme import heading, styled
+from photosort.ui.theme import heading, page_spacing, styled
 from photosort.ui.widgets import ButtonBar
 
 HEADING = "Working…"
@@ -27,8 +27,7 @@ class ProgressPage(QWidget):
         self._prefix = ""
         self._joiner = "/"
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 12)
-        layout.setSpacing(16)
+        page_spacing(layout)
         layout.addWidget(heading(HEADING))
         layout.addStretch()
         panel = styled(QWidget(), "section")

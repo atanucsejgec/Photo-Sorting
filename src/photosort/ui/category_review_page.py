@@ -21,6 +21,7 @@ from photosort.modes.content import Verdict
 from photosort.ui import shortcuts
 from photosort.ui.card_grid import CardGrid, GridCard
 from photosort.ui.photo_preview import PhotoPreview
+from photosort.ui.theme import page_spacing
 from photosort.ui.widgets import ButtonBar
 
 LEAVE = "Leave it where it is"
@@ -115,8 +116,7 @@ class CategoryReviewPage(QWidget):
         self.cards: list[CategoryCard] = []
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 12)
-        layout.setSpacing(16)
+        page_spacing(layout)
         self.heading_label = QLabel()
         font = self.heading_label.font()
         font.setPointSizeF(font.pointSizeF() * 1.6)

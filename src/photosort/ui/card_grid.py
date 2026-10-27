@@ -25,7 +25,7 @@ from photosort.thresholds import THUMB_PX
 from photosort.ui.photo_preview import PhotoPreview
 from photosort.ui.review_page import LOADING, render_thumbnail
 from photosort.ui.shortcuts import GridNavigator
-from photosort.ui.theme import styled
+from photosort.ui.theme import CARD_LINE_SPACING, styled
 from photosort.ui.widgets import Thumbnail, fitting_thumb_side, needed_height
 from photosort.ui.worker import Task
 
@@ -51,7 +51,7 @@ class GridCard(QFrame):
         self._line_width = THUMB_PX
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(10, 10, 10, 10)
-        self._layout.setSpacing(6)
+        self._layout.setSpacing(CARD_LINE_SPACING)
         self._layout.addWidget(self.thumb_label, 0, Qt.AlignmentFlag.AlignHCenter)
 
     def add_line(self, widget: QWidget) -> None:

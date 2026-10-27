@@ -23,9 +23,12 @@ def _gc_on_the_gui_thread(qapp):
 
 @pytest.fixture(autouse=True, scope="session")
 def _dark_theme(qapp):
-    """Run every test under the app's real look, as main() sets it."""
+    """Run every test under the app's real look and font, as main() sets
+    them: offscreen, the desktop font is 9 pt, smaller than the owner ever
+    sees, and what fits at 9 pt can be cut off at the app's 11."""
     from photosort.ui import theme
 
+    theme.use_min_font(qapp)
     theme.apply(qapp)
 
 
@@ -37,19 +40,6 @@ def _no_waiting_dialog_answers():
     keys = sys.modules.get("keys")  # loaded only by the tests that use it
     if keys is not None:
         keys.end_waiting()
-
-
-@pytest.fixture
-def real_font(qapp):
-    """The app's own font, as main() sets it (theme.use_min_font), for the
-    tests of what fits a window: offscreen, the desktop font is smaller.
-    Request it before any widget is made; the font is put back after."""
-    from photosort.ui import theme
-
-    font = qapp.font()
-    theme.use_min_font(qapp)
-    yield qapp.font()
-    qapp.setFont(font)
 
 
 @pytest.fixture(autouse=True)

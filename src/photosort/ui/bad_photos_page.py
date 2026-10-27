@@ -24,6 +24,7 @@ from photosort.naming import resolve_existing_dir
 from photosort.ui import shortcuts
 from photosort.ui.card_grid import CardGrid, GridCard
 from photosort.ui.photo_preview import PhotoPreview
+from photosort.ui.theme import page_spacing
 from photosort.ui.widgets import ButtonBar
 
 MOVE_TEXT = "Move to Bad Photos"
@@ -75,8 +76,7 @@ class BadPhotosPage(QWidget):
         self.cards: list[BadPhotoCard] = []
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 12)
-        layout.setSpacing(16)
+        page_spacing(layout)
         top = QHBoxLayout()
         self.heading_label = QLabel()
         font = self.heading_label.font()

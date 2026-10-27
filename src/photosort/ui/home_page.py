@@ -34,7 +34,7 @@ from photosort.modes import MODES
 from photosort.scanner import walk_media
 from photosort.ui import icons, shortcuts
 from photosort.ui.labels import literal
-from photosort.ui.theme import SMALL_SCALE, heading, scaled_font, styled
+from photosort.ui.theme import SMALL_SCALE, heading, page_spacing, scaled_font, styled
 from photosort.ui.widgets import Switch
 from photosort.ui.worker import Task
 
@@ -169,8 +169,7 @@ class HomePage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 12)
-        layout.setSpacing(14)
+        page_spacing(layout)
         layout.addWidget(heading(HEADING))
 
         # The folder field, with the count inside it on the right.

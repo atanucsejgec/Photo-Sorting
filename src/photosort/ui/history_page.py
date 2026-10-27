@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from photosort.journal import RunInfo, load_moves, load_runs
 from photosort.modes import MODES
 from photosort.ui import dialogs, shortcuts
-from photosort.ui.theme import heading
+from photosort.ui.theme import heading, page_spacing
 from photosort.ui.worker import Task
 from photosort.undo import UndoResult, blocking_runs, related_folders, undo_run
 
@@ -98,8 +98,7 @@ class HistoryPage(QWidget):
         self._undoing = False
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 12)
-        layout.setSpacing(14)
+        page_spacing(layout)
         layout.addWidget(heading("History"))
         self.intro_label = QLabel()
         self.intro_label.setObjectName("muted")

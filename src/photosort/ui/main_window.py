@@ -65,6 +65,7 @@ from photosort.ui.settings_page import SettingsPage
 from photosort.ui.shortcuts import ShortcutStrip
 from photosort.ui.sidebar import Sidebar
 from photosort.ui.summary_page import SummaryPage
+from photosort.ui.theme import PAGE_MARGINS
 from photosort.ui.worker import Task
 from photosort.undo import UndoBlocked, UndoResult, undo_run
 
@@ -126,7 +127,7 @@ class MainWindow(QMainWindow):
         column.setSpacing(0)
         column.addWidget(self.stack, 1)
         strip_box = QHBoxLayout()
-        strip_box.setContentsMargins(32, 0, 32, 12)
+        strip_box.setContentsMargins(32, 0, 32, PAGE_MARGINS[3])
         strip_box.addWidget(self.strip)
         column.addLayout(strip_box)
         central = QWidget()

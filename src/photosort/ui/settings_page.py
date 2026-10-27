@@ -17,7 +17,7 @@ from photosort.settings import Settings, save_settings
 from photosort.thresholds import EVENT_GAP_HOURS_RANGE, EVENT_MIN_FILES_RANGE
 from photosort.ui import dialogs, shortcuts
 from photosort.ui.category_editor import CategoryEditor
-from photosort.ui.theme import heading, styled
+from photosort.ui.theme import heading, page_spacing, styled
 from photosort.ui.widgets import Switch
 
 SPIN_TEXT_MARGIN_PX = 10  # Qt ignores a spin box's horizontal padding in the stylesheet
@@ -46,8 +46,7 @@ class SettingsPage(QWidget):
         self._settings_path = settings_path
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 12)
-        layout.setSpacing(14)
+        page_spacing(layout)
         layout.addWidget(heading("Settings"))
         # The sections scroll in a window too short for them (Tab scrolls the
         # control it goes to into view) rather than squeeze.

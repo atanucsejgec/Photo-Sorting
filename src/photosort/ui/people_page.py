@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 from photosort.people import PeopleStore
 from photosort.ui import shortcuts
 from photosort.ui.face_setup_page import FaceSetupPage
-from photosort.ui.theme import heading
+from photosort.ui.theme import heading, page_spacing
 
 
 class PeoplePage(QWidget):
@@ -21,8 +21,7 @@ class PeoplePage(QWidget):
         super().__init__(parent)
         self.store = store
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 12)
-        layout.setSpacing(14)
+        page_spacing(layout)
         layout.addWidget(heading("People"))
         self.list_page = FaceSetupPage(delete_only=True)
         self.list_page.layout().setContentsMargins(0, 0, 0, 0)

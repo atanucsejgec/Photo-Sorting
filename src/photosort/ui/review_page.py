@@ -35,7 +35,7 @@ from photosort.ui.labels import literal
 from photosort.ui.photo_preview import PhotoPreview
 from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.shortcuts import GridNavigator
-from photosort.ui.theme import styled
+from photosort.ui.theme import CARD_LINE_SPACING, page_spacing, styled
 from photosort.ui.widgets import ButtonBar, Thumbnail, fitting_thumb_side, needed_height
 from photosort.ui.worker import Task
 
@@ -113,7 +113,7 @@ class CandidateCard(QFrame):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(6)
+        layout.setSpacing(CARD_LINE_SPACING)
         layout.addWidget(self.thumb_label, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self.details_label)
         layout.addWidget(self.keep_check)
@@ -157,8 +157,7 @@ class ReviewPage(QWidget):
         self.navigator = GridNavigator([], lambda: len(self.cards), parent=self)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 12)
-        layout.setSpacing(16)
+        page_spacing(layout)
         self.heading_label = QLabel()
         font = self.heading_label.font()
         font.setPointSizeF(font.pointSizeF() * 1.6)

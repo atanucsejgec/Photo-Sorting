@@ -410,7 +410,7 @@ def test_space_on_a_tile_does_nothing(qtbot, make_window, photos):
     assert _focused() is w.mode_buttons["date"]
 
 
-def test_the_window_fits_1024_by_600_at_125_percent(qtbot, real_font, make_window):
+def test_the_window_fits_1024_by_600_at_125_percent(qtbot, make_window):
     w = _show(qtbot, make_window(size=(819, 480)))  # 1024 × 600 at 125 %
     assert w.minimumSize().width() <= 819 and w.minimumSize().height() <= 480
     qtbot.waitUntil(lambda: (w.width(), w.height()) == (819, 480))
@@ -466,7 +466,7 @@ def test_tab_goes_from_the_tiles_to_the_sidebar(qtbot, make_window):
 
 
 @pytest.mark.parametrize("size", [(1280, 800), (1024, 600)])
-def test_every_tile_shows_whole_without_a_scroll(qtbot, real_font, make_window, size):
+def test_every_tile_shows_whole_without_a_scroll(qtbot, make_window, size):
     w = _show(qtbot, make_window(size=size))
     qtbot.waitUntil(lambda: (w.width(), w.height()) == size)
     qtbot.waitUntil(lambda: w.home.columns() == 4)
@@ -478,7 +478,7 @@ def test_every_tile_shows_whole_without_a_scroll(qtbot, real_font, make_window, 
         assert tile.mapTo(view, tile.rect().bottomLeft()).y() < view.height(), tile.name
 
 
-def test_a_small_window_keeps_the_grid_and_strip_in_view(qtbot, real_font, make_window):
+def test_a_small_window_keeps_the_grid_and_strip_in_view(qtbot, make_window):
     w = _show(qtbot, make_window(size=(1024, 600)))
     qtbot.waitUntil(lambda: w.home.columns() == 4)
     _focus(qtbot, w.mode_buttons["date"])

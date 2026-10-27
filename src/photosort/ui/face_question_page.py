@@ -35,7 +35,7 @@ from photosort.people import Person
 from photosort.thresholds import PERSON_THUMB_PX
 from photosort.ui import shortcuts
 from photosort.ui.qimage import pil_to_qimage
-from photosort.ui.theme import COLORS
+from photosort.ui.theme import COLORS, page_spacing
 from photosort.ui.widgets import ButtonBar
 from photosort.ui.worker import Task
 
@@ -184,8 +184,7 @@ class FaceQuestionPage(QWidget):
         self._tasks: dict[int, Task] = {}  # kept alive until they report
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 12)
-        layout.setSpacing(16)
+        page_spacing(layout)
         top = QHBoxLayout()
         self.heading_label = QLabel()
         font = self.heading_label.font()
