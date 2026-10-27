@@ -29,6 +29,7 @@ MODE_ICONS: dict[str, str] = {
     "location": "map-pin",
     "camera": "camera",
     "type": "message-circle",
+    "extension": "file-type",
 }
 
 _SIZES = (16, 20, 24, 32, 48, 64)  # drawn sharp at each; QIcon scales between

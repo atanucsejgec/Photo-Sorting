@@ -54,7 +54,7 @@ from photosort.ui.category_review_page import CategoryReviewPage
 from photosort.ui.events_page import EventsPage
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
-from photosort.ui.flows import bad, clip, events, face, groups, plain
+from photosort.ui.flows import bad, clip, events, face, files, groups, plain
 from photosort.ui.history_page import HistoryPage, undo_summary
 from photosort.ui.home_page import HomePage
 from photosort.ui.model_download import ensure_models
@@ -70,8 +70,8 @@ from photosort.undo import UndoBlocked, UndoResult, undo_run
 TITLE = "Photo Sorter"
 
 # The flow that runs each kind of mode.
-_FLOWS = {"plan": plain, "groups": groups, "bad": bad, "events": events, "face": face,
-          "content": clip, "notes": clip}
+_FLOWS = {"plan": plain, "files": files, "groups": groups, "bad": bad, "events": events,
+          "face": face, "content": clip, "notes": clip}
 
 
 def _text(text: str = "") -> QLabel:

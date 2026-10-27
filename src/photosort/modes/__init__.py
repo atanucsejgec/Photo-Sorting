@@ -1,6 +1,8 @@
 """The sorting modes: MODES lists them as (key, label, available); MODE_SPECS says how to run each.
 
 A mode of kind "plan" prepares a Plan straight away. A mode of kind
+"files" does too, but for every file, not only media; with warn_subfolders
+the owner is first warned when subfolders are included. A mode of kind
 "groups" finds Groups for the owner to review; the files not kept are then
 set aside, flat, in set_aside_folder. A mode of kind "face" finds face
 matches to ask the owner about, then plans (see modes.face_mode); it needs
@@ -15,9 +17,10 @@ modes.notes); they need a CLIP engine, so the main window runs them too,
 never through prepare. Every prepare function is called as prepare(root,
 include_subfolders, progress=..., cancel=...) and returns None if
 cancelled; the events one also takes gap_hours and min_files keywords,
-from Settings. The modules of the "plan", "groups", "bad" and "events"
-modes are imported when such a mode first runs; the main window imports
-the face, content and notes modules (numpy only, no AI runtime) itself.
+from Settings. The modules of the "plan", "files", "groups", "bad" and
+"events" modes are imported when such a mode first runs; the main window
+imports the face, content and notes modules (numpy only, no AI runtime)
+itself.
 """
 
 import threading
@@ -38,6 +41,7 @@ MODES: list[tuple[str, str, bool]] = [
     ("events", "Events", True),
     ("location", "Location", True),
     ("camera", "Camera", True),
+    ("extension", "Extension", True),
 ]
 
 Progress = Callable[[int, int], None] | None
@@ -45,13 +49,16 @@ Progress = Callable[[int, int], None] | None
 
 @dataclass(frozen=True)
 class ModeSpec:
-    kind: Literal["plan", "groups", "face", "bad", "events", "content", "notes"]
-    # -> Plan (kind "plan"), list[Group], list[Candidate] (kind "bad") or
+    kind: Literal["plan", "files", "groups", "face", "bad", "events", "content", "notes"]
+    # -> Plan (kinds "plan", "files"), list[Group], list[Candidate] (kind "bad") or
     # (list[Event], files in none) (kind "events"); None if cancelled
     prepare: Callable[..., object]
     set_aside_folder: str | None = None  # kinds "groups", "bad": where files set aside go
     # kinds "groups", "bad", "events": the summary when none is found
     none_found: str | None = None
+    # kind "files": warn, before any scan, that files in subfolders may belong
+    # to programs or projects (only when subfolders are included)
+    warn_subfolders: bool = False
 
 
 def _prepare_date(root: Path, include_subfolders: bool, progress: Progress = None,
@@ -84,6 +91,14 @@ def _prepare_location(root: Path, include_subfolders: bool, progress: Progress =
 
     return location_mode.prepare_location_plan(root, include_subfolders, progress=progress,
                                                cancel=cancel)
+
+
+def _prepare_extension(root: Path, include_subfolders: bool, progress: Progress = None,
+                       cancel: threading.Event | None = None):
+    from photosort.modes import extension_mode
+
+    return extension_mode.prepare_extension_plan(root, include_subfolders, progress=progress,
+                                                 cancel=cancel)
 
 
 def _find_duplicates(root: Path, include_subfolders: bool, progress: Progress = None,
@@ -145,4 +160,5 @@ MODE_SPECS: dict[str, ModeSpec] = {
     "camera": ModeSpec("plan", _prepare_camera),
     "notes": ModeSpec("notes", _run_by_window),
     "content": ModeSpec("content", _run_by_window),
+    "extension": ModeSpec("files", _prepare_extension, warn_subfolders=True),
 }

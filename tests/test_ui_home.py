@@ -27,6 +27,7 @@ TILES = [
     ("location", "Location", "Country / city"),
     ("camera", "Camera", "Per phone"),
     ("type", "Type / source", "WhatsApp, screenshots"),
+    ("extension", "Extension", "APK, EXE, PDF…"),
 ]
 HOME_KEYS = "←↑↓→ choose · Enter start · F folder · S subfolders · Tab sidebar"
 FIELD_KEYS = "Enter use this folder · Esc leave"
@@ -137,7 +138,8 @@ def test_arrows_follow_four_columns(qtbot, make_window):
     assert _focused() is w.mode_buttons["face"]
 
 
-def test_down_into_a_short_last_row_lands_on_its_last_tile(qtbot, make_window):
+def test_down_into_a_short_last_row_lands_on_its_last_tile(qtbot, make_window, monkeypatch):
+    monkeypatch.setattr(home_page, "TILES", home_page.TILES[:11])  # 4 + 4 + 3
     w = _show(qtbot, make_window())
     _focus(qtbot, w.mode_buttons["events"])  # index 7: below it is nothing
     qtbot.keyClick(_focused(), Qt.Key.Key_Down)
@@ -395,7 +397,7 @@ def test_a_small_window_keeps_the_grid_and_strip_in_view(qtbot, make_window):
     w = _show(qtbot, make_window(size=(1024, 600)))
     qtbot.waitUntil(lambda: w.home.columns() == 4)
     _focus(qtbot, w.mode_buttons["date"])
-    last = w.mode_buttons["type"]
+    last = list(w.mode_buttons.values())[-1]
     bottom = last.mapTo(w, last.rect().bottomRight()).y()
     assert bottom < w.strip.mapTo(w, w.strip.rect().topLeft()).y()
     assert w.strip.mapTo(w, w.strip.rect().bottomLeft()).y() <= w.height()

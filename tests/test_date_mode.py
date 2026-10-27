@@ -17,12 +17,12 @@ def _dsts(plan):
 def test_modes_list():
     assert [k for k, _, _ in MODES] == [
         "date", "face", "duplicates", "repeated", "notes", "type",
-        "content", "bad", "events", "location", "camera",
+        "content", "bad", "events", "location", "camera", "extension",
     ]
     assert MODES[0] == ("date", "Date", True)
     assert [k for k, _, available in MODES if available] == [
         "date", "face", "duplicates", "repeated", "notes", "type", "content", "bad",
-        "events", "location", "camera"]
+        "events", "location", "camera", "extension"]
 
 
 def test_month_names():

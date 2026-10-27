@@ -47,6 +47,7 @@ TILES: tuple[tuple[str, str], ...] = (
     ("location", "Country / city"),
     ("camera", "Per phone"),
     ("type", "WhatsApp, screenshots"),
+    ("extension", "APK, EXE, PDF…"),
 )
 MAX_COLUMNS = 4
 TILE_MIN_WIDTH = 180  # px a tile needs; fewer columns below MAX_COLUMNS of them

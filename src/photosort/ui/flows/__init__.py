@@ -1,6 +1,8 @@
 """The ways a sort runs, one module per kind of mode (see photosort.modes.MODE_SPECS):
 
 - plain: the moves are planned straight away (Date, Type, Camera, Location);
+- files: every file, not only media, planned straight away after a warning
+  when subfolders are included (Extension);
 - groups: groups of duplicates or repeated shots, reviewed first;
 - bad: bad photos, ticked first;
 - events: events, named, merged, split or skipped first;
