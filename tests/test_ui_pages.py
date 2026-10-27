@@ -5,8 +5,17 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from keys import (
+    _focused,
+    _hold,
+    _key,
+    errors,  # noqa: F401  (fixtures, used by name)
+    make_window,  # noqa: F401
+    models_present,  # noqa: F401
+    settings_path,  # noqa: F401
+)
 from PIL import Image
-from PySide6.QtCore import Qt, QThreadPool
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog
 
 from photosort.executor import execute
@@ -18,22 +27,18 @@ from photosort.settings import DEFAULT_CONTENT_CATEGORIES, Settings, load_settin
 from photosort.ui import dialogs, face_setup_page, theme
 from photosort.ui.category_editor import CategoryEditor
 from photosort.ui.done_page import DonePage
-from photosort.ui.main_window import MainWindow
 
 EXIF = "2025:02:20 10:00:00"
 
 
 @pytest.fixture
-def settings_path(tmp_path):
-    return tmp_path / "config" / "settings.json"
-
-
-@pytest.fixture
 def store(tmp_path) -> PeopleStore:
+    """A store on the window's folder (keys.make_window's): what one
+    changes, the other reads."""
     return PeopleStore(tmp_path / "people")  # never the owner's own
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def warned(monkeypatch):
     shown: list[str] = []
     monkeypatch.setattr(dialogs, "warn", lambda parent, title, text: shown.append(text))
@@ -59,37 +64,9 @@ def asked(monkeypatch):
     return record
 
 
-@pytest.fixture
-def make_window(qtbot, settings_path, warned, store):
-    windows = []
-
-    def _make(settings: Settings | None = None) -> MainWindow:
-        w = MainWindow(settings or Settings(), settings_path, people_store=store)
-        qtbot.addWidget(w)
-        w.resize(1280, 800)
-        w.show()
-        qtbot.waitExposed(w)
-        w.activateWindow()
-        windows.append(w)
-        return w
-
-    yield _make
-    for w in windows:
-        w.close()
-    QThreadPool.globalInstance().waitForDone()
-
-
 def _focus(qtbot, widget):
     widget.setFocus()
     qtbot.waitUntil(lambda: QApplication.focusWidget() is widget)
-
-
-def _focused():
-    return QApplication.focusWidget()
-
-
-def _key(qtbot, key, modifier=Qt.KeyboardModifier.NoModifier):
-    qtbot.keyClick(_focused(), key, modifier)
 
 
 def _run(root: Path, moves) -> str:
@@ -247,8 +224,6 @@ def test_history_undo_asks_first(qtbot, make_window, tmp_path, asked):
 
 
 def test_a_held_enter_on_history_asks_once(qtbot, make_window, tmp_path, asked):
-    from keys import _hold
-
     root = tmp_path / "photos"
     root.mkdir()
     (root / "a.jpg").write_bytes(b"a")
@@ -328,8 +303,6 @@ def test_people_delete_asks_then_forgets(qtbot, make_window, store, asked):
 
 
 def test_a_held_delete_on_people_asks_once(qtbot, make_window, store, asked):
-    from keys import _hold
-
     _remember(store, "Atanu", 1)
     _remember(store, "Zoe", 2)
     w = make_window()

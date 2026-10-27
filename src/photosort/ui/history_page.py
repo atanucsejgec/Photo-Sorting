@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from photosort.journal import RunInfo, load_moves, load_runs
-from photosort.modes import MODES
+from photosort.modes import MODE_LABELS
 from photosort.ui import dialogs, shortcuts
 from photosort.ui.theme import heading, page_spacing
 from photosort.ui.worker import Task
@@ -25,7 +25,6 @@ from photosort.undo import (
     BlockingRun, UndoBlocked, UndoResult, blocking_runs, related_folders, undo_run,
 )
 
-_MODE_LABELS = {key: label for key, label, _ in MODES}
 _STATUS_LABELS = {"done": "Done", "cancelled": "Cancelled", "failed": "Failed"}
 _UNREADABLE = (OSError, ValueError, KeyError, TypeError)
 
@@ -93,7 +92,7 @@ def _row(root: Path, run: RunInfo) -> _Row:
     return _Row(
         run_id=run.run_id,
         date=run.started.astimezone().strftime("%Y-%m-%d %H:%M"),
-        mode=_MODE_LABELS.get(run.mode, run.mode),
+        mode=MODE_LABELS.get(run.mode, run.mode),
         files=files,
         status=status,
         undone=run.undone,

@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea, QSizePolicy, QStyle, QStyleOption, QVBoxLayout, QWidget,
 )
 
-from photosort.modes import MODES
+from photosort.modes import MODE_LABELS, MODES
 from photosort.scanner import walk_media
 from photosort.ui import icons, shortcuts
 from photosort.ui.labels import literal
@@ -198,7 +198,6 @@ class HomePage(QWidget):
         layout.addWidget(self.subfolders_switch, 0, Qt.AlignmentFlag.AlignLeft)
 
         # The tiles.
-        labels = {key: label for key, label, _ in MODES}
         available = {key: ok for key, _, ok in MODES}
         self.tile_grid = QWidget()
         self.tile_layout = QGridLayout(self.tile_grid)
@@ -206,7 +205,7 @@ class HomePage(QWidget):
         self.tile_layout.setSpacing(TILE_SPACING)
         self.mode_buttons: dict[str, ModeTile] = {}
         for key, hint in TILES:
-            tile = ModeTile(key, labels[key], hint)
+            tile = ModeTile(key, MODE_LABELS[key], hint)
             tile.setEnabled(available[key])
             tile.clicked.connect(lambda _=False, key=key: self.start_requested.emit(key))
             self.mode_buttons[key] = tile

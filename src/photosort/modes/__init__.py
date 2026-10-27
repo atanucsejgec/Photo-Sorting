@@ -50,6 +50,7 @@ MODES: list[tuple[str, str, bool]] = [
     ("extension", "Extension", True),
     ("all_dates", "Date (all files)", True),
 ]
+MODE_LABELS: dict[str, str] = {key: label for key, label, _ in MODES}  # the names shown
 
 Progress = Callable[[int, int], None] | None
 

@@ -43,7 +43,7 @@ from photosort.clip import ClipEngine
 from photosort.executor import ExecResult, execute
 from photosort.faces import FaceEngine
 from photosort.journal import RunJournal
-from photosort.modes import MODE_SPECS, MODES
+from photosort.modes import MODE_LABELS, MODE_SPECS
 from photosort.people import PeopleStore
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
@@ -76,7 +76,6 @@ MIN_WIDTH, MIN_HEIGHT = 800, 460
 # The flow that runs each kind of mode.
 _FLOWS = {"plan": plain, "files": files, "groups": groups, "bad": bad, "events": events,
           "face": face, "nopeople": no_people, "content": clip, "notes": clip}
-_MODE_LABELS = {key: label for key, label, _ in MODES}
 
 
 class MainWindow(QMainWindow):
@@ -474,7 +473,7 @@ class MainWindow(QMainWindow):
 
     def show_summary(self, lines: list[str], can_go: bool) -> None:
         moves = self._plan.moves if self._plan is not None else ()
-        self.summary_page.show_summary(lines, can_go, moves, _MODE_LABELS.get(self.mode),
+        self.summary_page.show_summary(lines, can_go, moves, MODE_LABELS.get(self.mode),
                                        icons.MODE_ICONS.get(self.mode))
         self.show_page(self.summary_page)
 

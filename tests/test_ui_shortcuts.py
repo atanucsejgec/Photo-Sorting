@@ -109,8 +109,10 @@ def test_a_deleted_strip_ignores_focus_changes(qtbot, screen):
     strip.show_for(screen)
     strip.deleteLater()
     qtbot.wait(10)
-    _focus(qtbot, screen.edit)
-    _focus(qtbot, screen.button)  # no error from the strip's slot
+    with qtbot.captureExceptions() as raised:
+        _focus(qtbot, screen.edit)
+        _focus(qtbot, screen.button)
+    assert raised == []  # no error from the strip's slot
 
 
 # ----- dialogs -----------------------------------------------------------------
