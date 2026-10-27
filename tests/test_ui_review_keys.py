@@ -837,16 +837,38 @@ def test_event_rows_fit_a_narrow_window(qtbot, make_window, root):
     assert sum(not label.isHidden() for label in row.thumb_labels) >= 1
 
 
+# The parts of a card the owner reads and answers with: in view on a focused
+# card, whatever the window's height.
+_ANSWER_PARTS = {
+    "duplicates": ("details_label", "keep_check"),
+    "bad": ("tag_label", "name_label", "folder_label", "move_check"),
+    "content": ("name_label", "guess_label", "choice_combo"),
+}
+
+
+def _inside(widget, view) -> bool:
+    top = widget.mapTo(view, widget.rect().topLeft()).y()
+    bottom = widget.mapTo(view, widget.rect().bottomLeft()).y()
+    return top >= 0 and bottom <= view.height()
+
+
 @pytest.mark.parametrize("screen", ["duplicates", "bad", "content"])
-def test_a_card_taller_than_the_view_shows_its_top(qtbot, make_window, root, screen):
+def test_the_focused_cards_answers_are_in_view_in_a_short_window(qtbot, make_window, root,
+                                                                 screen):
     w = make_window(size=(819, 480))
     page = _review_on_first_item(qtbot, w, root, screen)
-    card = _on_card(qtbot, page, 0)
     view = page.scroll.viewport()
-    assert card.height() > view.height()  # the case in hand
-    _key(qtbot, Qt.Key.Key_Right)
-    _key(qtbot, Qt.Key.Key_Left)  # back: scrolled to it again
-    assert card.mapTo(view, card.rect().topLeft()).y() >= 0
+    _on_card(qtbot, page, 0)
+    qtbot.wait(50)  # the cards' sizes settle, as long before the owner's first key
+    for key, n in ((Qt.Key.Key_Right, 1), (Qt.Key.Key_Left, 0)):
+        _key(qtbot, key)
+        card = page.navigator.cards[n]
+        assert _focused() is card
+        for name in _ANSWER_PARTS[screen]:
+            assert _inside(getattr(card, name), view), (screen, n, name)
+        if screen != "duplicates":  # a grid card fits the view whole
+            assert _inside(card, view), (screen, n, card.height(), view.height())
+            assert card.thumb_label.width() >= 96  # still a thumbnail
 
 
 def test_grid_columns_fill_the_width(qtbot, make_window, root):

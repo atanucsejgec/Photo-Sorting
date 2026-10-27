@@ -323,7 +323,8 @@ class GridNavigator(QObject):
     The current card is the one focused last; it is the only one Tab stops at
     (the others take focus by click), so the cards are one stop for Tab. ↓
     into a short last row lands on its last card. A card given focus is
-    scrolled into view (its top, when it is taller than the view).
+    scrolled into view (its bottom, with its answers, when it is taller than
+    the view).
 
     set_cards() swaps in the cards of a reload: the current card stays the
     one with the same key(card) (its identity; by default its place), unless
@@ -402,9 +403,10 @@ class GridNavigator(QObject):
                 area = area.parentWidget()
             if area is not None:
                 area.ensureWidgetVisible(watched, 12, 12)
-                if watched.height() + 24 > area.viewport().height():  # taller than the view:
-                    top = watched.mapTo(area.widget(), QPoint(0, 0)).y()
-                    area.verticalScrollBar().setValue(top - 12)  # its top, not its middle
+                if watched.height() > area.viewport().height():  # taller than the view:
+                    bottom = watched.mapTo(area.widget(), QPoint(0, watched.height())).y()
+                    # its bottom (the answers), not its middle
+                    area.verticalScrollBar().setValue(bottom + 4 - area.viewport().height())
             self.current_changed.emit()
         elif kind == QEvent.Type.KeyPress and event.key() in _STEPS:
             modifiers = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier

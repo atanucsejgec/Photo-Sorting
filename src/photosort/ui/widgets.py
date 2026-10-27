@@ -2,9 +2,9 @@
 
 from collections.abc import Sequence
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
-from PySide6.QtWidgets import QCheckBox, QLayout, QLayoutItem, QWidget
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import QCheckBox, QLabel, QLayout, QLayoutItem, QWidget
 
 from photosort.ui.theme import COLORS
 
@@ -189,3 +189,60 @@ class _BarLayout(QLayout):
                 rows.append([item])
                 used = w
         return rows
+
+
+SHORTEST_THUMB_PX = 96  # a card's thumbnail shrinks to fit a short window, not below this
+
+
+class Thumbnail(QLabel):
+    """A square thumbnail, side px, showing text until set_image(); the
+    photo is fitted inside it at any side (never scaled up). It says when it
+    is double-clicked."""
+
+    double_clicked = Signal()
+
+    def __init__(self, text: str, side: int, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self._source: QPixmap | None = None
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setObjectName("thumb")  # see theme
+        self.set_side(side)
+
+    def set_side(self, side: int) -> None:
+        if self.minimumWidth() == side == self.maximumHeight():
+            return
+        self.setFixedSize(side, side)
+        self._fit()
+
+    def set_image(self, image: QImage) -> None:
+        self.setText("")
+        self._source = QPixmap.fromImage(image)
+        self._fit()
+
+    def _fit(self) -> None:
+        if self._source is None:
+            return
+        side = self.minimumWidth()
+        if max(self._source.width(), self._source.height()) <= side:
+            self.setPixmap(self._source)
+        else:
+            self.setPixmap(self._source.scaled(side, side, Qt.AspectRatioMode.KeepAspectRatio,
+                                               Qt.TransformationMode.SmoothTransformation))
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.double_clicked.emit()
+        event.accept()
+
+
+def needed_height(widget: QWidget) -> int:
+    """How tall widget wants to be at the width it has (fixed) or wants,
+    its wrapped labels counted."""
+    width = max(widget.minimumWidth(), widget.sizeHint().width())
+    height = widget.heightForWidth(width)
+    return height if height >= 0 else widget.sizeHint().height()
+
+
+def fitting_thumb_side(widest: int, rest: int, room: int) -> int:
+    """The side of a card's thumbnail so that the card, rest px tall without
+    it, fits room px: at most widest, at least SHORTEST_THUMB_PX."""
+    return max(SHORTEST_THUMB_PX, min(widest, room - rest))

@@ -25,7 +25,7 @@ import logging
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
@@ -229,6 +229,7 @@ class FaceQuestionPage(QWidget):
         for button in (self.back_button, self.stop_button, self.cancel_button,
                        self.skip_button, self.no_button, self.yes_button):
             button.setAutoDefault(True)  # Tab to one, Enter or Space presses it
+            button.installEventFilter(self)  # ... once, however long Enter is held
         layout.addWidget(ButtonBar(
             [self.back_button, self.stop_button, self.cancel_button],
             [self.skip_button, self.no_button, self.yes_button]))
@@ -254,6 +255,13 @@ class FaceQuestionPage(QWidget):
                 ("Ctrl+Return", "Ctrl+Enter", "stop", self._finish)):
             shortcuts.bind(self, keys, label, word, slot, repeat=False)
         shortcuts.describe_tab(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (event.type() == QEvent.Type.KeyPress and event.isAutoRepeat()
+                and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and isinstance(watched, QPushButton)):
+            return True  # a held Enter: QPushButton would press it at each repeat
+        return super().eventFilter(watched, event)
 
     # ----- loading ---------------------------------------------------------
 

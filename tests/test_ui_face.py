@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 from PIL import Image
-from PySide6.QtCore import QMimeData, QPointF, Qt, QThreadPool, QUrl
-from PySide6.QtGui import QDropEvent, QKeySequence
+from PySide6.QtCore import QEvent, QMimeData, QPointF, Qt, QThreadPool, QUrl
+from PySide6.QtGui import QDropEvent, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog
 
 from photosort.faces import Face
@@ -573,6 +573,18 @@ def test_question_shows_name_percent_and_counter(qtbot, asking):
     assert not page.back_button.isEnabled()
     qtbot.waitUntil(page.photo_view.has_photo)
     assert page.photo_view.image_size() == (200, 200)
+
+
+def test_a_held_enter_on_a_button_answers_once(qtbot, asking):
+    page = _question_page(qtbot, asking)
+    page.no_button.setFocus()
+    qtbot.waitUntil(lambda: QApplication.focusWidget() is page.no_button)
+    for _ in range(3):  # the repeats of a held Enter
+        QApplication.sendEvent(page.no_button, QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, "", True))
+    assert page.counter_label.text() == "1 of 3"
+    qtbot.keyClick(page.no_button, Qt.Key.Key_Return)  # a fresh press answers
+    assert page.counter_label.text() == "2 of 3"
 
 
 def test_face_box_is_drawn_scaled_to_the_photo_shown(qtbot, asking):

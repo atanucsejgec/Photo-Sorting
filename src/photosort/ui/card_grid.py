@@ -2,7 +2,9 @@
 
 A CardGrid lays its cards out in as many columns as fit, the cards
 stretched evenly so that the columns fill the width (a thumbnail shrinks
-from THUMB_PX down to MIN_THUMB_PX before a column goes). It re-flows when
+from THUMB_PX down to MIN_THUMB_PX before a column goes). In a short window
+the thumbnails shrink further (to SHORTEST_THUMB_PX at least) so that a
+whole card, its answers too, fits the view. It re-flows when
 the window is resized; the cards stay in the same grid, so the focused one
 keeps the focus, and its GridNavigator (the arrow keys) follows the
 columns shown.
@@ -15,15 +17,16 @@ thumbnail is double-clicked, or by preview_current().
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QFrame, QGridLayout, QScrollArea, QVBoxLayout, QWidget
 
 from photosort.thresholds import THUMB_PX
 from photosort.ui.photo_preview import PhotoPreview
 from photosort.ui.review_page import LOADING, render_thumbnail
 from photosort.ui.shortcuts import GridNavigator
 from photosort.ui.theme import styled
+from photosort.ui.widgets import Thumbnail, fitting_thumb_side, needed_height
 from photosort.ui.worker import Task
 
 MIN_THUMB_PX = 200  # a thumbnail shrinks to this before a column goes
@@ -31,50 +34,10 @@ SPACING = 12  # between the cards
 _MARGIN = 4  # round the grid: room for the focus glow
 
 
-class Thumbnail(QLabel):
-    """A square thumbnail of side px that says when it is double-clicked;
-    the photo is fitted inside it at any side."""
-
-    double_clicked = Signal()
-
-    def __init__(self, side: int = THUMB_PX, parent: QWidget | None = None) -> None:
-        super().__init__(LOADING, parent)
-        self._source: QPixmap | None = None
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setObjectName("thumb")  # see theme
-        self.setToolTip("Double-click to see it larger")
-        self.set_side(side)
-
-    def set_side(self, side: int) -> None:
-        if self.width() == side == self.height():
-            return
-        self.setFixedSize(side, side)
-        self._fit()
-
-    def set_image(self, image: QImage) -> None:
-        self.setText("")
-        self._source = QPixmap.fromImage(image)
-        self._fit()
-
-    def _fit(self) -> None:
-        if self._source is None:
-            return
-        side = self.width()
-        if max(self._source.width(), self._source.height()) <= side:
-            self.setPixmap(self._source)
-        else:
-            self.setPixmap(self._source.scaled(side, side, Qt.AspectRatioMode.KeepAspectRatio,
-                                               Qt.TransformationMode.SmoothTransformation))
-
-    def mouseDoubleClickEvent(self, event) -> None:
-        self.double_clicked.emit()
-        event.accept()
-
-
 class GridCard(QFrame):
     """A card of a CardGrid: the photo's thumbnail on top, then the lines a
-    subclass adds (add_line), as wide as the thumbnail. The card takes the
-    focus."""
+    subclass adds (add_line), as wide as the card's inside. The card takes
+    the focus."""
 
     def __init__(self, root: Path, rel: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -82,8 +45,10 @@ class GridCard(QFrame):
         self.rel = rel
         styled(self, "card")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.thumb_label = Thumbnail()
+        self.thumb_label = Thumbnail(LOADING, THUMB_PX)
+        self.thumb_label.setToolTip("Double-click to see it larger")
         self._lines: list[QWidget] = []
+        self._line_width = THUMB_PX
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(10, 10, 10, 10)
         self._layout.setSpacing(6)
@@ -91,7 +56,7 @@ class GridCard(QFrame):
 
     def add_line(self, widget: QWidget) -> None:
         """Add widget under the thumbnail (and the lines added before)."""
-        widget.setFixedWidth(self.thumb_label.width())
+        widget.setFixedWidth(self._line_width)
         self._lines.append(widget)
         self._layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignHCenter)
 
@@ -100,13 +65,18 @@ class GridCard(QFrame):
         self._layout.addStretch()
 
     def side(self) -> int:
-        return self.thumb_label.width()
+        return self.thumb_label.minimumWidth()
 
-    def set_side(self, side: int) -> None:
-        """The thumbnail side px, and the lines as wide."""
+    def line_width(self) -> int:
+        return self._line_width
+
+    def set_sizes(self, side: int, line_width: int) -> None:
+        """The thumbnail's side, and the lines' width, in px."""
         self.thumb_label.set_side(side)
-        for line in self._lines:
-            line.setFixedWidth(side)
+        if line_width != self._line_width:
+            self._line_width = line_width
+            for line in self._lines:
+                line.setFixedWidth(line_width)
 
     def path(self) -> Path:
         return self.root / self.rel
@@ -176,19 +146,26 @@ class CardGrid(QScrollArea):
         self._grid.setContentsMargins(_MARGIN, _MARGIN, _MARGIN, _MARGIN)
 
     def _fit(self) -> None:
-        """As many columns as fit the width, the cards stretched to fill it."""
+        """As many columns as fit the width, the cards stretched to fill it;
+        the thumbnails as big as the card's width and the view's height let
+        them be."""
         if not self.cards:
             return
         first = self.cards[0]
         first.ensurePolished()  # its size with the theme's padding and border
-        chrome = first.sizeHint().width() - first.side()
+        chrome = first.sizeHint().width() - first.line_width()
         room = self.viewport().width() - 2 * _MARGIN
         columns = max(1, (room + SPACING) // (MIN_THUMB_PX + chrome + SPACING))
         width = max(MIN_THUMB_PX + chrome, (room - (columns - 1) * SPACING) // columns)
-        side = min(THUMB_PX, width - chrome)
+        inside = width - chrome
         for card in self.cards:
-            card.set_side(side)
             card.setFixedWidth(width)
+            card.set_sizes(card.side(), inside)
+        rest = max(needed_height(card) - card.side() for card in self.cards)
+        side = fitting_thumb_side(min(THUMB_PX, inside), rest,
+                                  self.viewport().height() - 2 * _MARGIN)
+        for card in self.cards:
+            card.set_sizes(side, inside)
         self._lay_out(columns)
 
     def _lay_out(self, columns: int) -> None:

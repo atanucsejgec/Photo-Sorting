@@ -17,8 +17,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QImage, QPixmap
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtGui import QFont, QImage
 from PySide6.QtWidgets import (
     QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
@@ -36,7 +36,7 @@ from photosort.ui.photo_preview import PhotoPreview
 from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.shortcuts import GridNavigator
 from photosort.ui.theme import styled
-from photosort.ui.widgets import ButtonBar
+from photosort.ui.widgets import ButtonBar, Thumbnail, fitting_thumb_side, needed_height
 from photosort.ui.worker import Task
 
 _log = logging.getLogger("photosort")
@@ -88,10 +88,7 @@ class CandidateCard(QFrame):
         styled(self, "card")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        self.thumb_label = QLabel(VIDEO if candidate.kind == "video" else LOADING)
-        self.thumb_label.setFixedSize(THUMB_PX, THUMB_PX)
-        self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.thumb_label.setObjectName("thumb")  # see theme
+        self.thumb_label = Thumbnail(VIDEO if candidate.kind == "video" else LOADING, THUMB_PX)
 
         c = candidate
         folder, _, name = c.rel.rpartition("/")
@@ -117,7 +114,7 @@ class CandidateCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
-        layout.addWidget(self.thumb_label)
+        layout.addWidget(self.thumb_label, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self.details_label)
         layout.addWidget(self.keep_check)
         layout.addStretch()
@@ -128,8 +125,7 @@ class CandidateCard(QFrame):
     def set_thumbnail(self, value: QImage | str) -> None:
         """Show the thumbnail, or a placeholder text such as CANT_SHOW. GUI thread only."""
         if isinstance(value, QImage):
-            self.thumb_label.setText("")
-            self.thumb_label.setPixmap(QPixmap.fromImage(value))
+            self.thumb_label.set_image(value)
         else:
             self.thumb_label.setText(value)
 
@@ -176,6 +172,7 @@ class ReviewPage(QWidget):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # the cards take it
+        self.scroll.viewport().installEventFilter(self)  # fits the cards to its height
         layout.addWidget(self.scroll, 1)
 
         self.back_button = QPushButton("Previous group")
@@ -269,12 +266,28 @@ class ReviewPage(QWidget):
             if candidate.kind == "photo":
                 self._request_thumbnail(n, card.path())
         row.addStretch()
+        self._fit_cards()
         self.scroll.setWidget(strip)  # deletes the previous group's cards
         self.navigator.set_cards(self.cards, focused)
         self.back_button.setEnabled(index > 0)
         self._update_buttons()
         if self.isVisible():
             self.navigator.focus()
+
+    def _fit_cards(self) -> None:
+        """Thumbnails small enough that a whole card fits the view's height,
+        if it can (a card still taller shows its answers: see GridNavigator)."""
+        if not self.cards:
+            return
+        rest = max(needed_height(card) - card.thumb_label.minimumWidth() for card in self.cards)
+        side = fitting_thumb_side(THUMB_PX, rest, self.scroll.viewport().height() - 8)
+        for card in self.cards:
+            card.thumb_label.set_side(side)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.scroll.viewport() and event.type() == QEvent.Type.Resize:
+            self._fit_cards()
+        return super().eventFilter(watched, event)
 
     def _request_thumbnail(self, n: int, path: Path) -> None:
         token = (self._generation, n)
