@@ -28,6 +28,19 @@ def _dark_theme(qapp):
     theme.apply(qapp)
 
 
+@pytest.fixture
+def real_font(qapp):
+    """The app's own font, as main() sets it (theme.use_min_font), for the
+    tests of what fits a window: offscreen, the desktop font is smaller.
+    Request it before any widget is made; the font is put back after."""
+    from photosort.ui import theme
+
+    font = qapp.font()
+    theme.use_min_font(qapp)
+    yield qapp.font()
+    qapp.setFont(font)
+
+
 @pytest.fixture(autouse=True)
 def _no_waiting_dialogs(request, monkeypatch):
     """An in-app modal dialog the test did not patch fails the test at once,

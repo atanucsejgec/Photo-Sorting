@@ -410,17 +410,21 @@ def test_space_on_a_tile_does_nothing(qtbot, make_window, photos):
     assert _focused() is w.mode_buttons["date"]
 
 
-def test_the_window_fits_1024_by_600_at_125_percent(qtbot, make_window):
+def test_the_window_fits_1024_by_600_at_125_percent(qtbot, real_font, make_window):
     w = _show(qtbot, make_window(size=(819, 480)))  # 1024 × 600 at 125 %
     assert w.minimumSize().width() <= 819 and w.minimumSize().height() <= 480
     qtbot.waitUntil(lambda: (w.width(), w.height()) == (819, 480))
     for tile in w.mode_buttons.values():  # none squeezed: the tiles scroll instead
         assert tile.height() >= tile.sizeHint().height(), tile.name
-    last = w.mode_buttons["type"]
+    last = list(w.mode_buttons.values())[-1]
     _focus(qtbot, w.mode_buttons["date"])
-    for key in (Qt.Key.Key_Down,) * 3 + (Qt.Key.Key_Right,):  # the last: scrolled into view
-        qtbot.keyClick(_focused(), key)
-    assert _focused() is last
+    while _focused() is not last:  # down, then right along the last row
+        before = _focused()
+        qtbot.keyClick(before, Qt.Key.Key_Down)
+        if _focused() is before:
+            qtbot.keyClick(before, Qt.Key.Key_Right)
+        assert _focused() is not before
+    assert _focused() is last  # scrolled into view:
     strip_top = w.strip.mapTo(w, w.strip.rect().topLeft()).y()
     view = w.home.tile_scroll.viewport()
     assert last.mapTo(view, last.rect().topLeft()).y() >= 0
@@ -461,7 +465,20 @@ def test_tab_goes_from_the_tiles_to_the_sidebar(qtbot, make_window):
     assert _focused() is w.mode_buttons["face"]  # back to the tile it left
 
 
-def test_a_small_window_keeps_the_grid_and_strip_in_view(qtbot, make_window):
+@pytest.mark.parametrize("size", [(1280, 800), (1024, 600)])
+def test_every_tile_shows_whole_without_a_scroll(qtbot, real_font, make_window, size):
+    w = _show(qtbot, make_window(size=size))
+    qtbot.waitUntil(lambda: (w.width(), w.height()) == size)
+    qtbot.waitUntil(lambda: w.home.columns() == 4)
+    _focus(qtbot, w.mode_buttons["date"])
+    assert not w.home.tile_scroll.verticalScrollBar().isVisible()
+    view = w.home.tile_scroll.viewport()
+    for tile in w.mode_buttons.values():
+        assert tile.height() >= tile.sizeHint().height(), tile.name  # hint not cut off
+        assert tile.mapTo(view, tile.rect().bottomLeft()).y() < view.height(), tile.name
+
+
+def test_a_small_window_keeps_the_grid_and_strip_in_view(qtbot, real_font, make_window):
     w = _show(qtbot, make_window(size=(1024, 600)))
     qtbot.waitUntil(lambda: w.home.columns() == 4)
     _focus(qtbot, w.mode_buttons["date"])

@@ -59,6 +59,10 @@ TILES: tuple[tuple[str, str], ...] = (
 MAX_COLUMNS = 4
 TILE_MIN_WIDTH = 180  # px a tile needs; fewer columns below MAX_COLUMNS of them
 TILE_ICON_PX = 22
+# Kept tight so all the tiles fit 1024 x 600 at the app's 11 pt font, unscrolled.
+TILE_PAD_Y = 9  # px above the icon and below the hint
+TILE_ICON_GAP = 1  # px between the icon and the name, on top of the spacing
+TILE_SPACING = 8  # px between the tiles
 NO_FOLDER = "No such folder"
 _ARROWS = (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down)
 _ENTER = (Qt.Key.Key_Return, Qt.Key.Key_Enter)
@@ -108,8 +112,8 @@ class ModeTile(QAbstractButton):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(3)
+        layout.setContentsMargins(14, TILE_PAD_Y, 14, TILE_PAD_Y)
+        layout.setSpacing(2)
         self.icon_label = QLabel()
         self.icon_label.setPixmap(
             icons.icon(icons.MODE_ICONS[key], "focus").pixmap(TILE_ICON_PX, TILE_ICON_PX))
@@ -119,7 +123,7 @@ class ModeTile(QAbstractButton):
         self.hint_label.setObjectName("muted")
         self.hint_label.setFont(scaled_font(self, SMALL_SCALE))
         layout.addWidget(self.icon_label)
-        layout.addSpacing(4)
+        layout.addSpacing(TILE_ICON_GAP)
         for label in (self.icon_label, self.name_label, self.hint_label):
             label.setTextFormat(Qt.TextFormat.PlainText)
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -199,7 +203,7 @@ class HomePage(QWidget):
         self.tile_grid = QWidget()
         self.tile_layout = QGridLayout(self.tile_grid)
         self.tile_layout.setContentsMargins(2, 4, 2, 4)  # room for the focus glow
-        self.tile_layout.setSpacing(10)
+        self.tile_layout.setSpacing(TILE_SPACING)
         self.mode_buttons: dict[str, ModeTile] = {}
         for key, hint in TILES:
             tile = ModeTile(key, labels[key], hint)

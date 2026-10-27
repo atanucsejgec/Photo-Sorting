@@ -967,7 +967,7 @@ def test_every_dialogs_strip_is_its_live_keys(qtbot, tmp_path):
     QThreadPool.globalInstance().waitForDone()
 
 
-def test_every_dialog_fits_the_smallest_window(qtbot, tmp_path):
+def test_every_dialog_fits_the_smallest_window(qtbot, real_font, tmp_path):
     for dialog, _, focus in _dialogs(qtbot, tmp_path):
         _show(qtbot, dialog, focus)
         name = type(dialog).__name__

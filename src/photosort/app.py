@@ -54,10 +54,7 @@ def main() -> int:
     # Matches scripts/install-desktop-entry.sh, so the app menu entry's icon
     # and name are used for the window (the Wayland app id).
     QApplication.setDesktopFileName("photo-sorter")
-    font = app.font()
-    if font.pointSizeF() < 11:
-        font.setPointSizeF(11)
-        app.setFont(font)
+    theme.use_min_font(app)
     theme.apply(app)  # after the font: the strip and headings scale from it
     path = default_path()
     window = MainWindow(load_settings(path), path)

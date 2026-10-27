@@ -58,6 +58,7 @@ COLORS: dict[str, str] = {
 # The viewer's caption box: deep, see-through. Not a token: QColor can't read it.
 OVERLAY = "rgba(10, 14, 20, 190)"
 
+MIN_POINT_SIZE = 11  # the app's body font is never smaller (see use_min_font)
 HEADING_SCALE = 1.5  # a page's heading, of the body font
 SMALL_SCALE = 0.85  # hints, as the shortcut strip
 
@@ -289,6 +290,16 @@ class _FocusGlow(QObject):
         glow.setOffset(0, 0)
         new.setGraphicsEffect(glow)
         self._glowing, self._effect = new, glow
+
+
+def use_min_font(app: QApplication) -> None:
+    """Raise app's font to MIN_POINT_SIZE if the desktop's is smaller. Call it
+    before any widget is made: their fonts, and the sizes scaled from them,
+    are taken when they are."""
+    font = app.font()
+    if font.pointSizeF() < MIN_POINT_SIZE:
+        font.setPointSizeF(MIN_POINT_SIZE)
+        app.setFont(font)
 
 
 def apply(app: QApplication) -> None:

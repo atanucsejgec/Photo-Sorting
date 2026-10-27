@@ -211,3 +211,16 @@ def test_every_button_and_buddy_label_shows_its_ampersands(qtbot, tmp_path):
               if label.buddy() is not None]
     assert "Confirm && next group" in texts
     assert [t for t in texts if "&" in t.replace("&&", "")] == []
+
+
+def test_use_min_font_raises_a_small_font_only(qapp):
+    font = qapp.font()
+    try:
+        for size, expected in ((9, theme.MIN_POINT_SIZE), (14, 14)):
+            small = qapp.font()
+            small.setPointSizeF(size)
+            qapp.setFont(small)
+            theme.use_min_font(qapp)
+            assert qapp.font().pointSizeF() == expected
+    finally:
+        qapp.setFont(font)
