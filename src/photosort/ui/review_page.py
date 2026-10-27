@@ -36,6 +36,7 @@ from photosort.ui.photo_preview import PhotoPreview
 from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.shortcuts import GridNavigator
 from photosort.ui.theme import styled
+from photosort.ui.widgets import ButtonBar
 from photosort.ui.worker import Task
 
 _log = logging.getLogger("photosort")
@@ -186,14 +187,10 @@ class ReviewPage(QWidget):
         self.skip_button = QPushButton("Skip")
         self.confirm_button = QPushButton(literal("Confirm & next group"))
         self.confirm_button.setDefault(True)
-        row = QHBoxLayout()
-        for button in (self.back_button, self.stop_button, self.cancel_button):
-            row.addWidget(button)
-        row.addStretch()
-        for button in (self.fullscreen_button, self.keep_all_button, self.keep_one_button,
-                       self.skip_button, self.confirm_button):
-            row.addWidget(button)
-        layout.addLayout(row)
+        layout.addWidget(ButtonBar(
+            [self.back_button, self.stop_button, self.cancel_button],
+            [self.fullscreen_button, self.keep_all_button, self.keep_one_button,
+             self.skip_button, self.confirm_button]))
 
         self.back_button.clicked.connect(self._previous)
         self.stop_button.clicked.connect(self._finish)
@@ -219,6 +216,7 @@ class ReviewPage(QWidget):
         shortcuts.bind(self, "Escape", "Esc", "back", self._back, repeat=False)
         shortcuts.bind(self, "Ctrl+Return", "Ctrl+Enter", "stop", self._finish,
                        repeat=False)
+        shortcuts.describe_tab(self)
 
     # ----- loading ---------------------------------------------------------
 

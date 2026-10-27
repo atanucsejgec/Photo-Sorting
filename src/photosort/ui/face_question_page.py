@@ -36,6 +36,7 @@ from photosort.thresholds import PERSON_THUMB_PX
 from photosort.ui import shortcuts
 from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.theme import COLORS
+from photosort.ui.widgets import ButtonBar
 from photosort.ui.worker import Task
 
 _log = logging.getLogger("photosort")
@@ -90,7 +91,8 @@ class PhotoView(QWidget):
         self._message = LOADING
         self._box = (0.0, 0.0, 0.0, 0.0)
         self._box_space = (1, 1)  # (width, height) the box's pixels are of
-        self.setMinimumSize(320, 240)
+        self.setMinimumSize(240, 180)  # leaves room for the buttons in a small window
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # the page's answer keys are here
 
     def show_message(self, text: str) -> None:
         self._pixmap = None
@@ -145,13 +147,17 @@ class PhotoView(QWidget):
         if self._pixmap is None:
             painter.setPen(QColor(COLORS["muted"]))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._message)
-            return
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        painter.drawPixmap(self.photo_rect(), self._pixmap, QRectF(self._pixmap.rect()))
-        pen = QPen(QColor(BOX_COLOUR))
-        pen.setWidth(BOX_PEN_PX)
-        painter.setPen(pen)
-        painter.drawRect(self.box_rect())
+        else:
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            painter.drawPixmap(self.photo_rect(), self._pixmap, QRectF(self._pixmap.rect()))
+            pen = QPen(QColor(BOX_COLOUR))
+            pen.setWidth(BOX_PEN_PX)
+            painter.setPen(pen)
+            painter.drawRect(self.box_rect())
+        if self.hasFocus():  # the focus ring, as the cards have
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(COLORS["focus"]), 2))
+            painter.drawRect(QRectF(self.rect()).adjusted(1, 1, -1, -1))
 
 
 class FaceQuestionPage(QWidget):
@@ -176,7 +182,6 @@ class FaceQuestionPage(QWidget):
         self._index = 0
         self._generation = 0  # bumped whenever another question is shown
         self._tasks: dict[int, Task] = {}  # kept alive until they report
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 24, 32, 12)
@@ -219,18 +224,14 @@ class FaceQuestionPage(QWidget):
         self.skip_button = QPushButton("Skip")
         self.no_button = QPushButton("No")
         self.yes_button = QPushButton("Yes")
-        row = QHBoxLayout()
-        for button in (self.back_button, self.stop_button, self.cancel_button):
-            row.addWidget(button)
-        row.addStretch()
         for button in (self.skip_button, self.no_button, self.yes_button):
             button.setMinimumWidth(120)
-            row.addWidget(button)
-        layout.addLayout(row)
         for button in (self.back_button, self.stop_button, self.cancel_button,
                        self.skip_button, self.no_button, self.yes_button):
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            button.setAutoDefault(False)
+            button.setAutoDefault(True)  # Tab to one, Enter or Space presses it
+        layout.addWidget(ButtonBar(
+            [self.back_button, self.stop_button, self.cancel_button],
+            [self.skip_button, self.no_button, self.yes_button]))
 
         self.back_button.clicked.connect(self._previous)
         self.stop_button.clicked.connect(self._finish)
@@ -239,13 +240,20 @@ class FaceQuestionPage(QWidget):
         self.no_button.clicked.connect(lambda: self._answer("no"))
         self.skip_button.clicked.connect(lambda: self._answer("skip"))
 
+        # Keys: the photo has the focus, and Space there skips; Y and N work
+        # on the buttons too (where Space presses the button), as do the
+        # page's Esc and Ctrl+Enter.
+        shortcuts.describe(self.photo_view, "Y", "yes")
+        shortcuts.describe(self.photo_view, "N", "no")
+        shortcuts.bind(self.photo_view, "Space", "Space", "skip",
+                       lambda: self._answer("skip"), repeat=False)
         for keys, label, word, slot in (
                 ("Y", "Y", "yes", lambda: self._answer("yes")),
                 ("N", "N", "no", lambda: self._answer("no")),
-                ("Space", "Space", "skip", lambda: self._answer("skip")),
                 ("Escape", "Esc", "back", self._back),
                 ("Ctrl+Return", "Ctrl+Enter", "stop", self._finish)):
             shortcuts.bind(self, keys, label, word, slot, repeat=False)
+        shortcuts.describe_tab(self)
 
     # ----- loading ---------------------------------------------------------
 
@@ -281,7 +289,7 @@ class FaceQuestionPage(QWidget):
         self.photo_view.show_message(LOADING)
         self.photo_view.setToolTip(q.rel)
         self._request_photo(self._root / q.rel)
-        self.setFocus()
+        self.photo_view.setFocus()
 
     def _picture(self, person_id: str) -> QPixmap:
         if person_id not in self._pictures:

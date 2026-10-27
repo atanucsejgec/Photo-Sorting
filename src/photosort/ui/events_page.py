@@ -15,11 +15,11 @@ Ctrl+Enter continues to the summary and Esc asks whether to leave (left()).
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
-    QVBoxLayout, QWidget,
+    QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from photosort.media import kind
@@ -30,6 +30,7 @@ from photosort.ui import shortcuts
 from photosort.ui.review_page import LOADING, VIDEO, render_thumbnail
 from photosort.ui.shortcuts import GridNavigator
 from photosort.ui.theme import styled
+from photosort.ui.widgets import ButtonBar
 from photosort.ui.worker import Task
 
 _THUMB_GAP = 6  # between an event's thumbnails
@@ -62,6 +63,31 @@ def _spread[T](items: tuple[T, ...], count: int) -> list[T]:
     return [items[round(i * step)] for i in range(count)]
 
 
+class _ThumbStrip(QWidget):
+    """An event's thumbnails in a row. It wants room for EVENT_THUMBS of them
+    whatever the event has, so the names of all rows line up; given less (a
+    narrow window), it shows as many as fit, at least one."""
+
+    _STEP = EVENT_THUMB_PX + _THUMB_GAP
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+
+    def sizeHint(self) -> QSize:
+        return QSize(EVENT_THUMBS * self._STEP - _THUMB_GAP, EVENT_THUMB_PX)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(EVENT_THUMB_PX, EVENT_THUMB_PX)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        fits = max(1, (self.width() + _THUMB_GAP) // self._STEP)
+        for n, label in enumerate(self.findChildren(QLabel)):
+            label.move(n * self._STEP, 0)
+            label.setVisible(n < fits)
+
+
 class EventRow(QFrame):
     """One event: its thumbnails, name field, dates and count, and its
     buttons. The row takes the focus; the name box takes it to be typed in."""
@@ -76,20 +102,14 @@ class EventRow(QFrame):
 
         self.thumb_files = _spread(event.files, EVENT_THUMBS)
         self.thumb_labels: list[QLabel] = []
-        strip = QWidget()  # as wide as EVENT_THUMBS thumbnails, so the names line up
-        thumbs = QHBoxLayout(strip)
-        thumbs.setContentsMargins(0, 0, 0, 0)
-        thumbs.setSpacing(_THUMB_GAP)
-        strip.setFixedWidth(EVENT_THUMBS * EVENT_THUMB_PX + (EVENT_THUMBS - 1) * _THUMB_GAP)
+        strip = _ThumbStrip()
         for rel in self.thumb_files:
-            label = QLabel(VIDEO if kind(rel) == "video" else LOADING)
+            label = QLabel(VIDEO if kind(rel) == "video" else LOADING, strip)
             label.setFixedSize(EVENT_THUMB_PX, EVENT_THUMB_PX)
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setObjectName("thumb")  # see theme
             label.setToolTip(rel)
             self.thumb_labels.append(label)
-            thumbs.addWidget(label)
-        thumbs.addStretch()
 
         self.name_edit = QLineEdit(name)
         self.name_edit.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # F2 or Enter on the row
@@ -188,11 +208,7 @@ class EventsPage(QWidget):
         self.back_button = QPushButton("Back")
         self.continue_button = QPushButton("Continue")
         self.continue_button.setDefault(True)
-        row = QHBoxLayout()
-        row.addWidget(self.back_button)
-        row.addStretch()
-        row.addWidget(self.continue_button)
-        layout.addLayout(row)
+        layout.addWidget(ButtonBar([self.back_button], [self.continue_button]))
 
         self.back_button.clicked.connect(self._cancel)
         self.continue_button.clicked.connect(self._finish)
@@ -213,6 +229,7 @@ class EventsPage(QWidget):
                        repeat=False)
         self._esc_key = shortcuts.bind(self, "Escape", "Esc", "back", self._leave,
                                        repeat=False)
+        shortcuts.describe_tab(self)
 
     def load(self, root: Path, events: list[Event], left_out: int) -> None:
         """Show the events found in root, none named or skipped; left_out

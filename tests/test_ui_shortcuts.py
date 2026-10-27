@@ -2,7 +2,8 @@
 the themed dialogs answer by keyboard."""
 
 import pytest
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from photosort.ui import dialogs, shortcuts
@@ -140,6 +141,31 @@ def test_ask_enter_takes_the_default_no(qtbot):
     assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep") is False
     assert seen["focus"] == "Keep"
     assert seen["strip"] == "←→ choose · Enter pick · Esc no/close"
+
+
+@pytest.mark.real_dialogs
+@pytest.mark.parametrize("key", [Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter])
+def test_a_held_key_does_not_answer(qtbot, key):
+    """The repeats of a key held down (say Esc, held on the screen behind
+    as the dialog opened) answer nothing; a fresh press does."""
+    seen = {}
+
+    def press():
+        dialog = QApplication.activeModalWidget()
+        if dialog is None or dialog.focusWidget() is None:
+            QTimer.singleShot(10, press)
+            return
+        for _ in range(3):
+            QApplication.sendEvent(dialog.focusWidget(), QKeyEvent(
+                QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier, "", True))
+        seen["open"] = dialog.isVisible()
+        dialog.buttons[1].setFocus()  # Leave, so a fresh Enter says yes
+        qtbot.keyClick(dialog.focusWidget(), Qt.Key.Key_Return)
+
+    QTimer.singleShot(0, press)
+    assert dialogs.ask(None, "Leave this review?", "Your answers so far will be lost.",
+                       yes="Leave", no="Stay") is True
+    assert seen == {"open": True}
 
 
 @pytest.mark.real_dialogs

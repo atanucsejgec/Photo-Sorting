@@ -13,8 +13,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 from PIL import Image
-from PySide6.QtCore import Qt, QThreadPool, QTimer
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, Qt, QThreadPool, QTimer
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication, QPushButton
 
 from photosort.groups import Candidate, Group
@@ -265,7 +265,7 @@ def test_face_questions_by_keyboard(qtbot, make_window, root, asked):
     face_flow._on_scan(w, people, scan)
     page = w.face_question_page
     assert w.current_page() is page
-    qtbot.waitUntil(lambda: _focused() is page)
+    qtbot.waitUntil(lambda: _focused() is page.photo_view)
     _key(qtbot, Qt.Key.Key_N)  # a.jpg: not Atanu ...
     assert page.counter_label.text() == "2 of 3"
     _key(qtbot, Qt.Key.Key_Escape)  # ... back: changed to yes
@@ -282,7 +282,7 @@ def test_face_stop_asking_by_keyboard(qtbot, make_window, root):
     _start(qtbot, w, root, "face")
     people, scan = _face_sort(w, root)
     face_flow._on_scan(w, people, scan)
-    qtbot.waitUntil(lambda: _focused() is w.face_question_page)
+    qtbot.waitUntil(lambda: _focused() is w.face_question_page.photo_view)
     _key(qtbot, Qt.Key.Key_Y)
     _key(qtbot, Qt.Key.Key_Return, CTRL)  # stop asking: b.jpg's questions unanswered
     assert _moves(w) == {("a.jpg", "Atanu/a.jpg")}
@@ -480,7 +480,8 @@ def test_events_by_keyboard(qtbot, make_window, root, asked):
     assert _focused() is page.rows[1]
     _key(qtbot, Qt.Key.Key_F2)  # rename the party
     assert _focused() is page.rows[1].name_edit
-    assert w.strip.text() == "Enter done · Esc stop editing · Ctrl+Enter continue"
+    assert w.strip.text() == ("Enter done · Esc stop editing · Ctrl+Enter continue · "
+                              "Tab/Shift+Tab area")
     qtbot.keyClicks(_focused(), "Party ms")  # M and S type, here
     _key(qtbot, Qt.Key.Key_Escape)  # stop editing: the name stays, and no leave check
     assert _focused() is page.rows[1]
@@ -518,9 +519,10 @@ def test_events_m_and_s_only_where_they_work(qtbot, make_window, root):
     page = w.events_page
     _on_card(qtbot, page, 0)
     assert w.strip.text() == ("↑↓ move · Space skip · F2/Enter rename · M merge · S split · "
-                              "Ctrl+Enter continue · Esc back")
+                              "Ctrl+Enter continue · Esc back · Tab/Shift+Tab area")
     _key(qtbot, Qt.Key.Key_Down)  # the last row, all at one moment: no merge, no split
-    assert w.strip.text() == "↑↓ move · Space skip · F2/Enter rename · Ctrl+Enter continue · Esc back"
+    assert w.strip.text() == ("↑↓ move · Space skip · F2/Enter rename · Ctrl+Enter continue · "
+                              "Esc back · Tab/Shift+Tab area")
     _key(qtbot, Qt.Key.Key_M)
     _key(qtbot, Qt.Key.Key_S)
     assert len(page.rows) == 2
@@ -617,16 +619,24 @@ def test_esc_on_the_first_item_asks_once_with_stay_focused(qtbot, make_window, r
     assert not w.sidebar.is_locked()
 
 
+def _esc(w, held: bool) -> None:
+    """An Esc press through the shortcut map; held: an auto-repeat of one."""
+    QApplication.sendEvent(w, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape,
+                                        Qt.KeyboardModifier.NoModifier, "", held))
+
+
 @pytest.mark.parametrize("screen", SCREENS)
-def test_a_held_esc_asks_once(qtbot, make_window, root, screen):
+def test_a_held_esc_asks_once(qtbot, make_window, root, screen, asked):
     """The leave check's Esc does not repeat while held: one dialog, not a
-    stream of them (a real held key can't be sent offscreen)."""
+    stream of them."""
     w = make_window()
     page = _review_on_first_item(qtbot, w, root, screen)
-    escapes = [s for s in page.findChildren(QShortcut)
-               if QKeySequence("Escape") in s.keys() and s.parent() is page]
-    assert len(escapes) == 1
-    assert not escapes[0].autoRepeat()
+    for _ in range(3):
+        _esc(w, held=True)  # the repeats of a held Esc
+    assert asked.calls == []
+    assert w.current_page() is page
+    _esc(w, held=False)  # a fresh press asks
+    assert [call[0] for call in asked.calls] == ["Leave this review?"]
 
 
 def test_esc_on_a_later_group_steps_back_without_asking(qtbot, make_window, root, asked):
@@ -718,16 +728,17 @@ def _strip_is_its_records(w, page, holder) -> None:
     assert w.strip.text() == " · ".join(expected)
 
 
+TAB = "Tab/Shift+Tab area"  # every review screen: the cards, then the buttons
 STRIPS = {
     "duplicates": "←→ move · Space keep · Enter view big · K keep all · N skip · "
-                  "Ctrl+→ confirm · Esc back · Ctrl+Enter stop",
-    "face": "Y yes · N no · Space skip · Esc back · Ctrl+Enter stop",
+                  f"Ctrl+→ confirm · Esc back · Ctrl+Enter stop · {TAB}",
+    "face": f"Y yes · N no · Space skip · Esc back · Ctrl+Enter stop · {TAB}",
     "bad": "←↑↓→ move · Space tick · Enter view big · A tick all · U untick all · "
-           "Ctrl+Enter continue · Esc back",
+           f"Ctrl+Enter continue · Esc back · {TAB}",
     "content": "←↑↓→ move · Enter pick · L leave this one · Space view big · "
-               "Shift+L leave all · Ctrl+Enter continue · Esc back",
+               f"Shift+L leave all · Ctrl+Enter continue · Esc back · {TAB}",
     "events": "↑↓ move · Space skip · F2/Enter rename · M merge · S split · "
-              "Ctrl+Enter continue · Esc back",
+              f"Ctrl+Enter continue · Esc back · {TAB}",
 }
 
 
@@ -736,7 +747,7 @@ def test_each_screens_strip_is_its_keys(qtbot, make_window, root, screen):
     w = make_window()
     page = _review_on_first_item(qtbot, w, root, screen)
     assert w.strip.text() == STRIPS[screen]
-    holder = page if screen == "face" else page.scroll
+    holder = page.photo_view if screen == "face" else page.scroll
     _strip_is_its_records(w, page, holder)
     buttons = [b for b in page.findChildren(QPushButton)
                if b.focusPolicy() & Qt.FocusPolicy.TabFocus and b.isVisible()
@@ -754,7 +765,105 @@ def test_the_repeated_strip_has_keep_sharpest(qtbot, make_window, root):
     _on_card(qtbot, w.review_page, 0)
     assert w.strip.text() == ("←→ move · Space keep · Enter view big · K keep all · "
                               "1 keep sharpest · N skip · Ctrl+→ confirm · Esc back · "
-                              "Ctrl+Enter stop")
+                              "Ctrl+Enter stop · Tab/Shift+Tab area")
+
+
+def test_content_back_from_the_summary_keeps_the_place(qtbot, make_window, root):
+    w = make_window()
+    _start(qtbot, w, root, "content")
+    w.flow_state = _clip_sort(root)
+    clip_flow._ask(w, {})
+    page = w.category_review_page
+    _on_card(qtbot, page, 0)
+    _key(qtbot, Qt.Key.Key_Right)
+    _key(qtbot, Qt.Key.Key_Right)
+    _key(qtbot, Qt.Key.Key_L)
+    _key(qtbot, Qt.Key.Key_Return, CTRL)
+    assert w.current_page() is w.summary_page
+    w.back_button.click()  # the summary's own keys are Task 5's
+    assert w.current_page() is page
+    _on_card(qtbot, page, 2)  # the card it was on
+    assert page.cards[2].answer() is None  # its answer kept
+
+
+# ----- the smallest window (1024 x 600 at 125 %) -------------------------------------
+
+def _load_every_review(qtbot, w, root) -> None:
+    for screen in SCREENS:
+        _review_on_first_item(qtbot, w, root / screen, screen)
+
+
+@pytest.fixture
+def every_screen_root(root):
+    for screen in SCREENS:
+        (root / screen).mkdir()
+    return root
+
+
+def test_every_page_fits_the_smallest_window(qtbot, make_window, every_screen_root):
+    w = make_window(size=(819, 480))
+    qtbot.waitUntil(lambda: (w.width(), w.height()) == (819, 480))
+    _load_every_review(qtbot, w, every_screen_root)
+    _start(qtbot, w, every_screen_root, "repeated")  # its button row is the longest
+    groups_flow._on_found(w, [_group(every_screen_root, "r", "repeated")])
+    for n in range(w.stack.count()):
+        page = w.stack.widget(n)
+        w.stack.setCurrentWidget(page)
+        qtbot.wait(10)
+        room, layout = w.stack.size(), page.layout()
+        width = page.minimumSizeHint().width()
+        height = (layout.totalMinimumHeightForWidth(room.width()) if layout.hasHeightForWidth()
+                  else page.minimumSizeHint().height())  # wrapped labels: at this width
+        name = type(page).__name__ if type(page).__name__ != "QWidget" else n
+        assert width <= room.width(), (name, width, room)
+        assert height <= room.height(), (name, height, room)
+        for button in page.findChildren(QPushButton):
+            if button.isVisible():  # none crushed below its text
+                assert button.width() >= button.minimumSizeHint().width(), (name, button.text())
+
+
+def test_event_rows_fit_a_narrow_window(qtbot, make_window, root):
+    w = make_window(size=(819, 480))
+    _start(qtbot, w, root, "events")
+    events_flow._on_found(w, (_events(root), 0))
+    page = w.events_page
+    _on_card(qtbot, page, 0)
+    qtbot.wait(20)
+    assert not page.scroll.horizontalScrollBar().isVisible()  # no sideways scrolling
+    row = page.rows[0]
+    for widget in (row.split_button, row.skip_check, row.name_edit):
+        right = widget.mapTo(page.scroll.viewport(), widget.rect().topRight()).x()
+        assert right <= page.scroll.viewport().width()
+    assert sum(not label.isHidden() for label in row.thumb_labels) >= 1
+
+
+@pytest.mark.parametrize("screen", ["duplicates", "bad", "content"])
+def test_a_card_taller_than_the_view_shows_its_top(qtbot, make_window, root, screen):
+    w = make_window(size=(819, 480))
+    page = _review_on_first_item(qtbot, w, root, screen)
+    card = _on_card(qtbot, page, 0)
+    view = page.scroll.viewport()
+    assert card.height() > view.height()  # the case in hand
+    _key(qtbot, Qt.Key.Key_Right)
+    _key(qtbot, Qt.Key.Key_Left)  # back: scrolled to it again
+    assert card.mapTo(view, card.rect().topLeft()).y() >= 0
+
+
+def test_grid_columns_fill_the_width(qtbot, make_window, root):
+    w = make_window()  # 1280 x 800
+    _start(qtbot, w, root, "bad")
+    bad_flow._on_found(w, _bad(root, 8))
+    page = w.bad_page
+    _on_card(qtbot, page, 0)
+    assert page.columns() >= 4
+    columns = page.columns()
+    last = page.cards[columns - 1]
+    right = last.mapTo(page.scroll.viewport(), last.rect().topRight()).x()
+    assert right >= page.scroll.viewport().width() - 16  # no empty strip on the right
+    widths = {card.width() for card in page.cards[:columns]}
+    assert max(widths) - min(widths) <= 1  # evenly
+    _key(qtbot, Qt.Key.Key_Down)
+    assert _focused() is page.cards[columns]  # the arrows follow the columns shown
 
 
 def test_cards_are_cards(qtbot, make_window, root):

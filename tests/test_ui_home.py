@@ -410,8 +410,17 @@ def test_the_window_fits_1024_by_600_at_125_percent(qtbot, make_window):
     w = _show(qtbot, make_window(size=(819, 480)))  # 1024 × 600 at 125 %
     assert w.minimumSize().width() <= 819 and w.minimumSize().height() <= 480
     qtbot.waitUntil(lambda: (w.width(), w.height()) == (819, 480))
+    for tile in w.mode_buttons.values():  # none squeezed: the tiles scroll instead
+        assert tile.height() >= tile.sizeHint().height(), tile.name
     last = w.mode_buttons["type"]
+    _focus(qtbot, w.mode_buttons["date"])
+    for key in (Qt.Key.Key_Down,) * 3 + (Qt.Key.Key_Right,):  # the last: scrolled into view
+        qtbot.keyClick(_focused(), key)
+    assert _focused() is last
     strip_top = w.strip.mapTo(w, w.strip.rect().topLeft()).y()
+    view = w.home.tile_scroll.viewport()
+    assert last.mapTo(view, last.rect().topLeft()).y() >= 0
+    assert last.mapTo(view, last.rect().bottomLeft()).y() <= view.height()
     assert last.mapTo(w, last.rect().bottomRight()).y() < strip_top
     assert w.strip.mapTo(w, w.strip.rect().bottomLeft()).y() <= w.height()
 

@@ -82,6 +82,16 @@ def describe(owner: QWidget, label: str, word: str) -> None:
     _add(owner, _Record(label, word, None))
 
 
+TAB_LABEL, TAB_WORD = "Tab/Shift+Tab", "area"
+
+
+def describe_tab(page: QWidget) -> None:
+    """Record Tab and Shift+Tab on a review page: the next or the last area
+    (the cards, then the buttons); Qt's focus chain does it. The page's
+    last record, so it ends the strip."""
+    describe(page, TAB_LABEL, TAB_WORD)
+
+
 def _live(widget: QWidget) -> list[tuple[str, str]]:
     return [(r.label, r.word) for r in getattr(widget, _ATTR, ())
             if r.shortcut is None or (isValid(r.shortcut) and r.shortcut.isEnabled())]
@@ -313,7 +323,7 @@ class GridNavigator(QObject):
     The current card is the one focused last; it is the only one Tab stops at
     (the others take focus by click), so the cards are one stop for Tab. ↓
     into a short last row lands on its last card. A card given focus is
-    scrolled into view.
+    scrolled into view (its top, when it is taller than the view).
 
     set_cards() swaps in the cards of a reload: the current card stays the
     one with the same key(card) (its identity; by default its place), unless
@@ -354,11 +364,6 @@ class GridNavigator(QObject):
     def current_index(self) -> int:
         return self._current
 
-    def has_focus(self) -> bool:
-        focus = QApplication.focusWidget()
-        return focus is not None and any(card is focus or card.isAncestorOf(focus)
-                                         for card in self.cards)
-
     def focus(self, n: int | None = None) -> None:
         """Focus card n (the current card if None)."""
         if not self.cards:
@@ -397,6 +402,9 @@ class GridNavigator(QObject):
                 area = area.parentWidget()
             if area is not None:
                 area.ensureWidgetVisible(watched, 12, 12)
+                if watched.height() + 24 > area.viewport().height():  # taller than the view:
+                    top = watched.mapTo(area.widget(), QPoint(0, 0)).y()
+                    area.verticalScrollBar().setValue(top - 12)  # its top, not its middle
             self.current_changed.emit()
         elif kind == QEvent.Type.KeyPress and event.key() in _STEPS:
             modifiers = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier

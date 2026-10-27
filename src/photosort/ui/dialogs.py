@@ -20,12 +20,14 @@ from photosort.ui.shortcuts import ShortcutStrip
 _ASK_KEYS = (("←→", "choose"), ("Enter", "pick"), ("Esc", "no/close"))
 _TELL_KEYS = (("Enter", "OK"), ("Esc", "close"))
 _ICON_PX = 28
+_ANSWER_KEYS = (Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter)  # never held
 
 
 class MessageDialog(QDialog):
     """title as a heading over text, a row of buttons, and the strip.
 
     Each button accepts the dialog if it is the yes button, else rejects it.
+    A held Esc or Enter answers nothing: only a fresh press does.
     """
 
     def __init__(self, parent: QWidget | None, title: str, text: str,
@@ -90,6 +92,8 @@ class MessageDialog(QDialog):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.KeyPress and watched in self.buttons:
             key = event.key()
+            if event.isAutoRepeat() and key in _ANSWER_KEYS:
+                return True  # a key held down (perhaps since before it opened)
             if key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
                 step = 1 if key == Qt.Key.Key_Right else -1
                 n = self.buttons.index(watched)
@@ -99,6 +103,12 @@ class MessageDialog(QDialog):
                 watched.click()
                 return True
         return super().eventFilter(watched, event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.isAutoRepeat() and event.key() in _ANSWER_KEYS:
+            event.accept()  # as above, wherever the focus is
+            return
+        super().keyPressEvent(event)
 
 
 def ask(parent: QWidget | None, title: str, text: str, yes: str, no: str,

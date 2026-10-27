@@ -35,6 +35,11 @@ def _no_waiting_dialogs(request, monkeypatch):
 
     A test that wants the real dialog is marked real_dialogs and answers it
     from a QTimer.
+
+    It patches QDialog.exec as Python sees it, so it covers the app's own
+    dialogs (dialogs.ask and the rest, opened from a test or from a Qt slot)
+    but not C++ static dialogs such as QInputDialog.getText or the
+    QMessageBox statics, which call exec inside Qt: patch those by name.
     """
     if request.node.get_closest_marker("real_dialogs") is not None:
         yield []

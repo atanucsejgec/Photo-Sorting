@@ -1,8 +1,10 @@
 """Small widgets the pages share."""
 
-from PySide6.QtCore import QRectF, QSize, Qt
+from collections.abc import Sequence
+
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
-from PySide6.QtWidgets import QCheckBox, QWidget
+from PySide6.QtWidgets import QCheckBox, QLayout, QLayoutItem, QWidget
 
 from photosort.ui.theme import COLORS
 
@@ -62,3 +64,128 @@ class Switch(QCheckBox):
                            self.width() - track.right() - self._GAP, self.height())
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter, self.text())
         painter.end()
+
+
+class ButtonBar(QWidget):
+    """A page's row of buttons: left ones on the left, right ones on the
+    right, as one row when they fit. When they do not (a narrow window),
+    the left ones come first and the right ones below them, right-aligned,
+    each group wrapping onto more rows as it must; no button is ever
+    squeezed below its size."""
+
+    SPACING = 10
+
+    def __init__(self, left: Sequence[QWidget], right: Sequence[QWidget],
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._layout = _BarLayout(self, self.SPACING)
+        for widget in left:
+            self._layout.add(widget, right=False)
+        for widget in right:
+            self._layout.add(widget, right=True)
+
+    def rows(self) -> int:
+        """How many rows the buttons take now."""
+        return self._layout.rows(self.width())
+
+
+class _BarLayout(QLayout):
+    """ButtonBar's layout (see there); its height follows its width."""
+
+    _GROUP_GAP = 24  # at least this between the groups on one row
+
+    def __init__(self, parent: QWidget, spacing: int) -> None:
+        super().__init__(parent)
+        self.setContentsMargins(0, 0, 0, 0)
+        self._spacing = spacing
+        self._items: list[tuple[QLayoutItem, bool]] = []  # (item, on the right)
+        self._right = False
+
+    def add(self, widget: QWidget, right: bool) -> None:
+        self._right = right
+        self.addWidget(widget)
+
+    def addItem(self, item: QLayoutItem) -> None:
+        self._items.append((item, self._right))
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int) -> QLayoutItem | None:
+        return self._items[index][0] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int) -> QLayoutItem | None:
+        return self._items.pop(index)[0] if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self) -> Qt.Orientation:
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return self._arrange(QRect(0, 0, width, 0), move=False)[0]
+
+    def setGeometry(self, rect: QRect) -> None:
+        super().setGeometry(rect)
+        self._arrange(rect, move=True)
+
+    def sizeHint(self) -> QSize:
+        shown = [item.sizeHint() for item, _ in self._items if not item.isEmpty()]
+        width = sum(s.width() for s in shown) + self._spacing * max(0, len(shown) - 1)
+        if any(right for item, right in self._items if not item.isEmpty()):
+            width += self._GROUP_GAP
+        return QSize(width, max((s.height() for s in shown), default=0))
+
+    def minimumSize(self) -> QSize:
+        shown = [item.sizeHint() for item, _ in self._items if not item.isEmpty()]
+        return QSize(max((s.width() for s in shown), default=0),
+                     max((s.height() for s in shown), default=0))
+
+    def rows(self, width: int) -> int:
+        return self._arrange(QRect(0, 0, width, 0), move=False)[1]
+
+    def _arrange(self, rect: QRect, move: bool) -> tuple[int, int]:
+        """Place the items in rect (if move); return (the height they take,
+        the rows they take)."""
+        left = [item for item, right in self._items if not right and not item.isEmpty()]
+        right = [item for item, on_right in self._items if on_right and not item.isEmpty()]
+        if not left and not right:
+            return 0, 0
+        gap = self._spacing
+
+        def span(items: list[QLayoutItem]) -> int:
+            return sum(i.sizeHint().width() for i in items) + gap * max(0, len(items) - 1)
+
+        if span(left) + span(right) + (self._GROUP_GAP if left and right else 0) <= rect.width():
+            rows = [(left, right)]  # one row: left at the left, right at the right
+        else:
+            rows = [(row, []) for row in self._wrap(left, rect.width())]
+            rows += [([], row) for row in self._wrap(right, rect.width())]
+        y = rect.y()
+        for n, (lefts, rights) in enumerate(rows):
+            height = max(i.sizeHint().height() for i in lefts + rights)
+            if move:
+                x = rect.x()
+                for item in lefts:
+                    item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
+                    x += item.sizeHint().width() + gap
+                x = rect.right() + 1 - span(rights)
+                for item in rights:
+                    item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
+                    x += item.sizeHint().width() + gap
+            y += height + (gap if n < len(rows) - 1 else 0)
+        return y - rect.y(), len(rows)
+
+    def _wrap(self, items: list[QLayoutItem], width: int) -> list[list[QLayoutItem]]:
+        rows: list[list[QLayoutItem]] = []
+        used = 0
+        for item in items:
+            w = item.sizeHint().width()
+            if rows and used + self._spacing + w <= width:
+                rows[-1].append(item)
+                used += self._spacing + w
+            else:
+                rows.append([item])
+                used = w
+        return rows

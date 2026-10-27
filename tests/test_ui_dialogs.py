@@ -3,6 +3,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -577,3 +578,28 @@ def test_an_unpatched_dialog_fails_the_test_at_once(_no_waiting_dialogs):
     assert not dialog.isVisible()
     _no_waiting_dialogs.clear()  # seen: this test passes
     dialog.deleteLater()
+
+
+_FROM_A_SLOT = """
+from PySide6.QtCore import QTimer
+
+from photosort.ui import dialogs
+
+
+def test_leave_from_a_slot(qtbot):
+    QTimer.singleShot(0, lambda: dialogs.ask(None, "Leave this review?", "Lost.",
+                                             yes="Leave", no="Stay"))
+    qtbot.wait(200)
+"""
+
+
+def test_a_dialog_opened_from_a_slot_fails_the_test_and_does_not_hang(tmp_path):
+    """The conftest guard on the way a review opens its dialog (an Esc
+    shortcut's slot, here a timer's): the run fails, and ends."""
+    shutil.copy(Path(__file__).with_name("conftest.py"), tmp_path / "conftest.py")
+    (tmp_path / "test_slot.py").write_text(_FROM_A_SLOT)
+    run = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "test_slot.py"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=120)
+    assert run.returncode == 1, run.stdout + run.stderr
+    assert "MessageDialog 'Leave this review?' opened" in run.stdout, run.stdout

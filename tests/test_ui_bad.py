@@ -49,8 +49,10 @@ def test_one_card_per_photo_all_ticked(qtbot, tmp_path, make_page):
     assert [card.candidate.rel for card in page.cards] == ["a.jpg", "sub/b.jpg", "c.jpg"]
     assert _ticked(page) == {"a.jpg", "sub/b.jpg", "c.jpg"}
     assert all(card.move_check.text() == "Move to Bad Photos" for card in page.cards)
-    assert page.cards[0].details_label.text().splitlines() == ["a.jpg", "(top folder)"]
-    assert page.cards[1].details_label.text().splitlines() == ["b.jpg", "sub"]
+    assert [(c.name_label.text(), c.folder_label.text()) for c in page.cards] == [
+        ("a.jpg", "(top folder)"), ("b.jpg", "sub"), ("c.jpg", "(top folder)")]
+    assert page.cards[1].name_label.toolTip() == "sub/b.jpg"
+    assert all(card.folder_label.objectName() == "muted" for card in page.cards)
     assert [card.tag_label.text() for card in page.cards] == [
         "accidental shot", "too dark", "blurry"]  # the reason, as a tag
     assert all(card.objectName() == "card" for card in page.cards)
@@ -114,7 +116,7 @@ def test_late_thumbnail_for_old_cards_is_ignored(qtbot, tmp_path, make_page):
     page.load(tmp_path, _three(tmp_path)[:1])  # before the first thumbnails arrive
     QThreadPool.globalInstance().waitForDone()
     qtbot.waitUntil(lambda: not page.cards[0].thumb_label.pixmap().isNull())
-    page._thumbnail_ready((-1, 2, QImage(4, 4, QImage.Format.Format_RGB888)))  # stale
+    page.scroll._thumbnail_ready((-1, 2, QImage(4, 4, QImage.Format.Format_RGB888)))  # stale
     assert [card.candidate.rel for card in page.cards] == ["a.jpg"]
 
 

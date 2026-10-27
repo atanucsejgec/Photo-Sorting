@@ -5,6 +5,8 @@ There is no Start button: Enter on a tile, or a click, asks for its mode
 (start_requested). The arrows move between the tiles as they are laid out:
 up to MAX_COLUMNS columns, fewer when the window is narrow (one per
 TILE_MIN_WIDTH). The tiles are one stop for Tab, the tile last moved to.
+In a window too short for them all, the tiles scroll (the focused one in
+view) rather than squeeze.
 
 F opens the folder picker and S switches subfolders, but only while the
 focus is outside the folder field, where every letter types. In the field,
@@ -25,7 +27,7 @@ from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QPainter
 from PySide6.QtWidgets import (
     QAbstractButton, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QSizePolicy, QStyle, QStyleOption, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QStyle, QStyleOption, QVBoxLayout, QWidget,
 )
 
 from photosort.modes import MODES
@@ -204,8 +206,15 @@ class HomePage(QWidget):
         self._columns = 0
         self._current = self.mode_buttons["date"]
         self._reflow(MAX_COLUMNS)
-        layout.addWidget(self.tile_grid)
-        layout.addStretch()
+        self.tile_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # In a short window (1024 x 600 at 125 %) the tiles scroll rather
+        # than squeeze; a tile given focus is scrolled into view.
+        self.tile_scroll = QScrollArea()
+        self.tile_scroll.setWidgetResizable(True)
+        self.tile_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.tile_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.tile_scroll.setWidget(self.tile_grid)
+        layout.addWidget(self.tile_scroll, 1)
 
         # Keys (see the module doc). F and S work anywhere on the page but in
         # the field (bound on the page, switched off while the field has
@@ -344,6 +353,7 @@ class HomePage(QWidget):
         elif isinstance(watched, ModeTile):
             if kind == QEvent.Type.FocusIn:
                 self._make_current(watched)
+                self.tile_scroll.ensureWidgetVisible(watched, 4, 4)
             elif kind == QEvent.Type.KeyPress and event.key() in _ARROWS:
                 if event.modifiers() == Qt.KeyboardModifier.NoModifier or (
                         event.modifiers() == Qt.KeyboardModifier.KeypadModifier):

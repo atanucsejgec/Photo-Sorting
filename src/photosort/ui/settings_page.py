@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from photosort.ai.runtime import runtime_status
@@ -49,8 +49,20 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(32, 24, 32, 12)
         layout.setSpacing(14)
         layout.addWidget(heading("Settings"))
+        # The sections scroll in a window too short for them (Tab scrolls the
+        # control it goes to into view) rather than squeeze.
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        sections = QVBoxLayout(body)
+        sections.setContentsMargins(0, 0, 0, 0)
+        sections.setSpacing(14)
+        self.scroll.setWidget(body)
+        layout.addWidget(self.scroll, 1)
 
-        faces = _section(layout, "Face and photo recognition")
+        faces = _section(sections, "Face and photo recognition")
         self.gpu_check = Switch("Use GPU")
         self.gpu_check.setChecked(settings.use_gpu)
         faces.addWidget(self.gpu_check, 0, Qt.AlignmentFlag.AlignLeft)
@@ -63,7 +75,7 @@ class SettingsPage(QWidget):
         self.note_label.setWordWrap(True)
         faces.addWidget(self.note_label)
 
-        events = _section(layout, "Events")
+        events = _section(sections, "Events")
         self.gap_label, self.gap_spin, self.gap_unit_label = self._spin_row(
             events, "New event after a gap of", EVENT_GAP_HOURS_RANGE,
             settings.event_gap_hours, "hours")
@@ -71,14 +83,14 @@ class SettingsPage(QWidget):
             self._spin_row(events, "An event needs at least", EVENT_MIN_FILES_RANGE,
                            settings.event_min_files, "files"))
 
-        content = _section(layout, "Content")
+        content = _section(sections, "Content")
         hint = QLabel("The folders Content mode sorts photos into.")
         hint.setObjectName("muted")
         content.addWidget(hint)
         self.categories_button = QPushButton("Content categories…")
         self.categories_button.clicked.connect(self._edit_categories)
         content.addWidget(self.categories_button, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addStretch()
+        sections.addStretch()
 
         self.gpu_check.toggled.connect(self._gpu_changed)
         self.gap_spin.valueChanged.connect(self._gap_changed)

@@ -543,7 +543,7 @@ def asking(tmp_path, store, make_jpeg):
 
 
 def _question_page(qtbot, asking) -> FaceQuestionPage:
-    """The page, shown and focused, so its keys work."""
+    """The page, shown, its photo focused, so its keys work."""
     root, scan, people = asking
     page = FaceQuestionPage()
     qtbot.addWidget(page)
@@ -552,7 +552,7 @@ def _question_page(qtbot, asking) -> FaceQuestionPage:
     page.show()
     qtbot.waitExposed(page)
     page.activateWindow()
-    qtbot.waitUntil(lambda: QApplication.focusWidget() is page)
+    qtbot.waitUntil(lambda: QApplication.focusWidget() is page.photo_view)
     return page
 
 
