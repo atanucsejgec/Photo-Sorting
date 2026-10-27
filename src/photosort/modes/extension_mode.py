@@ -5,14 +5,16 @@ extension (or one that is not a plain extension, see extension_folder) goes
 into No extension. The folders are made in the sorted folder itself.
 """
 
+import os
 import re
 import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from photosort.naming import TargetAllocator, fold
+from photosort.naming import TargetAllocator, fit_name, fold
 from photosort.plan import Move, Plan
 from photosort.scanner import walk_all_files
+from photosort.thresholds import FOLDER_NAME_MAX, FOLDER_NAME_MAX_BYTES
 
 NO_EXTENSION = "No extension"
 
@@ -24,38 +26,62 @@ def extension_folder(name: str) -> str:
     """The folder a file called name goes in: its last extension, upper-cased,
     without the dot ("archive.tar.gz" → "GZ"), or NO_EXTENSION when it has
     none or the part after the last dot is not a plain extension (a space,
-    a letter outside ASCII, or more than 10 characters)."""
+    a letter outside ASCII, or more than 10 characters). The name is made
+    safe as other modes' folder names are (fit_name): a name Windows
+    reserves, or one the scanner skips, gets a "_" first ("thesis.aux" →
+    "_AUX", "x.duplicates" → "_DUPLICATES")."""
     dot = name.rfind(".")
     if dot <= 0:  # no dot, or only a leading one
         return NO_EXTENSION
     suffix = name[dot + 1:]
     if not _EXTENSION.fullmatch(suffix):
         return NO_EXTENSION
-    return suffix.upper()
+    return fit_name(suffix.upper(), FOLDER_NAME_MAX, FOLDER_NAME_MAX_BYTES)
 
 
-def plan_extension(root: Path, files: list[str]) -> Plan:
+def _taken_by_a_file(root: Path, folder: str) -> bool:
+    """Whether something that is not a folder holds folder's name (any case)
+    in root, and no folder by that name is there to use instead."""
+    try:
+        with os.scandir(root) as entries:
+            matches = [entry.is_dir() for entry in entries if fold(entry.name) == fold(folder)]
+    except OSError:
+        return False
+    return bool(matches) and not any(matches)
+
+
+def plan_extension(root: Path, files: list[str],
+                   progress: Callable[[int, int], None] | None = None) -> Plan:
     """Plan the Extension moves for files (relative POSIX paths under root).
 
     A file already in its folder (spelt any way: "apk/x.apk") stays and
     counts as already in place. The files with no extension move first: a
     file called "PDF", say, must be gone before a PDF folder can be made.
+    When a file called "No extension" (any case) is in root, the No
+    extension folder can't be made: the files with no extension stay, and
+    count as already in place. progress(i, total) is called after each file.
     """
+    root = Path(root)
     allocator = TargetAllocator(root)
+    no_extension_blocked = _taken_by_a_file(root, NO_EXTENSION)
     moves: list[Move] = []
     folders: set[str] = set()
     unchanged = 0
+    total = len(files)
 
-    for rel in sorted(files, key=lambda rel: extension_folder(rel.rpartition("/")[2])
-                      != NO_EXTENSION):
+    in_order = sorted(files, key=lambda rel: extension_folder(rel.rpartition("/")[2])
+                      != NO_EXTENSION)
+    for i, rel in enumerate(in_order, start=1):
         parent, _, name = rel.rpartition("/")
         folder = extension_folder(name)
         # A folder on disk spelt another way matches by fold, as resolve_existing_dir does.
-        if fold(parent) == fold(folder):
+        if fold(parent) == fold(folder) or (folder == NO_EXTENSION and no_extension_blocked):
             unchanged += 1
-            continue
-        moves.append(Move(rel, allocator.allocate(f"{folder}/{name}")))
-        folders.add(fold(folder))
+        else:
+            moves.append(Move(rel, allocator.allocate(f"{folder}/{name}")))
+            folders.add(fold(folder))
+        if progress is not None:
+            progress(i, total)
 
     summary = []
     if moves:
@@ -73,13 +99,14 @@ def prepare_extension_plan(
 ) -> Plan | None:
     """Scan root for every file and plan the Extension moves. None if cancelled.
 
-    Nothing is read but the names, so there is no progress to report.
+    progress(i, total) is called after each file is planned (the total is
+    known once the folders are listed).
     """
     root = Path(root)
     files = sorted(walk_all_files(root, include_subfolders, cancel))
     if cancel is not None and cancel.is_set():
         return None
-    plan = plan_extension(root, files)
+    plan = plan_extension(root, files, progress)
     if cancel is not None and cancel.is_set():
         return None
     return plan

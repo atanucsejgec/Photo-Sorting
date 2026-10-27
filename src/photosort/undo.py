@@ -6,7 +6,10 @@ have its file at the source, the target, or both (a cross-drive copy whose
 source could not be removed). Every recorded move is therefore checked
 against the disk. Nothing is ever overwritten or deleted; when the original
 place is taken, even by a name differing only in case (the owner's drive is
-NTFS), the file comes back as "name (1).ext" beside it.
+NTFS), the file comes back as "name (1).ext" beside it. The one exception
+is an empty folder the run itself made there (a file called "PDF" moved
+away, then a PDF folder made in its place): that folder is removed first,
+so the file comes back under its own name.
 """
 
 import os
@@ -149,6 +152,27 @@ def _is_ours(rel: str) -> bool:
     return rel.split("/")[0].casefold() == PHOTOSORT_DIR
 
 
+def _clear_our_empty_folder(root: Path, wanted: str, created: dict[str, str]) -> str | None:
+    """Remove the folder at wanted (any case) if the run made it and it is empty.
+
+    created maps each folder the run made, casefolded, to its path. Returns
+    the casefolded path of the folder removed, else None. A folder the run
+    did not make, or that holds anything, is never touched.
+    """
+    key = wanted.casefold()
+    rel = created.get(key)
+    if rel is None:
+        return None
+    path = root / rel
+    if path.is_symlink() or not path.is_dir():
+        return None
+    try:
+        os.rmdir(path)  # only succeeds if empty
+    except OSError:
+        return None
+    return key
+
+
 def undo_run(
     root: Path,
     run_id: str,
@@ -176,6 +200,9 @@ def undo_run(
     result = UndoResult(restored=0)
     moves = load_moves(root, run_id)
     total = len(moves)
+    created, removed = load_dirs(root, run_id)
+    ours = {rel.casefold(): rel for rel in created if not _is_ours(rel)}
+    cleared: set[str] = set()  # casefolded: the run's folders removed to make room
     # One allocator lists each folder once (casefolded) and remembers the
     # names it gave out. Its listing can be stale only by still holding names
     # undo has since moved away, so a clash is re-checked against the disk.
@@ -189,6 +216,9 @@ def undo_run(
                 # the run's "sub": reuse it rather than create a twin beside it.
                 folder = resolve_existing_dir(root, folder)
                 wanted = f"{folder}/{name}" if folder else name
+                gone = _clear_our_empty_folder(root, wanted, ours)
+                if gone is not None:
+                    cleared.add(gone)
                 target = allocator.allocate(wanted)
                 if target != wanted:
                     allocator = TargetAllocator(root)
@@ -212,7 +242,6 @@ def undo_run(
         if progress is not None:
             progress(n, total)
 
-    created, removed = load_dirs(root, run_id)
     for rel in sorted(removed, key=lambda r: r.count("/")):  # parents first
         if _is_ours(rel):
             continue
@@ -221,7 +250,7 @@ def undo_run(
         except OSError:
             pass  # a file sits there now; the files themselves are back
     for rel in sorted(created, key=lambda r: r.count("/"), reverse=True):
-        if _is_ours(rel):
+        if _is_ours(rel) or rel.casefold() in cleared:
             continue
         try:
             os.rmdir(root / rel)  # only succeeds if empty

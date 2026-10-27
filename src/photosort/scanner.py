@@ -94,7 +94,7 @@ def scan_all_files(root: Path, include_subfolders: bool) -> list[str]:
     """Return every file under root, of any type, as sorted POSIX paths relative to root.
 
     As scan(), but for every file, not only media: hidden files and dirs,
-    symlinks and SKIP_DIRS are skipped, and so are unfinished downloads
+    symlinks, NTFS junctions and SKIP_DIRS are skipped, and so are unfinished downloads
     (PARTIAL_SUFFIXES), system clutter (CLUTTER_NAMES) and, on Windows,
     entries marked hidden or system. Skipped dirs are never entered. A
     subfolder that cannot be listed is skipped silently; an unreadable root
@@ -121,7 +121,8 @@ def walk_all_files(root: Path, include_subfolders: bool,
             return
         for entry in entries:
             name = entry.name
-            if name.startswith(".") or entry.is_symlink() or _hidden_on_windows(entry):
+            if (name.startswith(".") or entry.is_symlink() or entry.is_junction()
+                    or _hidden_on_windows(entry)):
                 continue
             if entry.is_dir(follow_symlinks=False):
                 if include_subfolders and not skipped_folder(name):

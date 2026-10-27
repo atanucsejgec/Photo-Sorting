@@ -4,10 +4,13 @@ import threading
 
 import pytest
 
+from photosort.executor import execute
+from photosort.journal import RunJournal
 from photosort.modes import MODE_SPECS, MODES
 from photosort.modes.extension_mode import (
     NO_EXTENSION, extension_folder, plan_extension, prepare_extension_plan,
 )
+from photosort.undo import undo_run
 
 
 def _touch(p, data=b"x"):
@@ -34,6 +37,15 @@ def _dsts(plan):
     ("café.ñ", "No extension"),
     ("a.verylongextension", "No extension"),
     ("a.01234567890", "No extension"),
+    # Windows' reserved names, and the folders the scanner skips, are made safe.
+    ("thesis.aux", "_AUX"),
+    ("a.con", "_CON"),
+    ("a.Prn", "_PRN"),
+    ("a.nul", "_NUL"),
+    ("a.com1", "_COM1"),
+    ("a.lpt9", "_LPT9"),
+    ("x.duplicates", "_DUPLICATES"),
+    ("a.com0", "COM0"),
 ])
 def test_extension_folder(name, folder):
     assert extension_folder(name) == folder
@@ -157,3 +169,66 @@ def test_cancel(tmp_path):
     cancel = threading.Event()
     cancel.set()
     assert prepare_extension_plan(tmp_path, False, cancel=cancel) is None
+
+
+def test_a_safe_folder_counts_as_in_place(tmp_path):
+    _touch(tmp_path / "_AUX" / "a.aux")
+    _touch(tmp_path / "b.AUX")
+    plan = prepare_extension_plan(tmp_path, True)
+    assert _dsts(plan) == {"b.AUX": "_AUX/b.AUX"}
+    assert plan.unchanged == 1
+
+
+def test_progress_while_planning(tmp_path):
+    for name in ("a.zip", "b.exe", "c"):
+        _touch(tmp_path / name)
+    calls = []
+    prepare_extension_plan(tmp_path, False, progress=lambda i, total: calls.append((i, total)))
+    assert calls == [(1, 3), (2, 3), (3, 3)]
+
+
+def _contents(root):
+    return {p.relative_to(root).as_posix(): p.read_bytes()
+            for p in root.rglob("*") if p.is_file() and ".photosort" not in p.parts}
+
+
+def _sort(root, include_subfolders=False):
+    plan = prepare_extension_plan(root, include_subfolders)
+    journal = RunJournal.create(root, "extension", include_subfolders, len(plan.moves))
+    result = execute(root, plan, journal)
+    return plan, result, journal.run_id
+
+
+@pytest.mark.parametrize("names", [["PDF", "a.pdf", "Z.pdf"], ["pdf", "a.pdf"]])
+def test_undo_puts_a_file_back_where_its_folder_was_made(tmp_path, names):
+    for name in names:
+        _touch(tmp_path / name, name.encode())
+    before = _contents(tmp_path)
+    plan, result, run_id = _sort(tmp_path)
+    assert result.moved == len(names)
+    assert not result.skipped and not result.cancelled
+    undone = undo_run(tmp_path, run_id)
+    assert undone.renamed == [] and undone.failed == []
+    assert _contents(tmp_path) == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([*names, ".photosort"])
+
+
+def test_a_root_file_called_no_extension_stays(tmp_path):
+    _touch(tmp_path / "no Extension", b"in the way")
+    _touch(tmp_path / "README", b"r")
+    _touch(tmp_path / "a.txt", b"t")
+    plan, result, _ = _sort(tmp_path)
+    # The No extension folder can't be made, so the files with no extension stay.
+    assert _dsts(plan) == {"a.txt": "TXT/a.txt"}
+    assert plan.unchanged == 2
+    assert plan.summary == ["1 files → 1 folders", "2 already in place"]
+    assert result.moved == 1
+    assert (tmp_path / "no Extension").read_bytes() == b"in the way"
+    assert (tmp_path / "README").is_file()
+
+
+def test_a_no_extension_folder_in_another_case_is_used(tmp_path):
+    _touch(tmp_path / "no extension" / "LICENSE")
+    _touch(tmp_path / "README")
+    plan = prepare_extension_plan(tmp_path, False)
+    assert _dsts(plan) == {"README": "no extension/README"}

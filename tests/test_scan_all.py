@@ -44,6 +44,35 @@ def test_symlinks_are_skipped(tmp_path):
     assert scan_all_files(tmp_path, True) == ["real.txt", "sub/z.txt"]
 
 
+def test_junctions_are_skipped(tmp_path, monkeypatch):
+    _touch(tmp_path / "keep.txt")
+    _touch(tmp_path / "junction" / "x.dll")
+    real_scandir = os.scandir
+
+    class Entry:
+        def __init__(self, entry):
+            self._entry = entry
+
+        def __getattr__(self, name):
+            return getattr(self._entry, name)
+
+        def is_junction(self):
+            return self._entry.name == "junction"
+
+    class Listing:
+        def __init__(self, path):
+            self._it = real_scandir(path)
+
+        def __enter__(self):
+            return (Entry(e) for e in self._it.__enter__())
+
+        def __exit__(self, *exc):
+            return self._it.__exit__(*exc)
+
+    monkeypatch.setattr(scanner.os, "scandir", Listing)
+    assert scan_all_files(tmp_path, True) == ["keep.txt"]
+
+
 @pytest.mark.parametrize("folder", ["Duplicates", "repeated shots", "Bad Photos",
                                     "$RECYCLE.BIN", "System Volume Information"])
 def test_skip_dirs_are_skipped(tmp_path, folder):
