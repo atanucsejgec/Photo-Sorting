@@ -15,25 +15,28 @@ They are decoded the right way up (EXIF orientation applied), as faces.py
 does, so the face box (in the decoded photo's pixels, Question.image_size)
 lands on the face whatever size the photo is decoded at.
 
-None of the page's buttons takes the keyboard focus, so Y, N, S and Left
-reach FaceQuestionPage.keyPressEvent whatever was clicked last. They count
-only pressed alone (Ctrl+S is not Skip).
+Keys: Y yes, N no, Space skip; Esc goes back a question, or on the first
+asks whether to leave (left()); Ctrl+Enter stops asking (to the summary).
+They work wherever the focus is on the page; none of its buttons takes the
+focus, so the page keeps it. A held key answers once.
 """
 
 import logging
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QKeyEvent, QPainter, QPen, QPixmap
+from PySide6.QtCore import QEvent, QObject, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from photosort.imageinfo import UnreadableImage, open_image
 from photosort.modes.face_mode import Answer, FaceScan, Question
 from photosort.people import Person
 from photosort.thresholds import PERSON_THUMB_PX
+from photosort.ui import shortcuts
 from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.theme import COLORS
+from photosort.ui.widgets import ButtonBar
 from photosort.ui.worker import Task
 
 _log = logging.getLogger("photosort")
@@ -44,7 +47,6 @@ BOX_COLOUR = COLORS["face_box"]
 LOADING = "Loading…"
 CANT_LOAD = "Couldn't load this photo"
 ANSWER_TEXT = {"yes": "Yes", "no": "No", "skip": "Skip"}
-HINT = "Y yes · N no · S skip · ← previous"
 
 
 def _render_photo(generation: int, path: Path, progress=None, cancel=None):
@@ -89,7 +91,8 @@ class PhotoView(QWidget):
         self._message = LOADING
         self._box = (0.0, 0.0, 0.0, 0.0)
         self._box_space = (1, 1)  # (width, height) the box's pixels are of
-        self.setMinimumSize(320, 240)
+        self.setMinimumSize(240, 180)  # leaves room for the buttons in a small window
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # the page's answer keys are here
 
     def show_message(self, text: str) -> None:
         self._pixmap = None
@@ -144,17 +147,22 @@ class PhotoView(QWidget):
         if self._pixmap is None:
             painter.setPen(QColor(COLORS["muted"]))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._message)
-            return
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        painter.drawPixmap(self.photo_rect(), self._pixmap, QRectF(self._pixmap.rect()))
-        pen = QPen(QColor(BOX_COLOUR))
-        pen.setWidth(BOX_PEN_PX)
-        painter.setPen(pen)
-        painter.drawRect(self.box_rect())
+        else:
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            painter.drawPixmap(self.photo_rect(), self._pixmap, QRectF(self._pixmap.rect()))
+            pen = QPen(QColor(BOX_COLOUR))
+            pen.setWidth(BOX_PEN_PX)
+            painter.setPen(pen)
+            painter.drawRect(self.box_rect())
+        if self.hasFocus():  # the focus ring, as the cards have
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(COLORS["focus"]), 2))
+            painter.drawRect(QRectF(self.rect()).adjusted(1, 1, -1, -1))
 
 
 class FaceQuestionPage(QWidget):
-    """Asks about a FaceScan's questions one by one; emits finished(answers) or cancelled().
+    """Asks about a FaceScan's questions one by one; emits finished(answers),
+    cancelled() (Cancel) or left() (Esc on the first question, then Leave).
 
     answers maps (rel, person_id) to "yes", "no" or "skip", for each
     question answered (the key plan_faces expects).
@@ -162,6 +170,7 @@ class FaceQuestionPage(QWidget):
 
     finished = Signal(object)  # dict[tuple[str, str], Answer]
     cancelled = Signal()
+    left = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -173,10 +182,9 @@ class FaceQuestionPage(QWidget):
         self._index = 0
         self._generation = 0  # bumped whenever another question is shown
         self._tasks: dict[int, Task] = {}  # kept alive until they report
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 24)
+        layout.setContentsMargins(32, 24, 32, 12)
         layout.setSpacing(16)
         top = QHBoxLayout()
         self.heading_label = QLabel()
@@ -208,12 +216,7 @@ class FaceQuestionPage(QWidget):
         layout.addLayout(middle, 1)
 
         self.answer_label = QLabel()
-        hint = QLabel(HINT)
-        row = QHBoxLayout()
-        row.addWidget(self.answer_label)
-        row.addStretch()
-        row.addWidget(hint)
-        layout.addLayout(row)
+        layout.addWidget(self.answer_label)
 
         self.back_button = QPushButton("Previous")
         self.stop_button = QPushButton("Stop asking")
@@ -221,18 +224,15 @@ class FaceQuestionPage(QWidget):
         self.skip_button = QPushButton("Skip")
         self.no_button = QPushButton("No")
         self.yes_button = QPushButton("Yes")
-        row = QHBoxLayout()
-        for button in (self.back_button, self.stop_button, self.cancel_button):
-            row.addWidget(button)
-        row.addStretch()
         for button in (self.skip_button, self.no_button, self.yes_button):
             button.setMinimumWidth(120)
-            row.addWidget(button)
-        layout.addLayout(row)
         for button in (self.back_button, self.stop_button, self.cancel_button,
                        self.skip_button, self.no_button, self.yes_button):
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            button.setAutoDefault(False)
+            button.setAutoDefault(True)  # Tab to one, Enter or Space presses it
+            button.installEventFilter(self)  # ... once, however long Enter is held
+        layout.addWidget(ButtonBar(
+            [self.back_button, self.stop_button, self.cancel_button],
+            [self.skip_button, self.no_button, self.yes_button]))
 
         self.back_button.clicked.connect(self._previous)
         self.stop_button.clicked.connect(self._finish)
@@ -240,6 +240,28 @@ class FaceQuestionPage(QWidget):
         self.yes_button.clicked.connect(lambda: self._answer("yes"))
         self.no_button.clicked.connect(lambda: self._answer("no"))
         self.skip_button.clicked.connect(lambda: self._answer("skip"))
+
+        # Keys: the photo has the focus, and Space there skips; Y and N work
+        # on the buttons too (where Space presses the button), as do the
+        # page's Esc and Ctrl+Enter.
+        shortcuts.describe(self.photo_view, "Y", "yes")
+        shortcuts.describe(self.photo_view, "N", "no")
+        shortcuts.bind(self.photo_view, "Space", "Space", "skip",
+                       lambda: self._answer("skip"), repeat=False)
+        for keys, label, word, slot in (
+                ("Y", "Y", "yes", lambda: self._answer("yes")),
+                ("N", "N", "no", lambda: self._answer("no")),
+                ("Escape", "Esc", "back", self._back),
+                ("Ctrl+Return", "Ctrl+Enter", "stop", self._finish)):
+            shortcuts.bind(self, keys, label, word, slot, repeat=False)
+        shortcuts.describe_tab(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (event.type() == QEvent.Type.KeyPress and event.isAutoRepeat()
+                and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and isinstance(watched, QPushButton)):
+            return True  # a held Enter: QPushButton would press it at each repeat
+        return super().eventFilter(watched, event)
 
     # ----- loading ---------------------------------------------------------
 
@@ -275,7 +297,7 @@ class FaceQuestionPage(QWidget):
         self.photo_view.show_message(LOADING)
         self.photo_view.setToolTip(q.rel)
         self._request_photo(self._root / q.rel)
-        self.setFocus()
+        self.photo_view.setFocus()
 
     def _picture(self, person_id: str) -> QPixmap:
         if person_id not in self._pictures:
@@ -340,21 +362,10 @@ class FaceQuestionPage(QWidget):
         self.stop_loading()
         self.cancelled.emit()
 
-    # ----- keys ------------------------------------------------------------
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        key = event.key()
-        modifiers = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
-        alone = modifiers == Qt.KeyboardModifier.NoModifier
-        if not self._questions or not alone:
-            super().keyPressEvent(event)
-        elif key == Qt.Key.Key_Y:
-            self._answer("yes")
-        elif key == Qt.Key.Key_N:
-            self._answer("no")
-        elif key == Qt.Key.Key_S:
-            self._answer("skip")
-        elif key == Qt.Key.Key_Left:
+    def _back(self) -> None:
+        """Esc: the previous question, or from the first, leave if the owner says so."""
+        if self._index > 0:
             self._previous()
-        else:
-            super().keyPressEvent(event)
+        elif shortcuts.confirm_leave(self):
+            self.stop_loading()
+            self.left.emit()

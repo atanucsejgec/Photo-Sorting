@@ -24,8 +24,8 @@ from photosort.ui.shortcuts import ShortcutStrip
 _ASK_KEYS = (("←→", "choose"), ("Enter", "pick"), ("Esc", "no/close"))
 _CHOOSE_KEYS = (("←→", "choose"), ("Enter", "pick"), ("Esc", "cancel"))
 _TELL_KEYS = (("Enter", "OK"), ("Esc", "close"))
-_ANSWER_KEYS = (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape)
 _ICON_PX = 28
+_ANSWER_KEYS = (Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter)  # never held
 
 
 class MessageDialog(QDialog):
@@ -33,6 +33,7 @@ class MessageDialog(QDialog):
 
     Each button accepts the dialog if it is a yes button, else rejects it;
     picked is then the index of the button pressed (None for Esc).
+    A held Esc or Enter answers nothing: only a fresh press does.
     """
 
     def __init__(self, parent: QWidget | None, title: str, text: str,
@@ -105,10 +106,8 @@ class MessageDialog(QDialog):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.KeyPress and watched in self.buttons:
             key = event.key()
-            if key in _ANSWER_KEYS and event.isAutoRepeat():
-                # A held key (the Enter that opened this dialog, say) never
-                # answers it: that takes a fresh press.
-                return True
+            if event.isAutoRepeat() and key in _ANSWER_KEYS:
+                return True  # a key held down (perhaps since before it opened)
             if key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
                 step = 1 if key == Qt.Key.Key_Right else -1
                 n = self.buttons.index(watched)
@@ -118,6 +117,12 @@ class MessageDialog(QDialog):
                 watched.click()
                 return True
         return super().eventFilter(watched, event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.isAutoRepeat() and event.key() in _ANSWER_KEYS:
+            event.accept()  # as above, wherever the focus is
+            return
+        super().keyPressEvent(event)
 
 
 def ask(parent: QWidget | None, title: str, text: str, yes: str, no: str,

@@ -17,6 +17,7 @@ from photosort.plan import Move, Plan
 from photosort.settings import DEFAULT_CONTENT_CATEGORIES, Settings, load_settings
 from photosort.ui import dialogs
 from photosort.ui.category_editor import CategoryEditor
+from photosort.ui.done_page import DonePage
 from photosort.ui.main_window import MainWindow
 
 EXIF = "2025:02:20 10:00:00"
@@ -228,7 +229,7 @@ def test_history_undo_asks_first(qtbot, make_window, tmp_path, asked):
     assert str(root) in page.intro_label.text()
     assert page.runs_table.rowCount() == 1
     _focus(qtbot, page.runs_table)
-    assert w.strip.text() == "↑↓ choose · Enter undo · Esc sidebar"
+    assert w.strip.text() == "↑↓ choose · Enter undo · Esc sidebar · Tab/Shift+Tab area"
 
     asked.answer = False
     _key(qtbot, Qt.Key.Key_Return)
@@ -296,7 +297,7 @@ def test_people_delete_asks_then_forgets(qtbot, make_window, store, asked):
     assert page.people_list.count() == 2
     page.people_list.setCurrentRow(1)
     _focus(qtbot, page.people_list)
-    assert w.strip.text() == "↑↓ choose · Delete forget · Esc sidebar"
+    assert w.strip.text() == "↑↓ choose · Delete forget · Esc sidebar · Tab/Shift+Tab area"
 
     asked.answer = False
     _key(qtbot, Qt.Key.Key_Delete)
@@ -313,7 +314,7 @@ def test_people_with_nobody_has_no_forget_key(qtbot, make_window):
     w = make_window()
     w.sidebar.items["people"].click()
     _focus(qtbot, w.people_page.people_list)
-    assert w.strip.text() == "↑↓ choose · Esc sidebar"
+    assert w.strip.text() == "↑↓ choose · Esc sidebar · Tab/Shift+Tab area"
 
 
 # ----- Settings ---------------------------------------------------------------
@@ -343,6 +344,27 @@ def test_settings_gap_by_keyboard(qtbot, make_window, settings_path):
     assert load_settings(settings_path).event_gap_hours == 7
 
 
+def test_settings_typed_number_saves_once_when_done(qtbot, make_window, settings_path,
+                                                   monkeypatch):
+    from photosort.ui import settings_page
+
+    saves = []
+    real_save = settings_page.save_settings
+    monkeypatch.setattr(settings_page, "save_settings",
+                        lambda settings, path: saves.append(settings.event_gap_hours)
+                        or real_save(settings, path))
+    w = make_window()
+    w.sidebar.items["settings"].click()
+    spin = w.settings_page.gap_spin
+    _focus(qtbot, spin)
+    spin.selectAll()
+    qtbot.keyClicks(spin, "24")  # not 2, then 24
+    assert saves == []
+    _key(qtbot, Qt.Key.Key_Return)
+    assert saves == [24]
+    assert load_settings(settings_path).event_gap_hours == 24
+
+
 def test_settings_categories_open_the_editor_and_save(qtbot, make_window, settings_path,
                                                       monkeypatch):
     def edit(editor):
@@ -366,3 +388,17 @@ def test_settings_spin_text_is_not_against_the_ring(make_window):
     w = make_window()
     margins = w.settings_page.gap_spin.lineEdit().textMargins()
     assert margins.left() >= 4
+
+
+def test_the_done_pages_undo_line_shows_only_with_text(qtbot):
+    page = DonePage()
+    qtbot.addWidget(page)
+    page.show()
+    page.show_result(["Moved 3 files."], can_undo=True)
+    assert page.undo_label.isHidden()  # no blank line under the result
+    page.undo_started()
+    assert not page.undo_label.isHidden() and page.undo_label.text() == "Putting files back…"
+    page.undo_ended("Undo complete: 3 files put back.", can_undo_again=False)
+    assert not page.undo_label.isHidden()
+    page.show_result(["Moved 1 files."], can_undo=True)
+    assert page.undo_label.isHidden()

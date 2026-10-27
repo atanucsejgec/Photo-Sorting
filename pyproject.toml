@@ -39,3 +39,6 @@ packages = ["src/photosort"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 qt_api = "pyside6"
+markers = [
+    "real_dialogs: the test answers real modal dialogs (from a QTimer) instead of patching them",
+]

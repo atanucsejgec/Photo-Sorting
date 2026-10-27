@@ -1,4 +1,5 @@
-"""One photo shown large, fitted to the window; Esc closes it.
+"""One photo shown large, fitted to the window, over the shortcut strip;
+Esc closes it.
 
 The photo is decoded on a pool thread (a HEIC at full size takes long enough
 to freeze the window), at most PREVIEW_PX on its longest side. Once closed,
@@ -15,7 +16,9 @@ from PySide6.QtWidgets import QDialog, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from photosort.imageinfo import UnreadableImage, open_image
 from photosort.thresholds import PREVIEW_PX
+from photosort.ui import shortcuts
 from photosort.ui.qimage import pil_to_qimage
+from photosort.ui.shortcuts import ShortcutStrip
 from photosort.ui.worker import Task
 
 _log = logging.getLogger("photosort")
@@ -79,9 +82,17 @@ class PhotoPreview(QDialog):
 
         self.image_label = _FittedLabel(LOADING)
         self.image_label.setObjectName("thumb")  # see theme
+        self.strip = ShortcutStrip(self)
+        shortcuts.describe(self, "Esc", "close")  # QDialog's own
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.image_label)
+        layout.setSpacing(0)
+        layout.addWidget(self.image_label, 1)
+        strip_box = QVBoxLayout()
+        strip_box.setContentsMargins(16, 0, 16, 10)
+        strip_box.addWidget(self.strip)
+        layout.addLayout(strip_box)
+        self.strip.show_for(self)
         screen = self.screen().availableGeometry()
         self.resize(int(screen.width() * WINDOW_SHARE), int(screen.height() * WINDOW_SHARE))
 

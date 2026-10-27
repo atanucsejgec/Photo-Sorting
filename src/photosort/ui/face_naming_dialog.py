@@ -11,6 +11,10 @@ pressing Save again after fixing another row never saves it twice.
 
 The dialog lets go of its face engine when it closes (an analysis still
 running keeps it until it ends), so the models are not kept in memory.
+
+Keys: Tab and Shift+Tab move between the faces' name boxes (and their Skip
+ticks) and the buttons; Enter saves (a button Tab has reached is pressed
+instead), once however long it is held; Esc cancels.
 """
 
 import threading
@@ -20,7 +24,7 @@ from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QImage, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QCheckBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QVBoxLayout, QWidget,
 )
 
@@ -29,10 +33,16 @@ from photosort.imageinfo import UnreadableImage
 from photosort.media import PHOTO_EXTS, kind
 from photosort.naming import fold
 from photosort.people import PeopleError, PeopleStore, Person, clean_name
+from photosort.ui import shortcuts
 from photosort.ui.qimage import pil_to_qimage
+from photosort.ui.shortcuts import ShortcutStrip
+from photosort.ui.theme import heading, styled
+from photosort.ui.widgets import ButtonBar, ButtonKeys
 from photosort.ui.worker import Task
 
 CROP_PX = 160
+WIDTH_PX, HEIGHT_PX = 560, 520  # it opens at this size, or the screen's, if smaller
+_ENTER = (Qt.Key.Key_Return, Qt.Key.Key_Enter)
 LOOKING = "Looking for faces…"
 NO_FACES = "No faces found in this photo. Try another one."
 CANT_OPEN = "This photo can't be opened. Try another one."
@@ -93,23 +103,27 @@ def _find_faces(engine, path: Path, ended: threading.Event, progress=None, cance
         ended.set()
 
 
-class FaceRow(QFrame):
+class FaceRow(QWidget):
     """One face: its picture, a name to type, and Skip this face."""
 
     def __init__(self, face: Face, crop: Image.Image, image: QImage,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        styled(self, "section")
         self.face = face
         self.crop = crop
         self.saved_id: str | None = None  # the person it was saved as
-        self.setFrameShape(QFrame.Shape.StyledPanel)
 
         self.crop_label = QLabel()
+        self.crop_label.setObjectName("thumb")  # see theme
         self.crop_label.setFixedSize(CROP_PX, CROP_PX)
+        self.crop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.crop_label.setPixmap(QPixmap.fromImage(image))
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("Name")
         self.skip_check = QCheckBox("Skip this face")
+        shortcuts.describe(self.name_edit, "Enter", "save")
+        shortcuts.describe(self.skip_check, "Space", "tick")
         self.error_label = QLabel()
         self.error_label.setWordWrap(True)
         self.error_label.setObjectName("error")  # see theme
@@ -117,8 +131,11 @@ class FaceRow(QFrame):
         self.skip_check.toggled.connect(lambda skip: self.name_edit.setEnabled(not skip))
 
         layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(14)
         layout.addWidget(self.crop_label)
         column = QVBoxLayout()
+        column.setSpacing(8)
         column.addWidget(self.name_edit)
         column.addWidget(self.skip_check)
         column.addWidget(self.error_label)
@@ -162,27 +179,40 @@ class FaceNamingDialog(QDialog):
         self._saved: list[str] = []  # ids of the people saved, in order
         self.rows: list[FaceRow] = []
 
-        self.setWindowTitle(f"Add photos to {name}" if name else "Name the faces")
+        title = f"Add photos to {name}" if name else "Name the faces"
+        self.setWindowTitle(title)
         self.setAcceptDrops(True)
-        self.resize(560, 520)
+        room = self.screen().availableGeometry()
+        self.resize(min(WIDTH_PX, room.width()), min(HEIGHT_PX, room.height()))
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 12)
+        layout.setSpacing(12)
+        layout.addWidget(heading(title))
         self.status_label = QLabel()
+        self.status_label.setObjectName("muted")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
+        self.scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # Tab goes to the faces
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self.scroll, 1)
 
         self.choose_button = QPushButton("Choose photo…")
         self.cancel_button = QPushButton("Cancel")
         self.save_button = QPushButton("Save")
-        self.save_button.setDefault(True)
-        row = QHBoxLayout()
-        row.addWidget(self.choose_button)
-        row.addStretch()
-        row.addWidget(self.cancel_button)
-        row.addWidget(self.save_button)
-        layout.addLayout(row)
+        self.save_button.setObjectName("primaryButton")  # see theme
+        ButtonKeys([self.choose_button, self.cancel_button, self.save_button])
+        for button, word in ((self.choose_button, "choose photo"),
+                             (self.cancel_button, "cancel"), (self.save_button, "save")):
+            shortcuts.describe(button, "Enter", word)
+        self.save_button.setDefault(True)  # Enter in a name box saves
+        layout.addWidget(ButtonBar([self.choose_button], [self.cancel_button, self.save_button]))
+        self.strip = ShortcutStrip(self)
+        layout.addWidget(self.strip)
+        shortcuts.describe(self, "Esc", "cancel")
+        shortcuts.describe_tab(self)
+        self.strip.show_for(self)
 
         self.choose_button.clicked.connect(self._choose)
         self.cancel_button.clicked.connect(self.reject)
@@ -224,14 +254,16 @@ class FaceNamingDialog(QDialog):
         self.status_label.setText(
             f"Type {self._name} under their face." if self._name and len(found) > 1
             else NAME_EACH)
-        strip = QWidget()
-        column = QVBoxLayout(strip)
+        faces = QWidget()
+        column = QVBoxLayout(faces)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(10)
         for face, crop, image in found:
             row = FaceRow(face, crop, image)
             column.addWidget(row)
             self.rows.append(row)
         column.addStretch()
-        self.scroll.setWidget(strip)
+        self.scroll.setWidget(faces)
         if self._name and len(self.rows) == 1:
             self.rows[0].name_edit.setText(self._name)
         self.rows[0].name_edit.setFocus()
@@ -315,6 +347,12 @@ class FaceNamingDialog(QDialog):
         except PeopleError:
             return []
         return [by_id[i] for i in dict.fromkeys(self._saved) if i in by_id]
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in _ENTER and event.isAutoRepeat():
+            event.accept()  # a held Enter saves once
+            return
+        super().keyPressEvent(event)
 
     def done(self, result: int) -> None:
         if self._task is not None:

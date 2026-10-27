@@ -6,7 +6,8 @@ CACHE_IMAGES most recently wanted are kept; one let go is decoded again if it
 comes back. Results that arrive after the dialog closed are ignored.
 
 None of the dialog's children takes the keyboard focus, so every key press
-reaches FullscreenViewer.keyPressEvent whatever was clicked last.
+reaches FullscreenViewer.keyPressEvent whatever was clicked last. The strip
+along the bottom lists those keys (KEYS).
 """
 
 import logging
@@ -23,7 +24,9 @@ from PySide6.QtWidgets import (
 
 from photosort.groups import Group, sharpness_label
 from photosort.imageinfo import UnreadableImage, open_image
+from photosort.ui import shortcuts
 from photosort.ui.qimage import pil_to_qimage
+from photosort.ui.shortcuts import ShortcutStrip
 from photosort.ui.theme import COLORS
 from photosort.ui.worker import Task
 
@@ -37,7 +40,9 @@ LOADING = "Loading…"
 CANT_SHOW = "Can't show this photo"
 MUST_KEEP_ONE = "At least one photo must be kept."
 FLASH_MS = 2000
-HINT = "← → flip · S side by side · + − 0 zoom · Space keep · Esc close"
+# The keys keyPressEvent handles, as the strip shows them.
+KEYS = (("←→", "flip"), ("S", "side by side"), ("+−", "zoom"), ("0", "fit"),
+        ("Space", "keep"), ("Enter", "done"), ("Esc", "close"))
 
 
 def _render_image(index: int, path: Path, progress=None, cancel=None):
@@ -81,12 +86,13 @@ class FullscreenViewer(QDialog):
     """Shows one group's photos large; the owner flips through them and picks the keepers."""
 
     def __init__(self, root: Path, group: Group, keep: set[str],
-                 parent: QWidget | None = None) -> None:
+                 parent: QWidget | None = None, start: int = 0) -> None:
+        """Show group's files, those in keep kept, from file start."""
         super().__init__(parent)
         self.root = Path(root)
         self.group = group
         self._keep = set(keep)
-        self.current_index = 0
+        self.current_index = max(0, min(start, len(group.members) - 1))
         self.side_by_side = False
         self.zoom = 1.0
         # index -> photo, or CANT_SHOW; least recently wanted first
@@ -122,7 +128,9 @@ class FullscreenViewer(QDialog):
         self.keep_check = QCheckBox("Keep")
         self.keep_check.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.keep_check.toggled.connect(self._keep_check_toggled)
-        hint = QLabel(HINT)
+        self.strip = ShortcutStrip(self)
+        for label, word in KEYS:
+            shortcuts.describe(self, label, word)
         self.done_button = QPushButton("Done")
         self.done_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.done_button.setAutoDefault(False)
@@ -130,10 +138,9 @@ class FullscreenViewer(QDialog):
 
         bar = QHBoxLayout()
         bar.setContentsMargins(16, 8, 16, 12)
+        bar.setSpacing(24)
         bar.addWidget(self.keep_check)
-        bar.addSpacing(24)
-        bar.addWidget(hint)
-        bar.addStretch()
+        bar.addWidget(self.strip, 1)
         bar.addWidget(self.done_button)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -141,6 +148,7 @@ class FullscreenViewer(QDialog):
         layout.addWidget(self.view, 1)
         layout.addLayout(bar)
 
+        self.strip.show_for(self)
         self._show_current()
 
     # ----- what is shown ---------------------------------------------------

@@ -207,7 +207,7 @@ def test_a_tile_without_a_folder_warns(qtbot, make_window, warned, photos, setti
     assert w.current_page() is w.home
     w.folder_edit.setText(str(photos / "missing"))
     w.mode_buttons["date"].click()
-    assert warned[-1] == "This folder doesn't exist any more."
+    assert warned[-1] == "This folder doesn't exist."
     assert w.current_page() is w.home
     assert not settings_path.exists()  # nothing saved, no last mode
 
@@ -315,7 +315,11 @@ def test_the_count_is_photos_and_videos_and_follows_the_switch(qtbot, make_windo
     w.folder_edit.setText(str(photos / "sub"))
     qtbot.waitUntil(lambda: w.home.count_label.text() == "1 file")
     w.folder_edit.setText(str(photos / "missing"))
-    qtbot.waitUntil(lambda: w.home.count_label.text() == "")
+    qtbot.waitUntil(lambda: w.home.count_label.text() == "No such folder")
+    w.folder_edit.setText(str(photos / "a.jpg"))  # a file, not a folder
+    assert w.home.count_label.text() == "No such folder"
+    w.folder_edit.setText("")
+    assert w.home.count_label.text() == ""
 
 
 def test_a_stale_count_is_dropped(qtbot, monkeypatch, tmp_path):
@@ -347,20 +351,82 @@ def test_a_stale_count_is_dropped(qtbot, monkeypatch, tmp_path):
 
 
 def test_the_count_never_blocks_the_window(qtbot, monkeypatch, photos):
-    release = threading.Event()
+    releases = [threading.Event(), threading.Event()]
+    started = []
 
     def slow_count(root, include_subfolders, progress=None, cancel=None):
-        release.wait(10)
+        started.append(Path(root))
+        releases[len(started) - 1].wait(10)
         return 1
 
     monkeypatch.setattr(home_page, "count_media", slow_count)
     page = HomePage()
     qtbot.addWidget(page)
     page.folder_edit.setText(str(photos))
-    qtbot.waitUntil(lambda: page.count_label.text() == "Counting…")
-    page.folder_edit.setText("typed while it counts")  # the GUI thread is free
-    release.set()
+    qtbot.waitUntil(lambda: len(started) == 1)  # counting on a pool thread ...
+    qtbot.wait(50)  # ... while the window goes on
+    assert page.count_label.text() == "Counting…"
+    releases[0].set()
+    qtbot.waitUntil(lambda: page.count_label.text() == "1 file")
+
+    page.subfolders_switch.toggle()  # another count ...
+    qtbot.waitUntil(lambda: len(started) == 2)
+    assert page.count_label.text() == "Counting…"
+    page.folder_edit.setText("typed while it counts")  # ... the field still types
+    assert page.count_label.text() == "No such folder"
+    releases[1].set()
     QThreadPool.globalInstance().waitForDone()
+    qtbot.wait(50)
+    assert page.count_label.text() == "No such folder"  # the stale count is dropped
+
+
+def test_coming_home_keeps_the_count_without_counting_flicker(qtbot, make_window, photos,
+                                                             make_jpeg, monkeypatch):
+    make_jpeg(photos / "a.jpg")
+    w = make_window()
+    w.folder_edit.setText(str(photos))
+    qtbot.waitUntil(lambda: w.home.count_label.text() == "1 file")
+    shown = []
+    real_show = w.home._show_count
+    monkeypatch.setattr(w.home, "_show_count", lambda text: shown.append(text) or real_show(text))
+    w.show_page(w.history_page)
+    w.show_page(w.home)  # the same folder and switch: the last count stays ...
+    assert w.home.count_label.text() == "1 file"
+    make_jpeg(photos / "b.jpg")
+    w.show_page(w.home)
+    qtbot.waitUntil(lambda: w.home.count_label.text() == "2 files")  # ... until the new one
+    assert "Counting…" not in shown
+    w.home.subfolders_switch.toggle()  # another count: says so
+    assert w.home.count_label.text() == "Counting…"
+
+
+def test_space_on_a_tile_does_nothing(qtbot, make_window, photos):
+    w = _show(qtbot, make_window())
+    w.folder_edit.setText(str(photos))
+    _focus(qtbot, w.mode_buttons["date"])
+    qtbot.keyClick(_focused(), Qt.Key.Key_Space)
+    qtbot.wait(20)
+    assert w.current_page() is w.home
+    assert _focused() is w.mode_buttons["date"]
+
+
+def test_the_window_fits_1024_by_600_at_125_percent(qtbot, make_window):
+    w = _show(qtbot, make_window(size=(819, 480)))  # 1024 × 600 at 125 %
+    assert w.minimumSize().width() <= 819 and w.minimumSize().height() <= 480
+    qtbot.waitUntil(lambda: (w.width(), w.height()) == (819, 480))
+    for tile in w.mode_buttons.values():  # none squeezed: the tiles scroll instead
+        assert tile.height() >= tile.sizeHint().height(), tile.name
+    last = w.mode_buttons["type"]
+    _focus(qtbot, w.mode_buttons["date"])
+    for key in (Qt.Key.Key_Down,) * 3 + (Qt.Key.Key_Right,):  # the last: scrolled into view
+        qtbot.keyClick(_focused(), key)
+    assert _focused() is last
+    strip_top = w.strip.mapTo(w, w.strip.rect().topLeft()).y()
+    view = w.home.tile_scroll.viewport()
+    assert last.mapTo(view, last.rect().topLeft()).y() >= 0
+    assert last.mapTo(view, last.rect().bottomLeft()).y() <= view.height()
+    assert last.mapTo(w, last.rect().bottomRight()).y() < strip_top
+    assert w.strip.mapTo(w, w.strip.rect().bottomLeft()).y() <= w.height()
 
 
 def test_a_cancelled_count_stops(tmp_path):

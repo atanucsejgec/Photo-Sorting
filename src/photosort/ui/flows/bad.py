@@ -47,5 +47,5 @@ def on_ticked(window: "MainWindow", move: set[str]) -> None:
 
 def _back(window: "MainWindow", move: set[str]) -> None:
     """Back to the bad photos, those in move ticked."""
-    window.bad_page.load(window.root, window.flow_state, move)
+    window.bad_page.load(window.root, window.flow_state, move, keep_place=True)
     window.show_page(window.bad_page)

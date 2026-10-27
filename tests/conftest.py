@@ -29,6 +29,40 @@ def _dark_theme(qapp):
 
 
 @pytest.fixture(autouse=True)
+def _no_waiting_dialogs(request, monkeypatch):
+    """An in-app modal dialog the test did not patch fails the test at once,
+    instead of waiting for an answer that never comes (a hung run).
+
+    A test that wants the real dialog is marked real_dialogs and answers it
+    from a QTimer.
+
+    It patches QDialog.exec as Python sees it, so it covers the app's own
+    dialogs (dialogs.ask and the rest, opened from a test or from a Qt slot)
+    but not C++ static dialogs such as QInputDialog.getText or the
+    QMessageBox statics, which call exec inside Qt: patch those by name.
+    """
+    if request.node.get_closest_marker("real_dialogs") is not None:
+        yield []
+        return
+    from PySide6.QtWidgets import QDialog
+
+    opened: list[str] = []
+
+    def refuse(dialog) -> int:
+        message = (f"{type(dialog).__name__} {dialog.windowTitle()!r} opened and would "
+                   "wait for an answer: patch it (e.g. dialogs.ask), or mark the test "
+                   "real_dialogs and answer it from a QTimer")
+        opened.append(message)
+        dialog.reject()
+        raise AssertionError(message)
+
+    monkeypatch.setattr(QDialog, "exec", refuse)
+    yield opened  # what was refused, for the test of this guard
+    if opened:
+        pytest.fail(opened[0], pytrace=False)
+
+
+@pytest.fixture(autouse=True)
 def _gc_check_after_each_test():
     """A test that never runs the event loop gets its garbage checked too."""
     yield

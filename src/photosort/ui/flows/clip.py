@@ -78,14 +78,17 @@ def _on_sorted(window: "MainWindow", sort: _ClipSort | None) -> None:
         plan_moves(window, {})
 
 
-def _ask(window: "MainWindow", answers: dict[str, str | None]) -> None:
-    """Show the unsure photos, picked as in answers; the answers are then planned."""
+def _ask(window: "MainWindow", answers: dict[str, str | None],
+         keep_place: bool = False) -> None:
+    """Show the unsure photos, picked as in answers; the answers are then
+    planned. With keep_place the focus goes back to the photo it was on."""
     sort = cast(_ClipSort, window.flow_state)
     title = None  # "N photos to check"
     if window.mode == "notes":
         n = len(sort.unsure)
         title = f"{n} photo{'' if n == 1 else 's'} might be notes or pages"
-    window.category_review_page.load(window.root, sort.unsure, sort.choices, answers, title)
+    window.category_review_page.load(window.root, sort.unsure, sort.choices, answers, title,
+                                     keep_place)
     window.show_page(window.category_review_page)
 
 
@@ -99,7 +102,7 @@ def plan_moves(window: "MainWindow", answers: dict[str, str | None]) -> None:
         plan_failed(window, e)
         return
     if sort.unsure:  # back to the unsure photos, picked as last answered
-        window.back_to = partial(_ask, window, dict(answers))
+        window.back_to = partial(_ask, window, dict(answers), True)
     window.show_plan(plan)
 
 

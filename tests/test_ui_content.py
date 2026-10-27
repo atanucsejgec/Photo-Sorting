@@ -127,8 +127,8 @@ def test_review_old_thumbnails_are_ignored(qtbot, make_page, tmp_path, make_jpeg
     verdicts = _verdicts(tmp_path, make_jpeg)
     page.load(tmp_path, verdicts, ["Food", "Vehicles"])
     page.load(tmp_path, verdicts[:1], ["Food", "Vehicles"])
-    old = page._generation - 1
-    page._thumbnail_ready((old, 0, QImage(8, 8, QImage.Format.Format_RGB888)))
+    old = page.scroll._generation - 1
+    page.scroll._thumbnail_ready((old, 0, QImage(8, 8, QImage.Format.Format_RGB888)))
     assert page.cards[0].thumb_label.pixmap().isNull()  # not the old one's
     qtbot.waitUntil(lambda: not page.cards[0].thumb_label.pixmap().isNull())
 
@@ -281,11 +281,13 @@ def test_editor_reset_to_defaults(editor):
 def test_editor_message_clears(qtbot, monkeypatch):
     e = CategoryEditor([f"Category {n}" for n in range(30)])
     qtbot.addWidget(e)
+    e.show()
+    assert e.message_label.isHidden()  # no blank line while there is nothing to say
     e.add_button.click()
-    assert e.message_label.text()
+    assert e.message_label.text() and not e.message_label.isHidden()
     e.list_widget.setCurrentRow(0)
     e.remove_button.click()
-    assert e.message_label.text() == ""
+    assert e.message_label.text() == "" and e.message_label.isHidden()
 
 
 # ----- the main window ---------------------------------------------------------

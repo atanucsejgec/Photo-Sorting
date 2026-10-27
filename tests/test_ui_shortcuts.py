@@ -135,6 +135,7 @@ def _answer(qtbot, *keys):
     return seen
 
 
+@pytest.mark.real_dialogs
 def test_ask_enter_takes_the_default_no(qtbot):
     seen = _answer(qtbot, Qt.Key.Key_Return)
     assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep") is False
@@ -142,6 +143,32 @@ def test_ask_enter_takes_the_default_no(qtbot):
     assert seen["strip"] == "←→ choose · Enter pick · Esc no/close"
 
 
+@pytest.mark.real_dialogs
+@pytest.mark.parametrize("key", [Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter])
+def test_a_held_key_does_not_answer(qtbot, key):
+    """The repeats of a key held down (say Esc, held on the screen behind
+    as the dialog opened) answer nothing; a fresh press does."""
+    seen = {}
+
+    def press():
+        dialog = QApplication.activeModalWidget()
+        if dialog is None or dialog.focusWidget() is None:
+            QTimer.singleShot(10, press)
+            return
+        for _ in range(3):
+            QApplication.sendEvent(dialog.focusWidget(), QKeyEvent(
+                QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier, "", True))
+        seen["open"] = dialog.isVisible()
+        dialog.buttons[1].setFocus()  # Leave, so a fresh Enter says yes
+        qtbot.keyClick(dialog.focusWidget(), Qt.Key.Key_Return)
+
+    QTimer.singleShot(0, press)
+    assert dialogs.ask(None, "Leave this review?", "Your answers so far will be lost.",
+                       yes="Leave", no="Stay") is True
+    assert seen == {"open": True}
+
+
+@pytest.mark.real_dialogs
 def test_ask_arrows_then_enter_picks_yes(qtbot):
     seen = _answer(qtbot, Qt.Key.Key_Right, Qt.Key.Key_Return)
     assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep") is True
@@ -150,12 +177,14 @@ def test_ask_arrows_then_enter_picks_yes(qtbot):
     assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep") is True
 
 
+@pytest.mark.real_dialogs
 def test_ask_escape_is_no(qtbot):
     _answer(qtbot, Qt.Key.Key_Escape)
     assert dialogs.ask(None, "Forget", "Forget Zoe?", yes="Forget", no="Keep",
                        default="yes") is False
 
 
+@pytest.mark.real_dialogs
 def test_ask_default_yes_starts_on_yes(qtbot):
     seen = _answer(qtbot, Qt.Key.Key_Return)
     assert dialogs.ask(None, "Download", "Download now?", yes="Download", no="Not now",
@@ -163,6 +192,7 @@ def test_ask_default_yes_starts_on_yes(qtbot):
     assert seen["focus"] == "Download"
 
 
+@pytest.mark.real_dialogs
 def test_ask_shows_the_title_and_text(qtbot):
     texts = {}
 
@@ -185,6 +215,7 @@ def test_ask_shows_the_title_and_text(qtbot):
 CHOICES = ["Modified", "Created"]
 
 
+@pytest.mark.real_dialogs
 def test_choose_enter_takes_the_default(qtbot):
     seen = _answer(qtbot, Qt.Key.Key_Return)
     assert dialogs.choose(None, "Which date?", "Sort by?", CHOICES) == 0
@@ -196,6 +227,7 @@ def test_choose_enter_takes_the_default(qtbot):
     assert seen["focus"] == "Created"
 
 
+@pytest.mark.real_dialogs
 def test_choose_right_then_enter_picks_the_next(qtbot):
     seen = _answer(qtbot, Qt.Key.Key_Right, Qt.Key.Key_Return)
     assert dialogs.choose(None, "Which date?", "Sort by?", CHOICES) == 1
@@ -204,11 +236,13 @@ def test_choose_right_then_enter_picks_the_next(qtbot):
     assert dialogs.choose(None, "Which date?", "Sort by?", ["A", "B", "C"]) == 2  # wraps
 
 
+@pytest.mark.real_dialogs
 def test_choose_escape_is_none(qtbot):
     _answer(qtbot, Qt.Key.Key_Escape)
     assert dialogs.choose(None, "Which date?", "Sort by?", CHOICES, default=1) is None
 
 
+@pytest.mark.real_dialogs
 def test_choose_shows_the_title_text_and_options_in_order(qtbot):
     texts = {}
 
@@ -250,6 +284,7 @@ def _held(qtbot, key):
     return seen
 
 
+@pytest.mark.real_dialogs
 @pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape])
 def test_a_held_key_never_answers_choose(qtbot, key):
     # The Enter that opened the dialog, held down, must not pick unseen.
@@ -258,6 +293,7 @@ def test_a_held_key_never_answers_choose(qtbot, key):
     assert seen["open"] is True
 
 
+@pytest.mark.real_dialogs
 @pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape])
 def test_a_held_key_never_answers_ask(qtbot, key):
     seen = _held(qtbot, key)
@@ -266,6 +302,7 @@ def test_a_held_key_never_answers_ask(qtbot, key):
     assert seen["open"] is True
 
 
+@pytest.mark.real_dialogs
 @pytest.mark.parametrize("show", [dialogs.warn, dialogs.info])
 @pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Escape])
 def test_warn_and_info_close_with_enter_or_esc(qtbot, show, key):
@@ -286,9 +323,24 @@ def test_a_window_of_its_own_is_not_on_the_screen(qtbot, screen):
     assert shortcuts.keys_for(field, screen) == [("Esc", "back"), ("←→", "move")]
 
 
+@pytest.mark.real_dialogs
 def test_ask_buttons_are_both_plain(qtbot):
     seen = _answer(qtbot, Qt.Key.Key_Escape)
     dialogs.ask(None, "Leave this review?", "Your answers so far will be lost.",
                 yes="Leave", no="Stay")
     assert seen["focus"] == "Stay"
     assert seen["primary"] == []  # the safe default is not "the primary action"
+
+
+def test_follow_switches_each_key_with_its_button(qtbot, screen):
+    one = shortcuts.bind(screen, "1", "1", "one", lambda: None)
+    two = shortcuts.bind(screen, "2", "2", "two", lambda: None)
+    other = QPushButton("Other", screen)
+    pairs = [(one, screen.button), (two, other)]
+    assert shortcuts.follow(pairs) is False  # all on already
+    other.setEnabled(False)
+    assert shortcuts.follow(pairs) is True
+    assert one.isEnabled() and not two.isEnabled()
+    assert shortcuts.follow(pairs) is False
+    other.setEnabled(True)
+    assert shortcuts.follow(pairs) is True and two.isEnabled()

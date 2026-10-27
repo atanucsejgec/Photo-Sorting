@@ -2,78 +2,91 @@
 each with a picker set to its likeliest category (or kind of paper).
 
 The owner picks a category for each photo, or "Leave it where it is", and
-double-clicks one to see it larger. Thumbnails are made on pool threads as on
-the review screen (see review_page), tagged with the generation of cards they
-were asked for; one for cards that are gone is ignored.
+double-clicks one to see it larger. The cards are in a CardGrid.
+
+Keys: the arrows move between the cards (a GridNavigator); Enter opens the
+focused card's picker (↑↓ choose, Enter set, Esc close, as a list does), L
+leaves that photo where it is and Space shows it big. Shift+L leaves them
+all, Ctrl+Enter continues to the summary and Esc asks whether to leave
+(left()). Tab and Shift+Tab go between the cards and the buttons.
 """
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QFont, QImage, QPixmap
-from PySide6.QtWidgets import (
-    QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-    QVBoxLayout, QWidget,
-)
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import QComboBox, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from photosort.modes.content import Verdict
-from photosort.thresholds import THUMB_PX
+from photosort.ui import shortcuts
+from photosort.ui.card_grid import CardGrid, GridCard
 from photosort.ui.photo_preview import PhotoPreview
-from photosort.ui.review_page import LOADING, render_thumbnail
-from photosort.ui.worker import Task
+from photosort.ui.widgets import ButtonBar
 
 LEAVE = "Leave it where it is"
-_SPACING = 12  # between the cards of the grid
 
 
-class _Thumbnail(QLabel):
-    """A thumbnail that says when it is double-clicked."""
+class Picker(QComboBox):
+    """A card's category picker. It never takes the focus itself (the card
+    has it; Enter there opens the list), and its list shows every choice:
+    as tall as its rows, up to the screen."""
 
-    double_clicked = Signal()
+    closed = Signal()
 
-    def mouseDoubleClickEvent(self, event) -> None:
-        self.double_clicked.emit()
-        event.accept()
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        for label, word in (("↑↓", "choose"), ("Enter", "set"), ("Esc", "close")):
+            shortcuts.describe(self.view(), label, word)
+
+    def showPopup(self) -> None:
+        self.setMaxVisibleItems(max(1, self.count()))
+        super().showPopup()
+        view = self.view()
+        container = view.window()
+        rows = sum(view.sizeHintForRow(n) for n in range(self.count()))
+        wanted = rows + (container.height() - view.viewport().height())
+        room = container.screen().availableGeometry().bottom() - container.y()
+        if container.height() < wanted:
+            container.resize(container.width(), min(wanted, max(room, container.height())))
+
+    def hidePopup(self) -> None:
+        super().hidePopup()
+        self.closed.emit()
 
 
-class CategoryCard(QFrame):
-    """One unsure photo: its thumbnail, name, the guess, and the category picker."""
+class CategoryCard(GridCard):
+    """One unsure photo: its thumbnail, name, the guess, and the category
+    picker. The card takes the focus; Enter on it opens the picker."""
 
     def __init__(self, root: Path, verdict: Verdict, choices: list[str],
                  parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.root = Path(root)
+        super().__init__(root, verdict.rel, parent)
         self.verdict = verdict
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-
-        self.thumb_label = _Thumbnail(LOADING)
-        self.thumb_label.setFixedSize(THUMB_PX, THUMB_PX)
-        self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.thumb_label.setObjectName("thumb")  # see theme
-        self.thumb_label.setToolTip("Double-click to see it larger")
 
         self.name_label = QLabel(verdict.rel.rpartition("/")[2])
         self.name_label.setToolTip(verdict.rel)
         # Only the best's probability: the others' (beside the background
         # prompts) do not add up to 100 %.
         self.guess_label = QLabel(f"{verdict.best}? {round(verdict.prob * 100)}% sure")
+        self.guess_label.setObjectName("muted")
         for label in (self.name_label, self.guess_label):
-            label.setFixedWidth(THUMB_PX)
             label.setWordWrap(True)
 
-        self.choice_combo = QComboBox()
+        self.choice_combo = Picker()
         self.choice_combo.addItems([*choices, LEAVE])
-        self.choice_combo.setFixedWidth(THUMB_PX)
+        self.choice_combo.closed.connect(self._picked)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.thumb_label)
-        layout.addWidget(self.name_label)
-        layout.addWidget(self.guess_label)
-        layout.addWidget(self.choice_combo)
-        layout.addStretch()
+        for line in (self.name_label, self.guess_label, self.choice_combo):
+            self.add_line(line)
+        self.finish_lines()
 
-    def path(self) -> Path:
-        return self.root / self.verdict.rel
+    def open_picker(self) -> None:
+        self.choice_combo.showPopup()
+
+    def _picked(self) -> None:
+        if self.isVisible():
+            self.setFocus(Qt.FocusReason.PopupFocusReason)  # back from the list
 
     def set_answer(self, category: str | None) -> None:
         """Pick category, or LEAVE for None (or a category no longer offered)."""
@@ -85,14 +98,6 @@ class CategoryCard(QFrame):
         text = self.choice_combo.currentText()
         return None if text == LEAVE else text
 
-    def set_thumbnail(self, value: QImage | str) -> None:
-        """Show the thumbnail, or a placeholder text such as "Can't show". GUI thread only."""
-        if isinstance(value, QImage):
-            self.thumb_label.setText("")
-            self.thumb_label.setPixmap(QPixmap.fromImage(value))
-        else:
-            self.thumb_label.setText(value)
-
 
 class CategoryReviewPage(QWidget):
     """Shows the unsure photos; emits finished(answers) or cancelled().
@@ -102,18 +107,15 @@ class CategoryReviewPage(QWidget):
     """
 
     finished = Signal(object)  # dict[str, str | None]
-    cancelled = Signal()
+    cancelled = Signal()  # Back
+    left = Signal()  # Esc, then Leave
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._generation = 0  # bumped whenever the cards are replaced
-        self._thumb_tasks: dict[tuple[int, int], Task] = {}  # kept alive until they report
-        self._columns = 0  # how many columns the cards are laid out in
         self.cards: list[CategoryCard] = []
-        self.preview: PhotoPreview | None = None  # while one is open
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 24)
+        layout.setContentsMargins(32, 24, 32, 12)
         layout.setSpacing(16)
         self.heading_label = QLabel()
         font = self.heading_label.font()
@@ -127,33 +129,42 @@ class CategoryReviewPage(QWidget):
         layout.addWidget(self.heading_label)
         layout.addWidget(self.subtitle_label)
 
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.viewport().installEventFilter(self)  # re-flows the grid on resize
+        self.scroll = CardGrid(key=lambda card: card.verdict.rel)
+        self.navigator = self.scroll.navigator
         layout.addWidget(self.scroll, 1)
 
         self.back_button = QPushButton("Back")
         self.leave_all_button = QPushButton("Leave all where they are")
         self.continue_button = QPushButton("Continue")
         self.continue_button.setDefault(True)
-        row = QHBoxLayout()
-        row.addWidget(self.back_button)
-        row.addStretch()
-        row.addWidget(self.leave_all_button)
-        row.addWidget(self.continue_button)
-        layout.addLayout(row)
+        layout.addWidget(ButtonBar([self.back_button],
+                                   [self.leave_all_button, self.continue_button]))
 
         self.back_button.clicked.connect(self._cancel)
         self.leave_all_button.clicked.connect(self._leave_all)
         self.continue_button.clicked.connect(self._finish)
 
+        # Keys: the cards' own (while one has focus), then the page's.
+        shortcuts.describe(self.scroll, "←↑↓→", "move")
+        shortcuts.bind(self.scroll, "Return", "Enter", "pick", self._pick_current,
+                       repeat=False)
+        shortcuts.bind(self.scroll, "L", "L", "leave this one", self._leave_current)
+        shortcuts.bind(self.scroll, "Space", "Space", "view big", self.scroll.preview_current,
+                       repeat=False)
+        shortcuts.bind(self, "Shift+L", "Shift+L", "leave all", self._leave_all)
+        shortcuts.bind(self, "Ctrl+Return", "Ctrl+Enter", "continue", self._finish,
+                       repeat=False)
+        shortcuts.bind(self, "Escape", "Esc", "back", self._leave, repeat=False)
+        shortcuts.describe_tab(self)
+
     def load(self, root: Path, verdicts: list[Verdict], choices: list[str],
-             answers: dict[str, str | None] | None = None, title: str | None = None) -> None:
+             answers: dict[str, str | None] | None = None, title: str | None = None,
+             keep_place: bool = False) -> None:
         """Show verdicts' photos in root under title ("N photos to check" if
         None), each picker offering choices and set to the photo's answer in
-        answers if it has one, else to its best."""
-        self.stop_thumbnails()
-        self._generation += 1
+        answers if it has one, else to its best. The focus starts on the
+        first card, or with keep_place on the card it was on (coming back
+        from the summary)."""
         root = Path(root)
         answers = answers or {}
         n = len(verdicts)
@@ -161,62 +172,22 @@ class CategoryReviewPage(QWidget):
             title = f"{n} photo{'' if n == 1 else 's'} to check"
         self.heading_label.setText(title)
         self.cards = []
-        for i, verdict in enumerate(verdicts):
+        for verdict in verdicts:
             card = CategoryCard(root, verdict, choices)
             card.set_answer(answers.get(verdict.rel, verdict.best))
-            card.thumb_label.double_clicked.connect(
-                lambda path=card.path(): self._open_preview(path))
             self.cards.append(card)
-            self._request_thumbnail(i, card.path())
-        self._lay_out(self._fitting_columns())
+        self.scroll.set_cards(self.cards, keep_place)  # the cards shown before are deleted
 
-    # ----- the grid --------------------------------------------------------
+    @property
+    def preview(self) -> PhotoPreview | None:
+        """The photo shown big, while it is open."""
+        return self.scroll.preview
 
-    def _fitting_columns(self) -> int:
-        if not self.cards:
-            return 1
-        card_width = self.cards[0].sizeHint().width() + _SPACING
-        return max(1, self.scroll.viewport().width() // card_width)
-
-    def _lay_out(self, columns: int) -> None:
-        """Put the cards in a fresh grid of columns; the old grid is deleted."""
-        self._columns = columns
-        grid_widget = QWidget()
-        grid = QGridLayout(grid_widget)
-        grid.setSpacing(_SPACING)
-        for n, card in enumerate(self.cards):
-            grid.addWidget(card, n // columns, n % columns)
-        grid.setRowStretch(grid.rowCount(), 1)
-        grid.setColumnStretch(columns, 1)
-        self.scroll.setWidget(grid_widget)
-
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if event.type() == QEvent.Type.Resize and self.cards:
-            columns = self._fitting_columns()
-            if columns != self._columns:
-                self._lay_out(columns)
-        return super().eventFilter(watched, event)
-
-    # ----- thumbnails ------------------------------------------------------
-
-    def _request_thumbnail(self, n: int, path: Path) -> None:
-        token = (self._generation, n)
-        task = Task(render_thumbnail, token, path)
-        task.signals.result.connect(self._thumbnail_ready)
-        self._thumb_tasks[token] = task
-        task.start()
-
-    def _thumbnail_ready(self, result: tuple[int, int, QImage | str | None]) -> None:
-        generation, n, value = result
-        self._thumb_tasks.pop((generation, n), None)
-        if generation != self._generation or value is None:
-            return  # asked for cards that are gone
-        self.cards[n].set_thumbnail(value)
+    def columns(self) -> int:
+        return self.scroll.columns()
 
     def stop_thumbnails(self) -> None:
-        """Let the thumbnails still waiting for a pool thread finish without decoding."""
-        for task in self._thumb_tasks.values():
-            task.cancel_event.set()
+        self.scroll.stop_thumbnails()
 
     # ----- answers ---------------------------------------------------------
 
@@ -224,13 +195,15 @@ class CategoryReviewPage(QWidget):
         for card in self.cards:
             card.set_answer(None)
 
-    def _open_preview(self, path: Path) -> None:
-        self.preview = PhotoPreview(path, self)
-        self.preview.finished.connect(self._preview_closed)
-        self.preview.open()
+    def _pick_current(self) -> None:
+        card = self.navigator.current()
+        if card is not None:
+            card.open_picker()
 
-    def _preview_closed(self) -> None:
-        self.preview = None  # it deletes itself
+    def _leave_current(self) -> None:
+        card = self.navigator.current()
+        if card is not None:
+            card.set_answer(None)
 
     def _finish(self) -> None:
         self.stop_thumbnails()
@@ -239,3 +212,8 @@ class CategoryReviewPage(QWidget):
     def _cancel(self) -> None:
         self.stop_thumbnails()
         self.cancelled.emit()
+
+    def _leave(self) -> None:
+        if shortcuts.confirm_leave(self):
+            self.stop_thumbnails()
+            self.left.emit()
