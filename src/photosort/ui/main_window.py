@@ -35,9 +35,7 @@ from pathlib import Path
 from PySide6.QtCore import QThreadPool, QUrl
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QMainWindow,
-    QProgressBar, QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QApplication, QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout, QWidget,
 )
 from shiboken6 import isValid
 
@@ -45,13 +43,14 @@ from photosort.clip import ClipEngine
 from photosort.executor import ExecResult, execute
 from photosort.faces import FaceEngine
 from photosort.journal import RunJournal
-from photosort.modes import MODE_SPECS
+from photosort.modes import MODE_SPECS, MODES
 from photosort.people import PeopleStore
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
-from photosort.ui import dialogs, shortcuts
+from photosort.ui import dialogs, icons, shortcuts
 from photosort.ui.bad_photos_page import BadPhotosPage
 from photosort.ui.category_review_page import CategoryReviewPage
+from photosort.ui.done_page import DonePage
 from photosort.ui.events_page import EventsPage
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
@@ -60,11 +59,12 @@ from photosort.ui.history_page import HistoryPage, undo_summary
 from photosort.ui.home_page import HomePage
 from photosort.ui.model_download import ensure_models
 from photosort.ui.people_page import PeoplePage
+from photosort.ui.progress_page import ProgressPage
 from photosort.ui.review_page import ReviewPage
 from photosort.ui.settings_page import SettingsPage
 from photosort.ui.shortcuts import ShortcutStrip
 from photosort.ui.sidebar import Sidebar
-from photosort.ui.theme import heading
+from photosort.ui.summary_page import SummaryPage
 from photosort.ui.worker import Task
 from photosort.undo import UndoBlocked, UndoResult, undo_run
 
@@ -75,31 +75,7 @@ MIN_WIDTH, MIN_HEIGHT = 800, 460
 # The flow that runs each kind of mode.
 _FLOWS = {"plan": plain, "groups": groups, "bad": bad, "events": events, "face": face,
           "content": clip, "notes": clip}
-
-
-def _text(text: str = "") -> QLabel:
-    label = QLabel(text)
-    label.setWordWrap(True)
-    return label
-
-
-def _page(*headings: str) -> tuple[QWidget, QVBoxLayout]:
-    page = QWidget()
-    layout = QVBoxLayout(page)
-    layout.setContentsMargins(32, 24, 32, 12)
-    layout.setSpacing(16)
-    for text in headings:
-        layout.addWidget(heading(text))
-    return page, layout
-
-
-def _buttons(layout: QVBoxLayout, *buttons: QPushButton) -> None:
-    row = QHBoxLayout()
-    row.addStretch()
-    for button in buttons:
-        button.setMinimumWidth(120)
-        row.addWidget(button)
-    layout.addLayout(row)
+_MODE_LABELS = {key: label for key, label, _ in MODES}
 
 
 def _undo_with_message(root: Path, run_id: str, progress=None) -> UndoResult:
@@ -135,8 +111,6 @@ class MainWindow(QMainWindow):
         self.back_to: Callable[[], None] | None = None  # where Back on the summary goes
         self._plan: Plan | None = None
         self._run_id: str | None = None
-        self._progress_prefix = ""
-        self._progress_joiner = "/"
 
         self.setWindowTitle(TITLE)
         self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
@@ -176,6 +150,8 @@ class MainWindow(QMainWindow):
             "people": self.people_page, "settings": self.settings_page}
         for page in (self.history_page, self.people_page, self.settings_page):
             shortcuts.bind(page, "Escape", "Esc", "sidebar", self.sidebar.focus_current)
+        for page in (self.history_page, self.people_page):  # Settings lists "Tab next"
+            shortcuts.describe_tab(page)
         self.progress_page = self._build_progress()
         self.review_page = self._build_review()
         self.bad_page = self._build_bad()
@@ -214,18 +190,14 @@ class MainWindow(QMainWindow):
             page.folder_edit.setText(last)
         return page
 
-    def _build_progress(self) -> QWidget:
-        page, layout = _page("Working…")
-        layout.addStretch()
-        self.progress_label = _text()
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setTextVisible(False)
-        layout.addWidget(self.progress_label)
-        layout.addWidget(self.progress_bar)
-        layout.addStretch()
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.clicked.connect(self._cancel)
-        _buttons(layout, self.cancel_button)
+    def _build_progress(self) -> ProgressPage:
+        page = ProgressPage()
+        # Aliases, as for Home's controls (and for the Summary's and Done's below).
+        self.progress_label = page.progress_label
+        self.progress_bar = page.progress_bar
+        self.cancel_button = page.cancel_button
+        page.cancel_requested.connect(self._cancel)
+        page.keys_changed.connect(self.strip.refresh)
         return page
 
     def _build_review(self) -> ReviewPage:
@@ -259,6 +231,7 @@ class MainWindow(QMainWindow):
         page.photo_dropped.connect(lambda path: face.add_person(self, path))
         page.more_requested.connect(lambda person_id: face.add_photos(self, person_id))
         page.back_button.clicked.connect(lambda: self.show_page(self.home))
+        page.keys_changed.connect(self.strip.refresh)
         return page
 
     def _build_face_questions(self) -> FaceQuestionPage:
@@ -275,45 +248,28 @@ class MainWindow(QMainWindow):
         page.left.connect(self.leave_review)
         return page
 
-    def _build_summary(self) -> QWidget:
-        page, layout = _page("Ready to sort")
-        self.summary_label = _text()
-        layout.addWidget(self.summary_label)
-        self.show_moves_button = QPushButton("Show all moves")
-        self.show_moves_button.setCheckable(True)
-        self.show_moves_button.toggled.connect(self._toggle_moves)
-        row = QHBoxLayout()
-        row.addWidget(self.show_moves_button)
-        row.addStretch()
-        layout.addLayout(row)
-        self.moves_table = QTableWidget(0, 2)
-        self.moves_table.setHorizontalHeaderLabels(["From", "To"])
-        self.moves_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.moves_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.moves_table.hide()
-        layout.addWidget(self.moves_table, 1)
-        layout.addStretch()
-        self.back_button = QPushButton("Back")
-        self.back_button.clicked.connect(self._back_from_summary)
-        self.go_button = QPushButton("Go")
-        self.go_button.clicked.connect(self._go)
-        _buttons(layout, self.back_button, self.go_button)
+    def _build_summary(self) -> SummaryPage:
+        page = SummaryPage()
+        self.summary_label = page.summary_label
+        self.show_moves_button = page.show_moves_button
+        self.moves_table = page.moves_table
+        self.back_button = page.back_button
+        self.go_button = page.go_button
+        page.go.connect(self._go)
+        page.go_back.connect(self._back_from_summary)
         return page
 
-    def _build_done(self) -> QWidget:
-        page, layout = _page("Done")
-        self.done_label = _text()
-        self.undo_label = _text()
-        layout.addWidget(self.done_label)
-        layout.addWidget(self.undo_label)
-        layout.addStretch()
-        self.undo_button = QPushButton("Undo")
-        self.undo_button.clicked.connect(self._undo)
-        self.open_folder_button = QPushButton("Open folder")
-        self.open_folder_button.clicked.connect(self._open_folder)
-        self.home_button = QPushButton("Home")
-        self.home_button.clicked.connect(lambda: self.show_page(self.home))
-        _buttons(layout, self.undo_button, self.open_folder_button, self.home_button)
+    def _build_done(self) -> DonePage:
+        page = DonePage()
+        self.done_label = page.done_label
+        self.undo_label = page.undo_label
+        self.undo_button = page.undo_button
+        self.open_folder_button = page.open_folder_button
+        self.home_button = page.home_button
+        page.undo_requested.connect(self._undo)
+        page.open_folder_requested.connect(self._open_folder)
+        page.home_requested.connect(lambda: self.show_page(self.home))
+        page.keys_changed.connect(self.strip.refresh)
         return page
 
     # ----- helpers ---------------------------------------------------------
@@ -322,8 +278,9 @@ class MainWindow(QMainWindow):
         return self.stack.currentWidget()
 
     def show_page(self, page: QWidget) -> None:
-        """Show page. Home takes the focus to its tiles, unless the focus is in
-        the sidebar (the owner is moving between its pages)."""
+        """Show page. Unless the focus is in the sidebar (the owner is moving
+        between its pages), Home takes the focus to its tiles, and a page with
+        a first place for the focus (Go on the Summary, Home on Done) to it."""
         in_sidebar = self._focus_in_sidebar()
         self.stack.setCurrentWidget(page)
         self.sidebar.select(next((key for key, p in self._sidebar_pages.items() if p is page),
@@ -333,6 +290,8 @@ class MainWindow(QMainWindow):
             self.home.refresh_count()  # a sort may have moved files in or out
             if not in_sidebar:
                 self.home.focus_tiles()
+        elif not in_sidebar and hasattr(page, "focus_first"):
+            page.focus_first()
         self._strip_follows_focus()
 
     def _focus_in_sidebar(self) -> bool:
@@ -348,7 +307,11 @@ class MainWindow(QMainWindow):
         self.strip.show_for(self.sidebar if self._focus_in_sidebar() else self.current_page())
 
     def _focus_moved(self, old: QWidget | None, new: QWidget | None) -> None:
-        if isValid(self) and isValid(self.strip):
+        """The strip follows the focus between the sidebar and the page; with
+        the focus away from the window (another app, a dialog: no focus here)
+        it keeps what it shows."""
+        if (isValid(self) and isValid(self.strip) and new is not None
+                and new.window() is self):
             self._strip_follows_focus()
 
     def _choose(self, key: str) -> None:
@@ -416,21 +379,11 @@ class MainWindow(QMainWindow):
     def begin_progress(self, prefix: str, total: int | None = None,
                        joiner: str = "/") -> None:
         """Show the progress page: "<prefix> <i> <joiner> <total>"."""
-        self._progress_prefix = prefix
-        self._progress_joiner = joiner
-        self.progress_bar.setRange(0, 0)  # busy until the first tick
-        if total is None:
-            self.progress_label.setText(prefix)
-        else:
-            self._on_progress(0, total)
-        self.cancel_button.setEnabled(True)
+        self.progress_page.begin(prefix, total, joiner)
         self.show_page(self.progress_page)
 
     def _on_progress(self, i: int, total: int) -> None:
-        self.progress_bar.setRange(0, max(total, 1))
-        self.progress_bar.setValue(i)
-        self.progress_label.setText(
-            f"{self._progress_prefix} {i} {self._progress_joiner} {total}")
+        self.progress_page.set_progress(i, total)
 
     # ----- home ------------------------------------------------------------
 
@@ -496,8 +449,7 @@ class MainWindow(QMainWindow):
     def _cancel(self) -> None:
         if self._task is not None:
             self._task.cancel_event.set()
-        self.cancel_button.setEnabled(False)
-        self.progress_label.setText("Stopping…")
+        self.progress_page.stopping()
 
     def cancel_pressed(self) -> bool:
         """Whether Cancel was pressed for the last Task, which may have finished anyway."""
@@ -527,12 +479,9 @@ class MainWindow(QMainWindow):
         self.show_summary(lines, can_go=bool(plan.moves))
 
     def show_summary(self, lines: list[str], can_go: bool) -> None:
-        self.summary_label.setText("\n".join(lines))
-        self.go_button.setEnabled(can_go)
-        self.show_moves_button.setEnabled(can_go)
-        self.moves_table.setRowCount(0)
-        self.show_moves_button.setChecked(False)
-        self.moves_table.hide()
+        moves = self._plan.moves if self._plan is not None else ()
+        self.summary_page.show_summary(lines, can_go, moves, _MODE_LABELS.get(self.mode),
+                                       icons.MODE_ICONS.get(self.mode))
         self.show_page(self.summary_page)
 
     def _back_from_summary(self) -> None:
@@ -542,15 +491,6 @@ class MainWindow(QMainWindow):
             return
         self._plan = None  # going back makes a fresh one
         self.back_to()
-
-    def _toggle_moves(self, checked: bool) -> None:
-        if checked and self._plan is not None and self.moves_table.rowCount() == 0:
-            moves = self._plan.moves
-            self.moves_table.setRowCount(len(moves))
-            for row, move in enumerate(moves):
-                self.moves_table.setItem(row, 0, QTableWidgetItem(move.src))
-                self.moves_table.setItem(row, 1, QTableWidgetItem(move.dst))
-        self.moves_table.setVisible(checked)
 
     # ----- moving ----------------------------------------------------------
 
@@ -575,10 +515,7 @@ class MainWindow(QMainWindow):
                       self._on_execute_error)
 
     def _show_done(self, lines: list[str], can_undo: bool) -> None:
-        self.done_label.setText("\n".join(lines))
-        self.undo_label.setText("")
-        self.undo_button.setEnabled(can_undo)
-        self.home_button.setEnabled(True)
+        self.done_page.show_result(lines, can_undo)
         self.show_page(self.done_page)
 
     def _open_folder(self) -> None:
@@ -609,23 +546,17 @@ class MainWindow(QMainWindow):
     def _undo(self) -> None:
         if self.busy or self.root is None or self._run_id is None:
             return
-        self.undo_button.setEnabled(False)
-        self.home_button.setEnabled(False)
-        self.undo_label.setText("Putting files back…")
+        self.done_page.undo_started()
         self.run_task(
             Task(_undo_with_message, self.root, self._run_id, cancellable=False),
             self._on_undone, self._on_undo_error,
         )
 
     def _on_undone(self, result: UndoResult) -> None:
-        self.undo_label.setText(undo_summary(result))
-        self.undo_button.setEnabled(bool(result.failed))  # left to retry
-        self.home_button.setEnabled(True)
+        self.done_page.undo_ended(undo_summary(result), bool(result.failed))  # left to retry
 
     def _on_undo_error(self, message: str) -> None:
-        self.undo_label.setText("")
-        self.undo_button.setEnabled(True)
-        self.home_button.setEnabled(True)
+        self.done_page.undo_ended("", True)
         self.show_error(message)
 
     # ----- closing ---------------------------------------------------------

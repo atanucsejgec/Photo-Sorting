@@ -44,6 +44,24 @@ In the other modes, files the mode can't place stay where they are. You always s
 will move before anything does. Nothing is ever deleted: the files you set aside go to a
 folder (`Duplicates/`, `Repeated Shots/`, `Bad Photos/`), and Undo puts everything back.
 
+## Keyboard
+
+The whole app works without the mouse. Every screen lists its keys at the bottom.
+The common ones:
+
+- **Arrow keys** move between tiles, cards, buttons and list rows.
+- **Enter** does the focused thing: starts the mode on a tile, opens a photo big on a
+  review screen, and on the summary it is **Go** (Go has the focus there).
+- **Space** ticks or unticks.
+- **Esc** goes back. On a review screen it first asks before throwing your answers away.
+- **Ctrl+Enter** on a review screen goes on to the summary with your answers so far.
+- **Tab** and **Shift+Tab** move between the parts of a screen, and to the sidebar.
+- On Home, **F** opens the folder picker and **S** switches subfolders on or off.
+- On Done, **Home** has the focus, so a second Enter never undoes the sort. **U** undoes
+  it, after asking.
+
+Nothing moves before the summary screen, and no key skips it.
+
 ## Set up on a new computer (Linux)
 
 1. Install the tools (once):

@@ -240,7 +240,7 @@ class ShortcutStrip(QWidget):
         """Redraw, e.g. after a shortcut is enabled or disabled. While the
         focus is away from the window (another app, a dialog) the screen's
         keys stay as they were, so the page's layout does not change; they
-        are redrawn when the focus comes back."""
+        are redrawn when the focus comes back (see _away)."""
         if not isValid(self):
             return
         focus = QApplication.focusWidget()
@@ -280,10 +280,11 @@ class ShortcutStrip(QWidget):
         return " · ".join(f"{label} {word}" for label, word in self._shown)
 
     def _away(self, focus: QWidget | None) -> bool:
-        """focus is outside this window (none in the app, or another
-        window), and not in a popup opened from the screen."""
+        """focus is outside this window (none in the app while another app
+        or window is active, or in another window), and not in a popup
+        opened from the screen. No focus in the active window is not away."""
         if focus is None:
-            return True
+            return not self.window().isActiveWindow()
         return (focus.window() is not self.window()
                 and _popup_keys(focus, self._screen) is None)
 

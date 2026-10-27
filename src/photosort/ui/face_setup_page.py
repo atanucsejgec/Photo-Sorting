@@ -6,6 +6,11 @@ Only the people load() is asked to tick (say, ones just named) come up ticked. A
 dropped on the page is named like one picked with "Add person…". The same
 list, without ticks, drops and with only Forget, is the People page.
 
+Keys (not on the People page, which has its own): ↑↓ move in the list,
+Space ticks, Enter starts sorting (once someone is ticked), A adds a person,
+Delete forgets one (after asking) and Esc goes back Home. Enter presses a
+button Tab has reached, once (widgets.ButtonKeys).
+
 The face pictures are small JPEGs in the app's own data folder, so they are
 read on the GUI thread.
 """
@@ -15,16 +20,18 @@ from collections.abc import Iterable
 
 from PIL import Image
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QFont, QIcon, QPixmap
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
+    QLabel, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
 
 from photosort.people import PeopleError, PeopleStore, Person
-from photosort.ui import dialogs
+from photosort.ui import dialogs, shortcuts
 from photosort.ui.face_naming_dialog import dropped_photo
 from photosort.ui.labels import literal
 from photosort.ui.qimage import pil_to_qimage
+from photosort.ui.theme import heading
+from photosort.ui.widgets import ButtonBar, ButtonKeys
 
 _log = logging.getLogger("photosort")
 
@@ -62,6 +69,7 @@ class FaceSetupPage(QWidget):
     add_requested = Signal()
     photo_dropped = Signal(object)  # Path: a photo to add a person from
     more_requested = Signal(str)
+    keys_changed = Signal()  # a key was switched on or off (the strip redraws)
 
     def __init__(self, parent: QWidget | None = None, *, delete_only: bool = False) -> None:
         super().__init__(parent)
@@ -73,15 +81,11 @@ class FaceSetupPage(QWidget):
 
         layout = QVBoxLayout(self)
         if not delete_only:
-            layout.setContentsMargins(32, 24, 32, 24)
-            layout.setSpacing(16)
-            heading = QLabel(HEADING)
-            font = heading.font()
-            font.setPointSizeF(font.pointSizeF() * 1.6)
-            font.setWeight(QFont.Weight.Bold)
-            heading.setFont(font)
-            layout.addWidget(heading)
+            layout.setContentsMargins(32, 24, 32, 12)
+            layout.setSpacing(14)
+            layout.addWidget(heading(HEADING))
         self.hint_label = QLabel()
+        self.hint_label.setObjectName("muted")
         self.hint_label.setWordWrap(True)
         layout.addWidget(self.hint_label)
 
@@ -90,29 +94,25 @@ class FaceSetupPage(QWidget):
         layout.addWidget(self.people_list, 1)
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
+        self.status_label.hide()  # shown with a problem to tell (see _status)
         layout.addWidget(self.status_label)
 
         self.add_button = QPushButton("Add person…")
         self.more_button = QPushButton()
         self.delete_button = QPushButton()
-        row = QHBoxLayout()
-        for button in (self.add_button, self.more_button, self.delete_button):
-            row.addWidget(button)
-        row.addStretch()
-        layout.addLayout(row)
-
         self.back_button = QPushButton("Back")
         self.start_button = QPushButton("Start sorting")
-        self.start_button.setDefault(True)
-        row = QHBoxLayout()
-        row.addStretch()
+        self.start_button.setObjectName("primaryButton")  # see theme
         for button in (self.back_button, self.start_button):
             button.setMinimumWidth(120)
-            row.addWidget(button)
-        layout.addLayout(row)
+        layout.addWidget(ButtonBar([self.add_button, self.more_button, self.delete_button],
+                                   [self.back_button, self.start_button]))
         for button in (self.add_button, self.more_button, self.start_button,
                        self.back_button):
             button.setVisible(not delete_only)
+        buttons = [self.add_button, self.more_button, self.delete_button, self.back_button,
+                   self.start_button]
+        ButtonKeys(buttons)
 
         self.people_list.itemChanged.connect(self._ticks_changed)
         self.people_list.currentItemChanged.connect(self._update_buttons)
@@ -120,6 +120,19 @@ class FaceSetupPage(QWidget):
         self.more_button.clicked.connect(self._more)
         self.delete_button.clicked.connect(self._forget)
         self.start_button.clicked.connect(lambda: self.start.emit(self.ticked_ids()))
+
+        self._keys: list = []  # (shortcut, the button it presses), switched on with it
+        if not delete_only:
+            shortcuts.describe(self.people_list, "↑↓", "choose")
+            shortcuts.describe(self.people_list, "Space", "tick")
+            for owner, keys, label, word, button in (
+                    (self.people_list, "Return", "Enter", "start", self.start_button),
+                    (self, "A", "A", "add person", self.add_button),
+                    (self, "Delete", "Delete", "forget", self.delete_button),
+                    (self, "Escape", "Esc", "back", self.back_button)):
+                key = shortcuts.bind(owner, keys, label, word, button.click, repeat=False)
+                self._keys.append((key, button))
+            shortcuts.describe_tab(self)
         self._update_buttons()
 
     # ----- loading ---------------------------------------------------------
@@ -127,12 +140,12 @@ class FaceSetupPage(QWidget):
     def load(self, store: PeopleStore, ticked: Iterable[str] = ()) -> None:
         """List the people remembered in store, unticked but for the ids in ticked."""
         self._store = store
-        self.status_label.setText("")
+        self._status("")
         try:
             people = store.people()
         except PeopleError as e:
             people = []
-            self.status_label.setText(str(e))
+            self._status(str(e))
         self._people = {p.id: p for p in people}
         ticked = set(ticked)
 
@@ -157,6 +170,10 @@ class FaceSetupPage(QWidget):
         else:
             self.hint_label.setText(HINT if people else NOBODY)
         self._update_buttons()
+
+    def _status(self, text: str) -> None:
+        self.status_label.setText(text)
+        self.status_label.setVisible(bool(text))
 
     def has_people(self) -> bool:
         return bool(self._people)
@@ -189,6 +206,18 @@ class FaceSetupPage(QWidget):
         self.more_button.setEnabled(person is not None)
         self.delete_button.setEnabled(person is not None)
         self.start_button.setEnabled(bool(self.ticked_ids()))
+        changed = False
+        for key, button in self._keys:
+            if key.isEnabled() != button.isEnabled():
+                key.setEnabled(button.isEnabled())
+                changed = True
+        if changed:
+            self.keys_changed.emit()
+
+    def focus_first(self) -> None:
+        """The list, on its current person; Add person… when nobody is remembered."""
+        target = self.people_list if self.people_list.count() else self.add_button
+        target.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _more(self) -> None:
         person = self._current()
@@ -227,6 +256,6 @@ class FaceSetupPage(QWidget):
         try:
             self._store.delete(person.id)
         except PeopleError as e:
-            self.status_label.setText(str(e))
+            self._status(str(e))
             return
         self.load(self._store, self.ticked_ids())  # the others' ticks kept

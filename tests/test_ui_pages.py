@@ -228,7 +228,7 @@ def test_history_undo_asks_first(qtbot, make_window, tmp_path, asked):
     assert str(root) in page.intro_label.text()
     assert page.runs_table.rowCount() == 1
     _focus(qtbot, page.runs_table)
-    assert w.strip.text() == "↑↓ choose · Enter undo · Esc sidebar"
+    assert w.strip.text() == "↑↓ choose · Enter undo · Esc sidebar · Tab/Shift+Tab area"
 
     asked.answer = False
     _key(qtbot, Qt.Key.Key_Return)
@@ -296,7 +296,7 @@ def test_people_delete_asks_then_forgets(qtbot, make_window, store, asked):
     assert page.people_list.count() == 2
     page.people_list.setCurrentRow(1)
     _focus(qtbot, page.people_list)
-    assert w.strip.text() == "↑↓ choose · Delete forget · Esc sidebar"
+    assert w.strip.text() == "↑↓ choose · Delete forget · Esc sidebar · Tab/Shift+Tab area"
 
     asked.answer = False
     _key(qtbot, Qt.Key.Key_Delete)
@@ -313,7 +313,7 @@ def test_people_with_nobody_has_no_forget_key(qtbot, make_window):
     w = make_window()
     w.sidebar.items["people"].click()
     _focus(qtbot, w.people_page.people_list)
-    assert w.strip.text() == "↑↓ choose · Esc sidebar"
+    assert w.strip.text() == "↑↓ choose · Esc sidebar · Tab/Shift+Tab area"
 
 
 # ----- Settings ---------------------------------------------------------------

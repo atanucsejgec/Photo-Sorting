@@ -151,6 +151,9 @@ QListView, QTreeView, QTableView {{ background: {c['panel']}; color: {c['text']}
 QListView, QTreeView, QTableView {{ padding: 1px; }}
 QListView:focus, QTreeView:focus, QTableView:focus {{ border: 2px solid {c['focus']};
     padding: 0; }}
+QListView::indicator {{ width: 14px; height: 14px; background: {c['panel']};
+    border: 1px solid {c['border_hover']}; border-radius: 4px; }}
+QListView::indicator:checked {{ background: {c['focus']}; border-color: {c['focus']}; }}
 QHeaderView::section {{ background: {c['panel']}; color: {c['muted']}; border: none;
     border-bottom: 1px solid {c['border']}; padding: 6px; }}
 QTableCornerButton::section {{ background: {c['panel']}; border: none; }}
@@ -191,6 +194,8 @@ QLabel#keyWord {{ color: {c['muted']}; }}
 
 QDialog#viewer {{ background: {c['deep']}; }}
 QDialog#viewer QLabel, QDialog#viewer QCheckBox {{ color: {c['text']}; }}
+QDialog#viewer QLabel#keyChip {{ color: {c['chip_text']}; }}
+QDialog#viewer QLabel#keyWord {{ color: {c['muted']}; }}
 QLabel#viewerOverlay {{ background: {OVERLAY}; color: {c['text']};
     padding: 6px 10px; }}
 """

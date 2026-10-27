@@ -1,19 +1,28 @@
 """Ask once, then download the missing model files with a progress dialog.
 
-The downloads run one after another as worker Tasks; ensure_models waits in
-a local event loop, so the window keeps painting while it does. The words
-used name what is downloaded: the CLIP model, when only its files are asked
-for (with the size of those missing), else the face models.
+The question is a themed dialogs.ask with "Not now" focused: a big download
+wants a deliberate yes, so Enter alone answers no. The downloads run one
+after another as worker Tasks; ensure_models waits in a local event loop,
+so the window keeps painting while it does. Their dialog (DownloadDialog)
+has Cancel, which Esc presses too; Enter does nothing there, so an Enter
+held since the question can't cancel. The words used name what is
+downloaded: the CLIP model, when only its files are asked for (with the
+size of those missing), else the face models.
 """
 
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from PySide6.QtCore import QEventLoop, QObject, Qt
-from PySide6.QtWidgets import QProgressDialog, QWidget
+from PySide6.QtCore import QEventLoop, QObject, Qt, Signal
+from PySide6.QtWidgets import (
+    QDialog, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget,
+)
 
 from photosort.ai import models
-from photosort.ui import dialogs
+from photosort.ui import dialogs, shortcuts
+from photosort.ui.shortcuts import ShortcutStrip
+from photosort.ui.theme import heading
+from photosort.ui.widgets import ButtonBar
 from photosort.ui.worker import Task
 
 QUESTION = "Photo Sorter needs to download the face models once (180 MB). Download now?"
@@ -37,6 +46,53 @@ _CLIP = _Wording(
     "Downloading the picture-understanding model…",
     "Could not download the picture-understanding model",
 )
+
+
+class DownloadDialog(QDialog):
+    """The downloads' progress: text over a bar, with Cancel (and Esc),
+    which emits canceled once; the dialog stays until its owner hides it."""
+
+    canceled = Signal()
+
+    def __init__(self, title: str, text: str, maximum: int,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumWidth(420)
+        self._label = QLabel(text)
+        self._label.setWordWrap(True)
+        self._label.setTextFormat(Qt.TextFormat.PlainText)
+        self.bar = QProgressBar()
+        self.bar.setTextVisible(False)
+        self.bar.setRange(0, maximum)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setMinimumWidth(100)
+        self.cancel_button.setAutoDefault(False)  # Enter never cancels a download
+        self.cancel_button.clicked.connect(self.reject)
+        self.strip = ShortcutStrip(self)
+        shortcuts.describe(self, "Esc", "cancel")  # QDialog's own
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 12)
+        layout.setSpacing(14)
+        layout.addWidget(heading(title))
+        layout.addWidget(self._label)
+        layout.addWidget(self.bar)
+        layout.addWidget(ButtonBar([], [self.cancel_button]))
+        layout.addWidget(self.strip)
+        self.cancel_button.setFocus()
+        self.strip.show_for(self)
+
+    def labelText(self) -> str:  # as QProgressDialog names it
+        return self._label.text()
+
+    def setValue(self, value: int) -> None:
+        self.bar.setValue(value)
+
+    def reject(self) -> None:
+        """Cancel or Esc: say so once; the owner closes the dialog when done."""
+        if self.cancel_button.isEnabled():
+            self.cancel_button.setEnabled(False)
+            self.canceled.emit()
 
 
 def _wording(keys: list[str]) -> _Wording:
@@ -76,14 +132,10 @@ class _Downloads(QObject):
         self._cancelled = False
         self._error_text: str | None = None
         self._loop = QEventLoop()
-        # Progress counts KiB so the total fits in the dialog's int.
-        self.dialog = QProgressDialog(wording.downloading, "Cancel",
-                                      0, self._total // 1024, parent)
-        self.dialog.setWindowTitle(wording.title)
+        # Progress counts KiB so the total fits in the bar's int.
+        self.dialog = DownloadDialog(wording.title, wording.downloading,
+                                     self._total // 1024, parent)
         self.dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        self.dialog.setMinimumDuration(0)
-        self.dialog.setAutoReset(False)
-        self.dialog.setAutoClose(False)
         self.dialog.canceled.connect(self._cancel)
 
     def run(self) -> None:

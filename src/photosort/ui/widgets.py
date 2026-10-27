@@ -2,9 +2,9 @@
 
 from collections.abc import Sequence
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QCheckBox, QLabel, QLayout, QLayoutItem, QWidget
+from PySide6.QtWidgets import QCheckBox, QLabel, QLayout, QLayoutItem, QPushButton, QWidget
 
 from photosort.ui.theme import COLORS
 
@@ -64,6 +64,53 @@ class Switch(QCheckBox):
                            self.width() - track.right() - self._GAP, self.height())
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter, self.text())
         painter.end()
+
+
+_ENTER = (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+_SIDEWAYS = {Qt.Key.Key_Left: -1, Qt.Key.Key_Right: 1}
+
+
+def _plain(event) -> bool:
+    """event has no modifier (the keypad's does not count)."""
+    modifiers = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
+    return modifiers == Qt.KeyboardModifier.NoModifier
+
+
+class ButtonKeys(QObject):
+    """The keys of a page's buttons: Enter presses the focused one, once.
+
+    A held Enter (its repeats) presses nothing, nor does Enter with Ctrl,
+    Shift or Alt: a key held down since the screen before (Enter on the
+    summary, Ctrl+Enter on a review) must never press the next screen's
+    button, such as Go. With sideways, ← and → move the focus to the
+    button beside, among the shown and enabled ones, in the given order.
+    Space presses a button as Qt does, once however long it is held.
+    """
+
+    def __init__(self, buttons: Sequence[QPushButton], sideways: bool = False) -> None:
+        super().__init__(buttons[0])
+        self._buttons = list(buttons)
+        self._sideways = sideways
+        for button in self._buttons:
+            button.setAutoDefault(False)  # Enter is handled here, on the focused one
+            button.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() != QEvent.Type.KeyPress or watched not in self._buttons:
+            return False
+        key = event.key()
+        if key in _ENTER:
+            if not event.isAutoRepeat() and _plain(event) and watched.isEnabled():
+                watched.click()
+            return True
+        if self._sideways and key in _SIDEWAYS and _plain(event):
+            usable = [b for b in self._buttons if b.isVisible() and b.isEnabled()]
+            if watched in usable:
+                n = usable.index(watched) + _SIDEWAYS[key]
+                if 0 <= n < len(usable):
+                    usable[n].setFocus(Qt.FocusReason.TabFocusReason)
+            return True
+        return False
 
 
 class ButtonBar(QWidget):
