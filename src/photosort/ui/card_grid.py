@@ -189,6 +189,7 @@ class CardGrid(QScrollArea):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self.viewport() and event.type() == QEvent.Type.Resize:
             self._fit()
+            self.navigator.reveal_soon()  # the focused card's answers, in the new view
         return super().eventFilter(watched, event)
 
     # ----- the photo big ---------------------------------------------------

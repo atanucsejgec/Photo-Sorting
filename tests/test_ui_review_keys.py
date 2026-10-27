@@ -871,6 +871,28 @@ def test_the_focused_cards_answers_are_in_view_in_a_short_window(qtbot, make_win
             assert card.thumb_label.width() >= 96  # still a thumbnail
 
 
+def _answers_in_view(page, screen) -> bool:
+    card, view = page.navigator.current(), page.scroll.viewport()
+    return _focused() is card and all(_inside(getattr(card, name), view)
+                                      for name in _ANSWER_PARTS[screen])
+
+
+@pytest.mark.parametrize("screen", ["duplicates", "bad", "content"])
+def test_a_screen_lands_with_the_focused_cards_answers_in_view(qtbot, make_window, root,
+                                                               screen):
+    """No key pressed: once the screen has settled (a scrollbar showing
+    shortens the view after the card took the focus), its answers are in view."""
+    w = make_window(size=(819, 480))
+    page = _review_on_first_item(qtbot, w, root, screen)
+    qtbot.wait(300)
+    assert _answers_in_view(page, screen)
+    if screen == "duplicates":
+        _key(qtbot, Qt.Key.Key_Right, CTRL)  # the next group lands the same way
+        assert page.heading_label.text().startswith("Group 2 of 2")
+        qtbot.wait(300)
+        assert _answers_in_view(page, screen)
+
+
 def test_grid_columns_fill_the_width(qtbot, make_window, root):
     w = make_window()  # 1280 x 800
     _start(qtbot, w, root, "bad")

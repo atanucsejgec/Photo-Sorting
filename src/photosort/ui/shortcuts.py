@@ -27,7 +27,7 @@ it takes focus or clicks.
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QLayout, QLayoutItem, QScrollArea, QWidget,
@@ -372,6 +372,31 @@ class GridNavigator(QObject):
         self._make_current(self._current if n is None else max(0, min(n, len(self.cards) - 1)))
         self.cards[self._current].setFocus(Qt.FocusReason.OtherFocusReason)
 
+    def reveal_soon(self) -> None:
+        """Scroll the focused card into view again once the layout has
+        settled: the view has changed size (a scrollbar came or went, the
+        window was resized) since it took the focus."""
+        QTimer.singleShot(0, self, self._reveal)
+
+    def _reveal(self) -> None:
+        card = self.current()
+        if card is not None and isValid(card) and card.hasFocus():
+            self._scroll_to(card)
+
+    @staticmethod
+    def _scroll_to(card: QWidget) -> None:
+        """Into view in its scroll area; a card taller than the view shows
+        its bottom (the answers), not its middle."""
+        area = card.parentWidget()
+        while area is not None and not isinstance(area, QScrollArea):
+            area = area.parentWidget()
+        if area is None:
+            return
+        area.ensureWidgetVisible(card, 12, 12)
+        if card.height() > area.viewport().height():
+            bottom = card.mapTo(area.widget(), QPoint(0, card.height())).y()
+            area.verticalScrollBar().setValue(bottom + 4 - area.viewport().height())
+
     def _make_current(self, n: int) -> None:
         self._current = max(n, 0)
         card = self.current()
@@ -398,15 +423,7 @@ class GridNavigator(QObject):
         kind = event.type()
         if kind == QEvent.Type.FocusIn:
             self._make_current(self.cards.index(watched))
-            area = watched.parentWidget()
-            while area is not None and not isinstance(area, QScrollArea):
-                area = area.parentWidget()
-            if area is not None:
-                area.ensureWidgetVisible(watched, 12, 12)
-                if watched.height() > area.viewport().height():  # taller than the view:
-                    bottom = watched.mapTo(area.widget(), QPoint(0, watched.height())).y()
-                    # its bottom (the answers), not its middle
-                    area.verticalScrollBar().setValue(bottom + 4 - area.viewport().height())
+            self._scroll_to(watched)
             self.current_changed.emit()
         elif kind == QEvent.Type.KeyPress and event.key() in _STEPS:
             modifiers = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier

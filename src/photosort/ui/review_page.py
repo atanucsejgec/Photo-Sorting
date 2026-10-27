@@ -287,6 +287,7 @@ class ReviewPage(QWidget):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self.scroll.viewport() and event.type() == QEvent.Type.Resize:
             self._fit_cards()
+            self.navigator.reveal_soon()  # the focused card's answers, in the new view
         return super().eventFilter(watched, event)
 
     def _request_thumbnail(self, n: int, path: Path) -> None:
