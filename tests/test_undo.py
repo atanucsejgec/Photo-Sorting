@@ -436,3 +436,46 @@ def test_undone_nested_runs_do_not_block(tmp_path):
     assert blocking_runs(n, run1) == [BlockingRun(run2, "d")]
     undo_run(n / "d", run2)
     assert blocking_runs(n, run1) == []
+
+
+def test_undo_leaves_a_folder_it_did_not_make(tmp_path):
+    _write(tmp_path / "x", b"x")
+    run_id = _run(tmp_path, [("x", "Other/x")])
+    (tmp_path / "x").mkdir()  # made by the owner after the run
+    result = undo_run(tmp_path, run_id)
+    assert result.renamed == [("x", "x (1)")]
+    assert (tmp_path / "x").is_dir()
+    assert (tmp_path / "x (1)").read_bytes() == b"x"
+
+
+def test_undo_removes_an_empty_folder_of_the_run_in_a_files_place(tmp_path):
+    _write(tmp_path / "PDF", b"p")
+    _write(tmp_path / "a.pdf", b"a")
+    run_id = _run(tmp_path, [("PDF", "Other/PDF"), ("a.pdf", "PDF/a.pdf")])
+    result = undo_run(tmp_path, run_id)
+    assert result.renamed == [] and result.failed == []
+    assert (tmp_path / "PDF").read_bytes() == b"p"
+    assert (tmp_path / "a.pdf").read_bytes() == b"a"
+    assert not (tmp_path / "Other").exists()
+
+
+def test_undo_keeps_a_folder_of_the_run_that_is_not_empty(tmp_path):
+    _write(tmp_path / "PDF", b"p")
+    _write(tmp_path / "a.pdf", b"a")
+    run_id = _run(tmp_path, [("PDF", "Other/PDF"), ("a.pdf", "PDF/a.pdf")])
+    _write(tmp_path / "PDF" / "new.pdf", b"n")  # the owner's, put there after the run
+    result = undo_run(tmp_path, run_id)
+    assert result.renamed == [("PDF", "PDF (1)")]
+    assert (tmp_path / "PDF" / "new.pdf").read_bytes() == b"n"
+    assert (tmp_path / "PDF (1)").read_bytes() == b"p"
+
+
+def test_undo_never_removes_a_folder_that_was_there_before(tmp_path, case_sensitive_fs):
+    (tmp_path / "PDF").mkdir()  # the owner's own, empty
+    _write(tmp_path / "pdf", b"p")
+    _write(tmp_path / "a.pdf", b"a")
+    run_id = _run(tmp_path, [("pdf", "Other/pdf"), ("a.pdf", "PDF/a.pdf")])
+    result = undo_run(tmp_path, run_id)
+    assert (tmp_path / "PDF").is_dir()
+    assert result.renamed == [("pdf", "pdf (1)")]
+    assert (tmp_path / "a.pdf").read_bytes() == b"a"
