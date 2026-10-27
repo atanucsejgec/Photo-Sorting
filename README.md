@@ -3,7 +3,7 @@
 A desktop app that sorts the photos and videos in any folder you pick. It moves the
 original files into tidy folders and keeps an Undo for every run.
 
-It has 11 ways of sorting:
+It has 14 ways of sorting:
 - **Date** mode: `2025/02-February/20-02-2025/`. A day with 3 or more files gets its
   own day folder; a day with 1–2 files goes loose into the month folder. Files with no
   date go to `No Date/`.
@@ -39,6 +39,11 @@ It has 11 ways of sorting:
   The place is looked up offline, in a city list that comes with the app (GeoNames data,
   through the `reverse_geocode` library); nothing is sent anywhere.
 - **Camera** mode: one folder per phone or camera, such as `OPPO CPH2581/`.
+- **No people** mode: photos with no face in them go to `No people/`; the rest stay.
+- **Extension** mode: every file, of any type, into a folder named after its extension
+  (`APK/`, `EXE/`, `PDF/`).
+- **Date (all files)** mode: every file, of any type, into `2025/02-February/`, by the
+  date it was modified or created (you choose each time).
 
 In the other modes, files the mode can't place stay where they are. You always see what
 will move before anything does. Nothing is ever deleted: the files you set aside go to a
@@ -107,11 +112,11 @@ uv sync
 
 ## Good to know
 
-- The first time you use Face mode it downloads its face models (about 190 MB) into
-  `~/.local/share/photo-sorter/models`, after asking. The first time you use Content or
-  Notes & Pages it downloads the picture model they share (OpenCLIP, about 609 MB) into
-  the same folder, once, after you say Yes. The people you name are kept in
-  `~/.local/share/photo-sorter/people`. None of this is part of this repository.
+- The first time you use Face mode or No people it downloads the face models (about
+  190 MB) into `~/.local/share/photo-sorter/models`, after asking. The first time you
+  use Content or Notes & Pages it downloads the picture model they share (OpenCLIP,
+  about 609 MB) into the same folder, once, after you say Yes. The people you name are
+  kept in `~/.local/share/photo-sorter/people`. None of this is part of this repository.
 - Settings → **Use GPU** switches Face mode between the graphics card and the CPU.
 - Undo records live in a hidden `.photosort` folder inside each folder you sort.
   Keep it if you want Undo to work later.
