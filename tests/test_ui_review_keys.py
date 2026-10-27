@@ -1136,6 +1136,76 @@ def test_a_short_view_lays_the_details_beside_the_photo(qtbot, make_window, root
         card, thumb.rect().bottomLeft()).y()
 
 
+def _burst(root: Path, kind: str, count: int = 12) -> Group:
+    """A group of count photos with every detail a card can show, in one folder."""
+    members = []
+    for n in range(count):
+        path = _jpeg(root / f"burst/{n:02d}.jpg", (640, 480))
+        members.append(Candidate(f"burst/{n:02d}.jpg", "photo", 640, 480,
+                                 path.stat().st_size, datetime(2025, 2, 20, 18, 13),
+                                 50.0 + n, "Exact copy" if kind == "exact" else ""))
+    return Group(kind, members, {members[0].rel})
+
+
+def _burst_on_card_five(qtbot, w, root, mode):
+    """A burst of 12 under review at 819 x 480 (the cards beside), card 5 focused."""
+    _start(qtbot, w, root, mode)
+    groups_flow._on_found(w, [_burst(root, "repeated" if mode == "repeated" else "exact")])
+    page = w.review_page
+    _on_card(qtbot, page, 0)
+    qtbot.wait(300)
+    for _ in range(5):
+        _key(qtbot, Qt.Key.Key_Right)
+    card = page.cards[5]
+    assert _focused() is card
+    qtbot.wait(300)
+    assert card.is_beside()
+    return page, card
+
+
+@pytest.mark.parametrize("size", [(1024, 600), (1280, 800)], ids=["1024x600", "1280x800"])
+@pytest.mark.parametrize("mode", ["duplicates", "repeated"])
+def test_a_flip_to_stacked_keeps_the_focused_card_in_view(qtbot, make_window, root, mode,
+                                                          size):
+    """The view grows enough for stacked cards: the cards move closer
+    together, and the view follows the focused one there."""
+    w = make_window(size=(819, 480))
+    qtbot.waitUntil(lambda: (w.width(), w.height()) == (819, 480))
+    page, card = _burst_on_card_five(qtbot, w, root, mode)
+    view = page.scroll.viewport()
+    w.resize(*size)
+    qtbot.wait(300)
+    assert not card.is_beside()
+    thumb_top = card.thumb_label.mapTo(view, card.thumb_label.rect().topLeft())
+    assert 0 <= thumb_top.y() < view.height(), thumb_top
+    assert 0 <= thumb_top.x() < view.width(), thumb_top
+    assert _in_view(card.keep_check, view), card.mapTo(view, QPoint(0, 0))
+    assert page.navigator._pinned
+
+
+def test_a_resize_keeping_the_layout_leaves_the_cards_be(qtbot, make_window, root,
+                                                         monkeypatch):
+    """A resize that keeps the cards beside (or stacked) never sets their layout again."""
+    from photosort.ui.review_page import CandidateCard
+    w = make_window(size=(819, 480))
+    qtbot.waitUntil(lambda: (w.width(), w.height()) == (819, 480))
+    page, card = _burst_on_card_five(qtbot, w, root, "duplicates")
+    calls: list[bool] = []
+    real = CandidateCard.set_beside
+    monkeypatch.setattr(CandidateCard, "set_beside",
+                        lambda self, beside: (calls.append(beside), real(self, beside))[1])
+    w.resize(829, 490)  # still beside
+    qtbot.wait(300)
+    assert card.is_beside() and calls == []
+    w.resize(1280, 800)  # stacked: each card once
+    qtbot.wait(300)
+    assert not card.is_beside() and calls == [False] * len(page.cards)
+    calls.clear()
+    w.resize(1290, 810)  # still stacked
+    qtbot.wait(300)
+    assert calls == []
+
+
 def test_the_review_buttons_are_short(qtbot, make_window, root):
     w = make_window()
     _start(qtbot, w, root, "repeated")

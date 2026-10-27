@@ -132,6 +132,7 @@ class CandidateCard(QFrame):
         text.addWidget(self.keep_check)
         text.addStretch()
         self._layout.addLayout(text, 1)
+        self._stacked_rest = self.stacked_rest()
 
     def is_beside(self) -> bool:
         return self._layout.direction() == QBoxLayout.Direction.LeftToRight
@@ -145,6 +146,13 @@ class CandidateCard(QFrame):
         self._layout.setSpacing(BESIDE_GAP if beside else CARD_LINE_SPACING)
         self._layout.setAlignment(self.thumb_label, Qt.AlignmentFlag.AlignTop if beside
                                   else Qt.AlignmentFlag.AlignHCenter)
+
+    def stacked_rest(self) -> int:
+        """How tall the card is stacked, without its thumbnail: measured while
+        it is stacked (as it is made), the last measure while it is beside."""
+        if not self.is_beside():
+            self._stacked_rest = needed_height(self) - self.thumb_label.minimumWidth()
+        return self._stacked_rest
 
     def chrome_height(self) -> int:
         """The card's height beyond what is inside its margins."""
@@ -299,6 +307,7 @@ class ReviewPage(QWidget):
         row.addStretch()
         self._fit_cards()
         self.scroll.setWidget(strip)  # deletes the previous group's cards
+        strip.installEventFilter(self)  # its resizes move the cards: see eventFilter
         self.navigator.set_cards(self.cards, focused)
         self.back_button.setEnabled(index > 0)
         self._update_buttons()
@@ -307,13 +316,12 @@ class ReviewPage(QWidget):
 
     def _fit_cards(self) -> None:
         """Thumbnails small enough that a whole card fits the view's height,
-        if it can (a card still taller shows its answers: see GridNavigator)."""
+        if it can (a card still taller shows its answers: see GridNavigator).
+        A card's layout is set only when it changes (beside or stacked)."""
         if not self.cards:
             return
         room = self.scroll.viewport().height() - 8
-        for card in self.cards:
-            card.set_beside(False)
-        rest = max(needed_height(card) - card.thumb_label.minimumWidth() for card in self.cards)
+        rest = max(card.stacked_rest() for card in self.cards)
         beside = rest + SHORTEST_THUMB_PX > room  # stacked, even the smallest won't fit
         if beside:  # the photo as tall as the view lets it be, the details beside it
             side = max(SHORTEST_THUMB_PX,
@@ -321,13 +329,20 @@ class ReviewPage(QWidget):
         else:
             side = fitting_thumb_side(THUMB_PX, rest, room)
         for card in self.cards:
-            card.set_beside(beside)
+            if card.is_beside() != beside:
+                card.set_beside(beside)
             card.thumb_label.set_side(side)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is self.scroll.viewport() and event.type() == QEvent.Type.Resize:
-            self._fit_cards()
-            self.navigator.reveal_soon()  # the focused card's answers, in the new view
+        if event.type() == QEvent.Type.Resize:
+            if watched is self.scroll.viewport():
+                self._fit_cards()
+                self.navigator.reveal_soon()  # the focused card's answers, in the new view
+            elif watched is self.scroll.widget():
+                # The strip laid out again: the cards have moved (they went
+                # beside or stacked, a few layout passes after the view's
+                # resize). The view follows the focused card, if pinned to it.
+                self.navigator.reveal_soon()
         return super().eventFilter(watched, event)
 
     def _request_thumbnail(self, n: int, path: Path) -> None:
