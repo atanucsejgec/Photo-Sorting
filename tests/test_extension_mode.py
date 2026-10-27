@@ -1,5 +1,6 @@
 """Extension mode: every file into a folder named after its extension."""
 
+import os
 import threading
 
 import pytest
@@ -56,11 +57,12 @@ def test_no_extension_name():
 
 
 def test_the_mode_is_listed_after_the_others():
-    assert MODES[-1] == ("extension", "Extension", True)
+    assert MODES[-2] == ("extension", "Extension", True)
     spec = MODE_SPECS["extension"]
     assert spec.kind == "files"
     assert spec.warn_subfolders is True
-    assert not any(s.warn_subfolders for key, s in MODE_SPECS.items() if key != "extension")
+    assert not any(s.warn_subfolders for key, s in MODE_SPECS.items()
+                   if key not in ("extension", "all_dates"))
 
 
 def test_plan_and_summary(tmp_path):
@@ -232,3 +234,29 @@ def test_a_no_extension_folder_in_another_case_is_used(tmp_path):
     _touch(tmp_path / "README")
     plan = prepare_extension_plan(tmp_path, False)
     assert _dsts(plan) == {"README": "no extension/README"}
+
+
+def test_a_file_that_stays_in_the_way_of_a_folder_keeps_its_files_in_place(tmp_path):
+    # "No extension" can't be made, so the file "PDF" stays; the PDF folder
+    # can't be made either, so a.pdf stays too. The run never stops half-way.
+    for name in ("No extension", "PDF", "a.pdf", "b.zip"):
+        _touch(tmp_path / name, name.encode())
+    before = _contents(tmp_path)
+    plan, result, run_id = _sort(tmp_path)
+    assert _dsts(plan) == {"b.zip": "ZIP/b.zip"}
+    assert plan.unchanged == 3
+    assert plan.summary == ["1 files → 1 folders", "3 already in place"]
+    assert result.moved == 1 and not result.skipped
+    undone = undo_run(tmp_path, run_id)
+    assert undone.renamed == [] and undone.failed == []
+    assert _contents(tmp_path) == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        [".photosort", "No extension", "PDF", "a.pdf", "b.zip"])
+
+
+def test_a_symlink_in_the_way_of_a_folder_keeps_its_files_in_place(tmp_path):
+    (tmp_path / "elsewhere.txt").write_bytes(b"e")
+    os.symlink(tmp_path / "elsewhere.txt", tmp_path / "pdf")  # the scan skips symlinks
+    _touch(tmp_path / "a.pdf")
+    plan = prepare_extension_plan(tmp_path, False)
+    assert "a.pdf" not in _dsts(plan)

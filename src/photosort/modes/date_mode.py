@@ -36,19 +36,30 @@ def date_target(d: date | None, day_count: int) -> str:
     return month
 
 
-def plan_date(root: Path, files: list[str], dates: dict[str, date | None]) -> Plan:
-    """Plan the date-mode moves for files (relative POSIX paths under root)."""
+def day_folder_rule(root: Path, files: list[str],
+                    dates: dict[str, date | None]) -> Callable[[date], bool]:
+    """The day-folder rule for files (relative POSIX paths under root, dated
+    by dates): a check of whether the files dated d go in a day folder. They
+    do when 3 or more of files share d, or when d's day folder is already
+    under root (an earlier run made it: that day's new files join it, any
+    case)."""
     root = Path(root)
     day_counts = Counter(dates[rel] for rel in files if dates[rel] is not None)
     day_folder_exists: dict[date, bool] = {}
 
     def has_day_folder(d: date) -> bool:
-        # An earlier run made it: that day's new files join it (any case).
         if d not in day_folder_exists:
             day = resolve_existing_dir(root, date_target(d, DAY_FOLDER_MIN))
             day_folder_exists[d] = os.path.isdir(root / day)
         return day_folder_exists[d]
 
+    return lambda d: day_counts[d] >= DAY_FOLDER_MIN or has_day_folder(d)
+
+
+def plan_date(root: Path, files: list[str], dates: dict[str, date | None]) -> Plan:
+    """Plan the date-mode moves for files (relative POSIX paths under root)."""
+    root = Path(root)
+    in_day_folder_on = day_folder_rule(root, files, dates)
     allocator = TargetAllocator(root)
     moves: list[Move] = []
     months: set[str] = set()
@@ -58,9 +69,7 @@ def plan_date(root: Path, files: list[str], dates: dict[str, date | None]) -> Pl
 
     for rel in files:
         d = dates[rel]
-        in_day_folder = d is not None and (
-            day_counts[d] >= DAY_FOLDER_MIN or has_day_folder(d)
-        )
+        in_day_folder = d is not None and in_day_folder_on(d)
         target = date_target(d, DAY_FOLDER_MIN if in_day_folder else 0)
         parent, _, name = rel.rpartition("/")
         if parent.casefold() == target.casefold():

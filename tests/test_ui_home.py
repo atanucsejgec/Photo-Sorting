@@ -28,6 +28,7 @@ TILES = [
     ("camera", "Camera", "Per phone"),
     ("type", "Type / source", "WhatsApp, screenshots"),
     ("extension", "Extension", "APK, EXE, PDF…"),
+    ("all_dates", "Date (all files)", "Any file, year / month"),
 ]
 HOME_KEYS = "←↑↓→ choose · Enter start · F folder · S subfolders · Tab sidebar"
 FIELD_KEYS = "Enter use this folder · Esc leave"
@@ -111,7 +112,7 @@ def test_tiles_sit_in_four_columns_in_order(qtbot, make_window):
         assert w.home.tile_layout.getItemPosition(w.home.tile_layout.indexOf(tile))[:2] == (
             n // 4, n % 4)
     rows = sorted({t.geometry().top() for t in tiles})
-    assert len(rows) == 3
+    assert len(rows) == 4  # 4 + 4 + 4 + 1
 
 
 def test_focus_starts_on_date(qtbot, make_window):

@@ -1,12 +1,15 @@
 """The app's own message boxes, in the theme and with a shortcut strip.
 
-ask() is a yes/no question; warn() and info() say something and close. The
-focus starts on the default button: ← and → move between the buttons, Enter
-presses the focused one and Esc answers no (or closes). Both buttons are
-plain, the focused one ringed: the accent gradient means "the primary
-action", and the safe default of a question is not one.
+ask() is a yes/no question; choose() offers a few choices; warn() and
+info() say something and close. The focus starts on the default button: ←
+and → move between the buttons, Enter presses the focused one and Esc
+answers no (or cancels, or closes). Every button is plain, the focused one
+ringed: the accent gradient means "the primary action", and the safe
+default of a question is not one.
 """
 
+from collections.abc import Sequence
+from functools import partial
 from typing import Literal
 
 from PySide6.QtCore import QEvent, QObject, Qt
@@ -18,6 +21,7 @@ from photosort.ui.labels import literal
 from photosort.ui.shortcuts import ShortcutStrip
 
 _ASK_KEYS = (("←→", "choose"), ("Enter", "pick"), ("Esc", "no/close"))
+_CHOOSE_KEYS = (("←→", "choose"), ("Enter", "pick"), ("Esc", "cancel"))
 _TELL_KEYS = (("Enter", "OK"), ("Esc", "close"))
 _ICON_PX = 28
 
@@ -25,7 +29,8 @@ _ICON_PX = 28
 class MessageDialog(QDialog):
     """title as a heading over text, a row of buttons, and the strip.
 
-    Each button accepts the dialog if it is the yes button, else rejects it.
+    Each button accepts the dialog if it is a yes button, else rejects it;
+    picked is then the index of the button pressed (None for Esc).
     """
 
     def __init__(self, parent: QWidget | None, title: str, text: str,
@@ -65,11 +70,12 @@ class MessageDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch()
         self.buttons: list[QPushButton] = []
-        for label, is_yes in buttons:
+        self.picked: int | None = None
+        for n, (label, is_yes) in enumerate(buttons):
             button = QPushButton(literal(label))
             button.setMinimumWidth(100)
             button.setAutoDefault(False)  # Enter is handled below, on the focused button
-            button.clicked.connect(self.accept if is_yes else self.reject)
+            button.clicked.connect(partial(self._pressed, n, is_yes))
             button.installEventFilter(self)
             self.buttons.append(button)
             row.addWidget(button)
@@ -86,6 +92,13 @@ class MessageDialog(QDialog):
         layout.addWidget(self.strip)
         self.buttons[default].setFocus()
         self.strip.show_for(self)
+
+    def _pressed(self, n: int, is_yes: bool) -> None:
+        self.picked = n
+        if is_yes:
+            self.accept()
+        else:
+            self.reject()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.KeyPress and watched in self.buttons:
@@ -107,6 +120,17 @@ def ask(parent: QWidget | None, title: str, text: str, yes: str, no: str,
     dialog = MessageDialog(parent, title, text, [(no, False), (yes, True)],
                            default=1 if default == "yes" else 0, keys=_ASK_KEYS)
     answer = dialog.exec() == QDialog.DialogCode.Accepted
+    dialog.deleteLater()
+    return answer
+
+
+def choose(parent: QWidget | None, title: str, text: str, options: Sequence[str],
+           default: int = 0) -> int | None:
+    """Offer options as buttons, left to right, the focus on options[default];
+    the index of the one picked, or None for Esc."""
+    dialog = MessageDialog(parent, title, text, [(option, True) for option in options],
+                           default=default, keys=_CHOOSE_KEYS)
+    answer = dialog.picked if dialog.exec() == QDialog.DialogCode.Accepted else None
     dialog.deleteLater()
     return answer
 

@@ -48,6 +48,8 @@ class Settings:
     content_categories: list[str] = field(
         default_factory=lambda: list(DEFAULT_CONTENT_CATEGORIES))
     last_mode: str | None = None  # the MODES key last started; its tile has focus first
+    # The date Date (all files) last sorted by, focused first when it asks again.
+    file_date: str = "modified"
 
 
 def _int_in(low: int, high: int):
@@ -101,6 +103,7 @@ def valid_category_list(names) -> bool:
 
 
 _MODE_KEYS = frozenset(key for key, _, _ in MODES)
+_FILE_DATES = frozenset({"modified", "created"})
 
 _VALID = {
     "include_subfolders": lambda v: isinstance(v, bool),
@@ -112,6 +115,7 @@ _VALID = {
     "event_gap_hours": _int_in(*EVENT_GAP_HOURS_RANGE),
     "event_min_files": _int_in(*EVENT_MIN_FILES_RANGE),
     "content_categories": valid_category_list,
+    "file_date": lambda v: isinstance(v, str) and v in _FILE_DATES,
 }
 
 

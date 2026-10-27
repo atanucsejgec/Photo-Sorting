@@ -181,6 +181,53 @@ def test_ask_shows_the_title_and_text(qtbot):
     assert "Your answers so far will be lost." in texts["labels"]
 
 
+CHOICES = ["Modified", "Created"]
+
+
+def test_choose_enter_takes_the_default(qtbot):
+    seen = _answer(qtbot, Qt.Key.Key_Return)
+    assert dialogs.choose(None, "Which date?", "Sort by?", CHOICES) == 0
+    assert seen["focus"] == "Modified"
+    assert seen["strip"] == "←→ choose · Enter pick · Esc cancel"
+    assert seen["primary"] == []
+    seen = _answer(qtbot, Qt.Key.Key_Return)
+    assert dialogs.choose(None, "Which date?", "Sort by?", CHOICES, default=1) == 1
+    assert seen["focus"] == "Created"
+
+
+def test_choose_right_then_enter_picks_the_next(qtbot):
+    seen = _answer(qtbot, Qt.Key.Key_Right, Qt.Key.Key_Return)
+    assert dialogs.choose(None, "Which date?", "Sort by?", CHOICES) == 1
+    assert seen["focus"] == "Modified"
+    _answer(qtbot, Qt.Key.Key_Left, Qt.Key.Key_Return)
+    assert dialogs.choose(None, "Which date?", "Sort by?", ["A", "B", "C"]) == 2  # wraps
+
+
+def test_choose_escape_is_none(qtbot):
+    _answer(qtbot, Qt.Key.Key_Escape)
+    assert dialogs.choose(None, "Which date?", "Sort by?", CHOICES, default=1) is None
+
+
+def test_choose_shows_the_title_text_and_options_in_order(qtbot):
+    texts = {}
+
+    def look():
+        dialog = QApplication.activeModalWidget()
+        if dialog is None:
+            QTimer.singleShot(10, look)
+            return
+        texts["title"] = dialog.windowTitle()
+        texts["labels"] = [label.text() for label in dialog.findChildren(type(dialog.text_label))]
+        texts["buttons"] = [b.text() for b in dialog.buttons]
+        dialog.reject()
+
+    QTimer.singleShot(0, look)
+    dialogs.choose(None, "Which date?", "Sort files by?", CHOICES)
+    assert texts["title"] == "Which date?"
+    assert "Sort files by?" in texts["labels"]
+    assert texts["buttons"] == CHOICES
+
+
 @pytest.mark.parametrize("show", [dialogs.warn, dialogs.info])
 @pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Escape])
 def test_warn_and_info_close_with_enter_or_esc(qtbot, show, key):

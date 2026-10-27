@@ -80,7 +80,8 @@ def test_available_modes(make_window):
     assert all(b.isEnabled() for b in buttons)
     assert [b.text().replace("&&", "&") for b in buttons] == [
         "Date", "Face", "Duplicates", "Repeated shots", "Content", "Notes & Pages",
-        "Bad photos", "Events", "Location", "Camera", "Type / source", "Extension"]
+        "Bad photos", "Events", "Location", "Camera", "Type / source", "Extension",
+        "Date (all files)"]
     assert all(QKeySequence.mnemonic(b.text()).isEmpty() for b in buttons)  # & shown as &
     assert not any("coming soon" in b.text() for b in buttons)
     assert sorted(w.mode_buttons) == sorted(key for key, _, _ in MODES)

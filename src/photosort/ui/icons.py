@@ -30,6 +30,7 @@ MODE_ICONS: dict[str, str] = {
     "camera": "camera",
     "type": "message-circle",
     "extension": "file-type",
+    "all_dates": "calendar-clock",
 }
 
 _SIZES = (16, 20, 24, 32, 48, 64)  # drawn sharp at each; QIcon scales between

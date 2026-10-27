@@ -353,7 +353,7 @@ class MainWindow(QMainWindow):
     def show_error(self, text: str) -> None:
         dialogs.warn(self, TITLE, text)
 
-    def _save_settings(self) -> None:
+    def save_settings(self) -> None:
         try:
             save_settings(self.settings, self._settings_path)
         except OSError as e:
@@ -446,7 +446,7 @@ class MainWindow(QMainWindow):
 
     def _subfolders_toggled(self, checked: bool) -> None:
         self.settings.include_subfolders = checked
-        self._save_settings()
+        self.save_settings()
 
     def _start(self, mode: str) -> None:
         """A tile asked for mode: check the folder and the mode, then hand over to its flow."""
@@ -475,7 +475,7 @@ class MainWindow(QMainWindow):
         self.settings.last_folder = str(root)
         self.settings.last_mode = mode
         self.settings.include_subfolders = self.include_subfolders
-        self._save_settings()
+        self.save_settings()
         flow.start(self, root, self.include_subfolders, spec)
 
     def _cancel(self) -> None:

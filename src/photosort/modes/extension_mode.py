@@ -39,15 +39,19 @@ def extension_folder(name: str) -> str:
     return fit_name(suffix.upper(), FOLDER_NAME_MAX, FOLDER_NAME_MAX_BYTES)
 
 
-def _taken_by_a_file(root: Path, folder: str) -> bool:
-    """Whether something that is not a folder holds folder's name (any case)
-    in root, and no folder by that name is there to use instead."""
+def _taken_names(root: Path, leaving: set[str]) -> set[str]:
+    """The names (folded) that something in root which is not a folder holds,
+    so that no folder by that name can be made there, leaving out the files
+    named in leaving (they move away first). A name a folder also holds (in
+    another case) is not taken: that folder is used."""
     try:
         with os.scandir(root) as entries:
-            matches = [entry.is_dir() for entry in entries if fold(entry.name) == fold(folder)]
+            found = [(fold(entry.name), entry.name, entry.is_dir()) for entry in entries]
     except OSError:
-        return False
-    return bool(matches) and not any(matches)
+        return set()
+    folders = {key for key, _, is_dir in found if is_dir}
+    return {key for key, name, is_dir in found
+            if not is_dir and name not in leaving and key not in folders}
 
 
 def plan_extension(root: Path, files: list[str],
@@ -59,11 +63,19 @@ def plan_extension(root: Path, files: list[str],
     file called "PDF", say, must be gone before a PDF folder can be made.
     When a file called "No extension" (any case) is in root, the No
     extension folder can't be made: the files with no extension stay, and
-    count as already in place. progress(i, total) is called after each file.
+    count as already in place. Likewise, when something that stays in root
+    (such as a file "PDF" that can't go to No extension, or a symlink) holds
+    a folder's name, that folder can't be made: its files stay, and count as
+    already in place, so the run never stops half-way. progress(i, total) is
+    called after each file.
     """
     root = Path(root)
     allocator = TargetAllocator(root)
-    no_extension_blocked = _taken_by_a_file(root, NO_EXTENSION)
+    no_extension_blocked = fold(NO_EXTENSION) in _taken_names(root, set())
+    leaving = set() if no_extension_blocked else {
+        rel for rel in files
+        if "/" not in rel and extension_folder(rel) == NO_EXTENSION}
+    taken = _taken_names(root, leaving)
     moves: list[Move] = []
     folders: set[str] = set()
     unchanged = 0
@@ -75,7 +87,9 @@ def plan_extension(root: Path, files: list[str],
         parent, _, name = rel.rpartition("/")
         folder = extension_folder(name)
         # A folder on disk spelt another way matches by fold, as resolve_existing_dir does.
-        if fold(parent) == fold(folder) or (folder == NO_EXTENSION and no_extension_blocked):
+        blocked = (no_extension_blocked if folder == NO_EXTENSION
+                   else fold(folder) in taken)
+        if fold(parent) == fold(folder) or blocked:
             unchanged += 1
         else:
             moves.append(Move(rel, allocator.allocate(f"{folder}/{name}")))

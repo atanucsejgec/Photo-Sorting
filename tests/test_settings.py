@@ -204,3 +204,17 @@ def test_unknown_last_mode_is_ignored(tmp_path, bad):
     path = tmp_path / "settings.json"
     path.write_text(json.dumps({"last_mode": bad, "use_gpu": False}))
     assert load_settings(path) == Settings(use_gpu=False)
+
+
+def test_file_date_roundtrips(tmp_path):
+    path = tmp_path / "settings.json"
+    assert Settings().file_date == "modified"
+    save_settings(Settings(file_date="created"), path)
+    assert load_settings(path).file_date == "created"
+
+
+@pytest.mark.parametrize("bad", ["Created", "taken", "", 1, None, ["created"], {"a": 1}])
+def test_a_bad_file_date_loads_as_modified(tmp_path, bad):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"file_date": bad, "use_gpu": False}))
+    assert load_settings(path) == Settings(use_gpu=False, file_date="modified")

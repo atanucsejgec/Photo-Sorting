@@ -2,10 +2,12 @@
 
 A mode of kind "plan" prepares a Plan straight away. A mode of kind
 "files" does too, but for every file, not only media; with warn_subfolders
-the owner is first warned when subfolders are included. A mode of kind
-"groups" finds Groups for the owner to review; the files not kept are then
-set aside, flat, in set_aside_folder. A mode of kind "face" finds face
-matches to ask the owner about, then plans (see modes.face_mode); it needs
+the owner is first warned when subfolders are included, and with
+asks_date_source the owner then chooses the date to sort by (see
+modes.all_dates). A mode of kind "groups" finds Groups for the owner to
+review; the files not kept are then set aside, flat, in set_aside_folder.
+A mode of kind "face" finds face matches to ask the owner about, then plans
+(see modes.face_mode); it needs
 the people picked and a face engine, so the main window runs it through
 modes.face_mode, never through prepare. A mode of kind "bad" finds bad
 photos (a list of Candidates, see modes.bad_photos) for the owner to tick;
@@ -17,7 +19,8 @@ modes.notes); they need a CLIP engine, so the main window runs them too,
 never through prepare. Every prepare function is called as prepare(root,
 include_subfolders, progress=..., cancel=...) and returns None if
 cancelled; the events one also takes gap_hours and min_files keywords,
-from Settings. The modules of the "plan", "files", "groups", "bad" and
+from Settings, and the Date (all files) one a date_source keyword, the
+owner's choice. The modules of the "plan", "files", "groups", "bad" and
 "events" modes are imported when such a mode first runs; the main window
 imports the face, content and notes modules (numpy only, no AI runtime)
 itself.
@@ -42,6 +45,7 @@ MODES: list[tuple[str, str, bool]] = [
     ("location", "Location", True),
     ("camera", "Camera", True),
     ("extension", "Extension", True),
+    ("all_dates", "Date (all files)", True),
 ]
 
 Progress = Callable[[int, int], None] | None
@@ -59,6 +63,9 @@ class ModeSpec:
     # kind "files": warn, before any scan, that files in subfolders may belong
     # to programs or projects (only when subfolders are included)
     warn_subfolders: bool = False
+    # kind "files": ask, after the warning and before any scan, which date to
+    # sort by (modified or created); prepare takes it as date_source
+    asks_date_source: bool = False
 
 
 def _prepare_date(root: Path, include_subfolders: bool, progress: Progress = None,
@@ -99,6 +106,14 @@ def _prepare_extension(root: Path, include_subfolders: bool, progress: Progress 
 
     return extension_mode.prepare_extension_plan(root, include_subfolders, progress=progress,
                                                  cancel=cancel)
+
+
+def _prepare_all_dates(root: Path, include_subfolders: bool, *, date_source: str,
+                       progress: Progress = None, cancel: threading.Event | None = None):
+    from photosort.modes import all_dates
+
+    return all_dates.prepare_all_dates_plan(root, include_subfolders, date_source=date_source,
+                                            progress=progress, cancel=cancel)
 
 
 def _find_duplicates(root: Path, include_subfolders: bool, progress: Progress = None,
@@ -161,4 +176,6 @@ MODE_SPECS: dict[str, ModeSpec] = {
     "notes": ModeSpec("notes", _run_by_window),
     "content": ModeSpec("content", _run_by_window),
     "extension": ModeSpec("files", _prepare_extension, warn_subfolders=True),
+    "all_dates": ModeSpec("files", _prepare_all_dates, warn_subfolders=True,
+                          asks_date_source=True),
 }
