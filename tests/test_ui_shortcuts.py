@@ -2,7 +2,8 @@
 the themed dialogs answer by keyboard."""
 
 import pytest
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from photosort.ui import dialogs, shortcuts
@@ -226,6 +227,43 @@ def test_choose_shows_the_title_text_and_options_in_order(qtbot):
     assert texts["title"] == "Which date?"
     assert "Sort files by?" in texts["labels"]
     assert texts["buttons"] == CHOICES
+
+
+def _held(qtbot, key):
+    """In the next modal dialog, send key to the focused button as a held key's
+    repeats (auto-repeat presses); record whether the dialog stayed open, then
+    close it as Esc would."""
+    seen = {}
+
+    def press():
+        dialog = QApplication.activeModalWidget()
+        if dialog is None or dialog.focusWidget() is None:
+            QTimer.singleShot(10, press)
+            return
+        for _ in range(3):
+            QApplication.sendEvent(dialog.focusWidget(), QKeyEvent(
+                QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier, "", True))
+        seen["open"] = dialog.isVisible()
+        dialog.reject()
+
+    QTimer.singleShot(0, press)
+    return seen
+
+
+@pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape])
+def test_a_held_key_never_answers_choose(qtbot, key):
+    # The Enter that opened the dialog, held down, must not pick unseen.
+    seen = _held(qtbot, key)
+    assert dialogs.choose(None, "Which date?", "Sort by?", CHOICES, default=1) is None
+    assert seen["open"] is True
+
+
+@pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape])
+def test_a_held_key_never_answers_ask(qtbot, key):
+    seen = _held(qtbot, key)
+    assert dialogs.ask(None, "Include subfolders?", "Continue?", yes="Continue", no="Cancel",
+                       default="yes") is False
+    assert seen["open"] is True
 
 
 @pytest.mark.parametrize("show", [dialogs.warn, dialogs.info])

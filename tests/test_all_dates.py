@@ -95,12 +95,26 @@ def test_a_failing_statx_falls_back_to_modified(tmp_path, monkeypatch):
 
 
 @linux_statx
-def test_no_statx_in_the_c_library_gives_none(tmp_path, monkeypatch):
-    def missing():
-        raise AttributeError("statx")  # as ctypes does for glibc before 2.28
+def test_no_statx_in_the_c_library_gives_none_and_is_looked_up_once(tmp_path, monkeypatch):
+    looked_up = []
 
-    monkeypatch.setattr(all_dates, "_libc_statx", missing)
-    assert created_time(_touch(tmp_path / "a.pdf")) is None
+    class OldLibc:  # glibc before 2.28: ctypes raises AttributeError for statx
+        def __getattr__(self, name):
+            raise AttributeError(name)
+
+    def cdll(name, use_errno=False):
+        looked_up.append(name)
+        return OldLibc()
+
+    monkeypatch.setattr(all_dates.ctypes, "CDLL", cdll)
+    all_dates._libc_statx.cache_clear()
+    try:
+        assert created_time(_touch(tmp_path / "a.pdf")) is None
+        assert created_time(_touch(tmp_path / "b.pdf")) is None
+        assert file_date(tmp_path / "b.pdf", "created")[1] is True
+        assert looked_up == [None]  # not again for every file
+    finally:
+        all_dates._libc_statx.cache_clear()
 
 
 @linux_statx
@@ -262,7 +276,9 @@ def test_a_file_in_the_way_of_a_year_folder_keeps_that_years_files_in_place(
     before = _contents(tmp_path)
     plan, result, run_id = _sort(tmp_path)
     assert _dsts(plan) == {"b.pdf": "2023/01-January/b.pdf"}
-    assert plan.unchanged == 2
+    assert plan.unchanged == 0
+    assert plan.summary == ["1 files → 1 month folders, 0 day folders",
+                            "2 files stay: a file or link with their folder's name is in the way"]
     assert result.moved == 1 and not result.skipped
     undone = undo_run(tmp_path, run_id)
     assert undone.failed == [] and undone.renamed == []
@@ -297,3 +313,61 @@ def test_go_then_undo_restores_every_file(tmp_path, no_created):
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
         [".photosort", "a.pdf", "b.zip", "c.txt", "README", "sub",
          "IMG_20180402_101010.jpg"])
+
+
+
+def test_a_file_that_cannot_be_read_stays_and_is_counted(tmp_path, monkeypatch, no_created):
+    _touch(tmp_path / "a.pdf", date(2024, 3, 5))
+    _touch(tmp_path / "locked.pdf", date(2024, 3, 5))
+    real = all_dates.file_date
+
+    def unreadable(path, source):
+        if path.name == "locked.pdf":
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path, source)
+
+    monkeypatch.setattr(all_dates, "file_date", unreadable)
+    plan = prepare_all_dates_plan(tmp_path, False, date_source="modified")
+    assert _dsts(plan) == {"a.pdf": "2024/03-March/a.pdf"}
+    assert plan.summary == ["1 files → 1 month folders, 0 day folders",
+                            "1 files could not be read (they stay)"]
+
+
+def _tree(root):
+    """Everything under root, links as links (never followed): path -> bytes,
+    "dir" or "-> target"."""
+    found = {}
+    for folder, dirs, names in os.walk(root):
+        for name in dirs + names:
+            path = os.path.join(folder, name)
+            rel = os.path.relpath(path, root)
+            if ".photosort" in rel.split(os.sep):
+                continue
+            if os.path.islink(path):
+                found[rel] = "-> " + os.readlink(path)
+            elif os.path.isdir(path):
+                found[rel] = "dir"
+            else:
+                found[rel] = open(path, "rb").read()
+    return found
+
+
+@pytest.mark.parametrize("link", ["2024", "2024/03-March", "2024/03-march"])
+def test_nothing_moves_through_a_link_to_a_folder(tmp_path, link, no_created):
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    _touch(outside / "kept.txt", data=b"k")
+    _touch(root / "a.pdf", date(2024, 3, 5), b"a")
+    _touch(root / "b.pdf", date(2023, 1, 1), b"b")
+    (root / link).parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(outside, root / link, target_is_directory=True)
+    before, outside_before = _tree(root), _tree(outside)
+    plan, result, run_id = _sort(root)
+    assert _dsts(plan) == {"b.pdf": "2023/01-January/b.pdf"}
+    assert plan.summary == ["1 files → 1 month folders, 0 day folders",
+                            "1 files stay: a file or link with their folder's name is in the way"]
+    assert result.moved == 1 and not result.skipped
+    assert _tree(outside) == outside_before
+    undone = undo_run(root, run_id)
+    assert undone.renamed == [] and undone.failed == []
+    assert _tree(root) == before
+    assert _tree(outside) == outside_before

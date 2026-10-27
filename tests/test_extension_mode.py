@@ -222,8 +222,9 @@ def test_a_root_file_called_no_extension_stays(tmp_path):
     plan, result, _ = _sort(tmp_path)
     # The No extension folder can't be made, so the files with no extension stay.
     assert _dsts(plan) == {"a.txt": "TXT/a.txt"}
-    assert plan.unchanged == 2
-    assert plan.summary == ["1 files → 1 folders", "2 already in place"]
+    assert plan.unchanged == 0
+    assert plan.summary == ["1 files → 1 folders",
+                            "2 files stay: a file or link with their folder's name is in the way"]
     assert result.moved == 1
     assert (tmp_path / "no Extension").read_bytes() == b"in the way"
     assert (tmp_path / "README").is_file()
@@ -244,8 +245,9 @@ def test_a_file_that_stays_in_the_way_of_a_folder_keeps_its_files_in_place(tmp_p
     before = _contents(tmp_path)
     plan, result, run_id = _sort(tmp_path)
     assert _dsts(plan) == {"b.zip": "ZIP/b.zip"}
-    assert plan.unchanged == 3
-    assert plan.summary == ["1 files → 1 folders", "3 already in place"]
+    assert plan.unchanged == 0
+    assert plan.summary == ["1 files → 1 folders",
+                            "3 files stay: a file or link with their folder's name is in the way"]
     assert result.moved == 1 and not result.skipped
     undone = undo_run(tmp_path, run_id)
     assert undone.renamed == [] and undone.failed == []
@@ -260,3 +262,54 @@ def test_a_symlink_in_the_way_of_a_folder_keeps_its_files_in_place(tmp_path):
     _touch(tmp_path / "a.pdf")
     plan = prepare_extension_plan(tmp_path, False)
     assert "a.pdf" not in _dsts(plan)
+    assert "1 files stay: a file or link with their folder's name is in the way" in plan.summary
+
+
+def _tree(root):
+    """Everything under root, links as links (never followed): path -> bytes,
+    "dir" or "-> target"."""
+    found = {}
+    for folder, dirs, names in os.walk(root):
+        for name in dirs + names:
+            path = os.path.join(folder, name)
+            rel = os.path.relpath(path, root)
+            if ".photosort" in rel.split(os.sep):
+                continue
+            if os.path.islink(path):
+                found[rel] = "-> " + os.readlink(path)
+            elif os.path.isdir(path):
+                found[rel] = "dir"
+            else:
+                found[rel] = open(path, "rb").read()
+    return found
+
+
+@pytest.mark.parametrize("link", ["PDF", "pdf"])
+def test_nothing_moves_through_a_link_to_a_folder(tmp_path, link):
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    _touch(outside / "kept.txt", b"k")
+    _touch(root / "a.pdf", b"a")
+    _touch(root / "b.zip", b"b")
+    os.symlink(outside, root / link, target_is_directory=True)
+    before, outside_before = _tree(root), _tree(outside)
+    plan, result, run_id = _sort(root)
+    assert _dsts(plan) == {"b.zip": "ZIP/b.zip"}
+    assert plan.summary == ["1 files → 1 folders", "1 files stay: a file or link with their folder's name is in the way"]
+    assert result.moved == 1 and not result.skipped
+    assert _tree(outside) == outside_before
+    undone = undo_run(root, run_id)
+    assert undone.renamed == [] and undone.failed == []
+    assert _tree(root) == before
+    assert _tree(outside) == outside_before
+
+
+def test_a_link_beside_a_real_folder_of_that_name_still_stops_it(tmp_path,
+                                                                  case_sensitive_fs):
+    # A real "pdf" folder and a link "PDF": the link could be taken for the folder.
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "root" / "pdf").mkdir(parents=True)
+    os.symlink(tmp_path / "outside", tmp_path / "root" / "PDF", target_is_directory=True)
+    _touch(tmp_path / "root" / "a.pdf")
+    plan = prepare_extension_plan(tmp_path / "root", False)
+    assert plan.moves == []
+    assert plan.summary == ["1 files stay: a file or link with their folder's name is in the way"]

@@ -3,9 +3,10 @@
 ask() is a yes/no question; choose() offers a few choices; warn() and
 info() say something and close. The focus starts on the default button: ←
 and → move between the buttons, Enter presses the focused one and Esc
-answers no (or cancels, or closes). Every button is plain, the focused one
-ringed: the accent gradient means "the primary action", and the safe
-default of a question is not one.
+answers no (or cancels, or closes); a held key's repeats do nothing, so a
+dialog is only ever answered by a fresh press. Every button is plain, the
+focused one ringed: the accent gradient means "the primary action", and
+the safe default of a question is not one.
 """
 
 from collections.abc import Sequence
@@ -23,6 +24,7 @@ from photosort.ui.shortcuts import ShortcutStrip
 _ASK_KEYS = (("←→", "choose"), ("Enter", "pick"), ("Esc", "no/close"))
 _CHOOSE_KEYS = (("←→", "choose"), ("Enter", "pick"), ("Esc", "cancel"))
 _TELL_KEYS = (("Enter", "OK"), ("Esc", "close"))
+_ANSWER_KEYS = (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape)
 _ICON_PX = 28
 
 
@@ -103,6 +105,10 @@ class MessageDialog(QDialog):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.KeyPress and watched in self.buttons:
             key = event.key()
+            if key in _ANSWER_KEYS and event.isAutoRepeat():
+                # A held key (the Enter that opened this dialog, say) never
+                # answers it: that takes a fresh press.
+                return True
             if key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
                 step = 1 if key == Qt.Key.Key_Right else -1
                 n = self.buttons.index(watched)
