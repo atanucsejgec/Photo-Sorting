@@ -12,6 +12,13 @@ photos are then searched for those people, the owner is asked about the
 unsure matches, and the moves planned. Content and Notes & Pages first make
 sure the CLIP models are there, then describe every photo with CLIP and judge
 it; the owner picks a folder for each unsure photo, and the moves are planned.
+No people also makes sure the face models are there, then plans the moves of
+the photos with no face straight away. Extension and Date (all files) sort
+every file, not only photos and videos: with subfolders included, the owner
+is first warned that such files may belong to programs or projects (Cancel,
+the default, goes Home with nothing scanned); Date (all files) then asks
+which date to sort by, the last choice the default (Esc goes Home); the moves
+are then planned straight away.
 
 The window owns the one PeopleStore of the app: the Face setup page, the
 naming dialog and Settings all use it.
@@ -44,12 +51,13 @@ from photosort.executor import ExecResult, execute
 from photosort.faces import FaceEngine
 from photosort.journal import RunJournal
 from photosort.groups import Candidate, Group, plan_set_aside
-from photosort.modes import MODE_SPECS, MODES, content, notes
+from photosort.modes import MODE_SPECS, MODES, ModeSpec, content, notes
 from photosort.modes._clip_scan import ClipScan, embed_photos
 from photosort.modes.bad_photos import plan_bad
 from photosort.modes.content import Verdict
 from photosort.modes.events import Event, plan_events
 from photosort.modes.face_mode import Answer, FaceScan, find_face_matches, plan_faces
+from photosort.modes.no_people import find_no_people
 from photosort.people import PeopleError, PeopleStore, Person
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
@@ -68,6 +76,16 @@ from photosort.undo import UndoBlocked, UndoResult, undo_run
 
 TITLE = "Photo Sorter"
 FACE_MODELS = ("face_detection", "face_recognition")
+
+SUBFOLDERS_TITLE = "Include subfolders?"
+SUBFOLDERS_TEXT = ("Files inside folders may belong to programs or projects. "
+                   "Moving them can break them. Continue?")
+
+DATE_TITLE = "Which date?"
+DATE_TEXT = ("Sort files by the date they were last modified, or the date they were "
+             "created? Photos and videos use the date they were taken.")
+# The choices, as Settings.file_date, to their buttons, in the order offered.
+DATE_CHOICES = {"modified": "Modified", "created": "Created"}
 
 
 def _heading(text: str) -> QLabel:
@@ -122,6 +140,17 @@ def _scan_faces(root: Path, include_subfolders: bool, people: list[Person],
     with AnalysisCache(root) as cache:
         return find_face_matches(root, include_subfolders, people, engine.analyse,
                                  progress=progress, cancel=cancel, cache=cache)
+
+
+def _find_no_people(root: Path, include_subfolders: bool,
+                    engine_factory: Callable[[bool], FaceEngine], use_gpu: bool,
+                    progress=None, cancel=None) -> Plan | None:
+    """find_no_people with a face engine made here, on the worker thread,
+    and root's analysis cache."""
+    engine = engine_factory(use_gpu)
+    with AnalysisCache(root) as cache:
+        return find_no_people(root, include_subfolders, engine.analyse,
+                              progress=progress, cancel=cancel, cache=cache)
 
 
 @dataclass
@@ -232,6 +261,7 @@ class MainWindow(QMainWindow):
         grid = QHBoxLayout()
         columns = [QVBoxLayout(), QVBoxLayout()]
         for n, (key, label, available) in enumerate(MODES):
+            label = label.replace("&", "&&")  # shown as "&", never a shortcut
             button = QRadioButton(label if available else f"{label} (coming soon)")
             button.setEnabled(available)
             self.mode_group.addButton(button)
@@ -379,6 +409,22 @@ class MainWindow(QMainWindow):
 
     def show_error(self, text: str) -> None:
         QMessageBox.warning(self, TITLE, text)
+
+    def _ask(self, icon: QMessageBox.Icon, title: str, text: str, answers: list[str],
+             default: str) -> str | None:
+        """Ask with a button for each of answers and a Cancel, the Esc
+        button; default (one of them, or "Cancel") is the default button.
+        The answer picked, or None for Cancel."""
+        box = QMessageBox(icon, title, text, parent=self)
+        buttons = {answer: box.addButton(answer, QMessageBox.ButtonRole.AcceptRole)
+                   for answer in answers}
+        cancel = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(buttons.get(default, cancel))
+        box.setEscapeButton(cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        box.deleteLater()
+        return next((answer for answer, b in buttons.items() if b is clicked), None)
 
     def _save_settings(self) -> None:
         try:
@@ -528,6 +574,15 @@ class MainWindow(QMainWindow):
         if spec.kind in ("content", "notes") and not ensure_models(self, CLIP_MODELS):
             self._show(self.home)
             return
+        if spec.kind == "nopeople" and not ensure_models(self, FACE_MODELS):
+            self._show(self.home)
+            return
+        prepare = spec.prepare
+        if spec.kind == "files":
+            prepare = self._ask_before_files(spec)
+            if prepare is None:
+                self._show(self.home)
+                return
         self._root = root
         self._mode = mode
         self._include_subfolders = self.subfolders_check.isChecked()
@@ -541,7 +596,12 @@ class MainWindow(QMainWindow):
         if spec.kind in ("content", "notes"):
             self._start_clip_sort()
             return
-        prepare = spec.prepare
+        if spec.kind == "nopeople":
+            self._begin_progress("Looking for faces…", joiner="of")
+            self._run(Task(_find_no_people, root, self._include_subfolders,
+                           self.engine_factory, self.settings.use_gpu),
+                      self._on_plan, self._on_plan_error)
+            return
         if spec.kind == "bad":
             self._begin_progress("Checking photos…", joiner="of")
             on_result = self._on_bad
@@ -552,8 +612,28 @@ class MainWindow(QMainWindow):
             on_result = self._on_events
         else:
             self._begin_progress("Checking files…")
-            on_result = self._on_plan if spec.kind == "plan" else self._on_groups
+            on_result = self._on_plan if spec.kind in ("plan", "files") else self._on_groups
         self._run(Task(prepare, root, self._include_subfolders), on_result, self._on_plan_error)
+
+    def _ask_before_files(self, spec: ModeSpec) -> Callable[..., object] | None:
+        """The prepare to run for a mode of kind "files", once the owner has
+        been warned about subfolders (if asked to, and they are included) and
+        has chosen the date to sort by (if asked to); None if they cancelled."""
+        if (spec.warn_subfolders and self.subfolders_check.isChecked()
+                and self._ask(QMessageBox.Icon.Warning, SUBFOLDERS_TITLE, SUBFOLDERS_TEXT,
+                              ["Continue"], default="Cancel") is None):
+            return None
+        if not spec.asks_date_source:
+            return spec.prepare
+        picked = self._ask(QMessageBox.Icon.Question, DATE_TITLE, DATE_TEXT,
+                           list(DATE_CHOICES.values()),
+                           default=DATE_CHOICES.get(self.settings.file_date, "Modified"))
+        if picked is None:
+            return None
+        source = next(key for key, label in DATE_CHOICES.items() if label == picked)
+        self.settings.file_date = source
+        self._save_settings()
+        return partial(spec.prepare, date_source=source)
 
     def _cancel(self) -> None:
         if self._task is not None:

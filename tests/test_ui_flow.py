@@ -76,7 +76,7 @@ def test_available_modes(make_window):
     buttons = _mode_buttons(w)
     enabled = [b for b in buttons if b.isEnabled()]
     disabled = [b for b in buttons if not b.isEnabled()]
-    assert [b.text() for b in enabled] == [
+    assert [b.text().replace("&&", "&") for b in enabled] == [
         "Date", "Face", "Duplicates", "Repeated shots", "Notes & Pages", "Type / source",
         "Content", "Bad photos", "Events", "Location", "Camera", "No people", "Extension",
         "Date (all files)"]
