@@ -17,23 +17,22 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PySide6.QtCore import Qt
-from test_ui_keyboard_e2e import (  # the keyboard helpers and the window, as shown
+from keys import (
     _activate,
     _focused,
     _go,
     _in_dialog,
     _key,
-    _no_waiting_after_the_test,  # noqa: F401  (an autouse fixture, used by name)
     _records,
     _start_by_keyboard,
     _to_tile,
     _type_folder,
-    errors,  # noqa: F401  (a fixture)
-    make_window,  # noqa: F401  (a fixture)
-    models_present,  # noqa: F401  (a fixture)
-    settings_path,  # noqa: F401  (a fixture)
+    errors,  # noqa: F401  (fixtures, used by name)
+    make_window,  # noqa: F401
+    models_present,  # noqa: F401
+    settings_path,  # noqa: F401
 )
+from PySide6.QtCore import Qt
 
 from photosort.faces import Face
 from photosort.hashing import sha256_file
@@ -243,7 +242,8 @@ def test_esc_at_the_date_choice_goes_home(qtbot, make_window, dated, settings_pa
 
 
 @pytest.mark.real_dialogs
-def test_the_date_chosen_is_focused_next_time(qtbot, make_window, dated, settings_path):
+def test_the_date_chosen_is_focused_next_time(qtbot, make_window, dated, settings_path,
+                                              errors):
     w = make_window()
     seen = []
     _answer(qtbot, seen, Qt.Key.Key_Right, Qt.Key.Key_Return)  # Created
@@ -261,6 +261,7 @@ def test_the_date_chosen_is_focused_next_time(qtbot, make_window, dated, setting
     _key(qtbot, Qt.Key.Key_Return)
     assert [s["focus"] for s in seen] == ["Modified", "Created"]
     assert w2.current_page() is w2.home
+    assert errors == []
 
 
 # ----- No people ---------------------------------------------------------------------------
@@ -305,6 +306,10 @@ def test_no_people_by_keyboard_then_undo(qtbot, make_window, portraits, errors):
     w = make_window()
     w.engine_factory = factory
     _start(qtbot, w, portraits, "no_people", subfolders=True)  # no warning for No people
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    assert w.summary_page.heading_label.text() == "Ready to sort by No people"
+    assert w.summary_label.text().splitlines() == [
+        "2 photos without faces → No people", "1 photos with people stay"]
     _go(qtbot, w)
     assert made_on and threading.main_thread() not in made_on  # made on the worker
     assert sorted(_hashes(portraits)) == [

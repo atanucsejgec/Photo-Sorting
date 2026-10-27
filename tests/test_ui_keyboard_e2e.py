@@ -18,10 +18,26 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from keys import (
+    TAB,
+    _activate,
+    _focused,
+    _go,
+    _hold,
+    _in_dialog,
+    _key,
+    _on_summary,
+    _press_in_dialog,
+    _records,
+    _start_by_keyboard,
+    errors,  # noqa: F401  (fixtures, used by name)
+    make_window,  # noqa: F401
+    models_present,  # noqa: F401
+    settings_path,  # noqa: F401
+)
 from PIL import Image
-from PySide6.QtCore import Qt, QThreadPool, QTimer
-from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QPushButton, QWidget
+from PySide6.QtCore import Qt, QThreadPool
+from PySide6.QtWidgets import QDialog, QPushButton, QWidget
 
 from photosort.faces import Face
 from photosort.groups import Candidate, Group
@@ -43,185 +59,24 @@ from photosort.ui.flows import events as events_flow
 from photosort.ui.flows import face as face_flow
 from photosort.ui.flows import groups as groups_flow
 from photosort.ui.fullscreen_viewer import FullscreenViewer
-from photosort.ui.home_page import TILES, ModeTile
+from photosort.ui.home_page import ModeTile
 from photosort.ui.main_window import MainWindow
 from photosort.ui.photo_preview import PhotoPreview
 from photosort.ui.shortcuts import ShortcutStrip
 
 CTRL = Qt.KeyboardModifier.ControlModifier
 ALT = Qt.KeyboardModifier.AltModifier
-NONE = Qt.KeyboardModifier.NoModifier
 EXIF = "2025:02:20 10:00:00"
-TAB = "Tab/Shift+Tab area"
 SMALLEST = (819, 480)  # 1024 x 600 at 125 %
 
 
-# ----- the window and the keys ---------------------------------------------------------
-
-@pytest.fixture
-def errors(monkeypatch):
-    shown: list[str] = []
-    monkeypatch.setattr(MainWindow, "show_error", lambda self, text: shown.append(text))
-    return shown
-
-
-@pytest.fixture
-def models_present(monkeypatch):
-    monkeypatch.setattr(main_window, "ensure_models", lambda parent, keys: True)
-
-
-@pytest.fixture
-def settings_path(tmp_path) -> Path:
-    return tmp_path / "config" / "settings.json"
-
-
-@pytest.fixture
-def make_window(qtbot, tmp_path, settings_path, errors, models_present):
-    windows = []
-
-    def _make(settings: Settings | None = None, size=(1280, 800)) -> MainWindow:
-        w = MainWindow(settings or Settings(), settings_path,
-                       people_store=PeopleStore(tmp_path / "people"))
-        qtbot.addWidget(w)
-        w.resize(*size)
-        w.show()
-        qtbot.waitExposed(w)
-        windows.append(w)
-        _activate(qtbot, w)
-        qtbot.waitUntil(lambda: isinstance(_focused(), ModeTile))
-        return w
-
-    yield _make
-    for w in windows:
-        w.close()
-    QThreadPool.globalInstance().waitForDone()
-
+# ----- the photos ------------------------------------------------------------------------
 
 @pytest.fixture
 def photos(tmp_path) -> Path:
     folder = tmp_path / "photos"
     folder.mkdir()
     return folder
-
-
-def _focused():
-    return QApplication.focusWidget()
-
-
-def _key(qtbot, key, modifier=NONE) -> None:
-    """Press key where the focus is, as the owner would."""
-    qtbot.keyClick(_focused(), key, modifier)
-
-
-def _hold(key, times: int = 3, modifier=NONE) -> None:
-    """Hold key down a while longer: its auto-repeats, where the focus is
-    (through the shortcut map, as a real held key goes)."""
-    text = "\r" if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) else ""
-    for _ in range(times):
-        QTest.simulateEvent(_focused(), True, key, modifier, text, True, -1)
-        QTest.simulateEvent(_focused(), False, key, modifier, text, True, -1)
-
-
-def _activate(qtbot, window) -> None:
-    """Make window the active one, as a window manager does when a dialog
-    opens or closes (offscreen, nothing does)."""
-    window.activateWindow()
-    qtbot.waitUntil(lambda: QApplication.activeWindow() is window)
-
-
-_waiting: list[dict] = []  # the _in_dialog calls of this test still waiting
-
-
-@pytest.fixture(autouse=True)
-def _no_waiting_after_the_test():
-    """A dialog that never came: its waiting ends with the test (and so never
-    answers the next test's dialogs)."""
-    yield
-    for waiting in _waiting:
-        waiting["over"] = True
-    _waiting.clear()
-
-
-def _in_dialog(qtbot, act, kind=QDialog) -> None:
-    """Once the next modal dialog of kind shows, activate it (as a window
-    manager would) and call act(dialog) there; a failure closes it."""
-    waiting = {"over": False}
-    _waiting.append(waiting)
-
-    def poll():
-        if waiting["over"]:
-            return
-        dialog = QApplication.activeModalWidget()
-        if not isinstance(dialog, kind) or not dialog.isVisible():
-            QTimer.singleShot(10, poll)
-            return
-        if QApplication.activeWindow() is not dialog:
-            dialog.activateWindow()
-            QTimer.singleShot(10, poll)
-            return
-        waiting["over"] = True
-        try:
-            act(dialog)
-        except BaseException:
-            dialog.reject()
-            raise
-
-    QTimer.singleShot(0, poll)
-
-
-def _press_in_dialog(qtbot, seen: list, *keys, kind=QDialog) -> None:
-    """In the next dialog: note its title, focused button and strip, then press keys."""
-
-    def act(dialog):
-        qtbot.waitUntil(lambda: _focused() is not None and _focused().window() is dialog)
-        seen.append((dialog.windowTitle(), getattr(_focused(), "text", lambda: "")(),
-                     dialog.findChild(ShortcutStrip).text()))
-        for key in keys:
-            _key(qtbot, key)
-
-    _in_dialog(qtbot, act, kind)
-
-
-def _type_folder(qtbot, w: MainWindow, folder: Path) -> None:
-    """From the tiles, Shift+Tab back to the folder field, type folder and Enter."""
-    for _ in range(8):
-        if _focused() is w.folder_edit:
-            break
-        _key(qtbot, Qt.Key.Key_Backtab)
-    assert _focused() is w.folder_edit
-    w.folder_edit.selectAll()
-    qtbot.keyClicks(w.folder_edit, str(folder))
-    _key(qtbot, Qt.Key.Key_Return)  # the folder is used, and the focus is on the tiles
-    assert isinstance(_focused(), ModeTile)
-
-
-def _to_tile(qtbot, mode: str) -> None:
-    """Arrow from the focused tile to mode's."""
-    keys = [key for key, _ in TILES]
-    step = keys.index(mode) - keys.index(_focused().key)
-    for _ in range(abs(step)):
-        _key(qtbot, Qt.Key.Key_Right if step > 0 else Qt.Key.Key_Left)
-    assert _focused().key == mode
-
-
-def _start_by_keyboard(qtbot, w: MainWindow, folder: Path, mode: str) -> None:
-    _type_folder(qtbot, w, folder)
-    _to_tile(qtbot, mode)
-    _key(qtbot, Qt.Key.Key_Return)
-
-
-def _on_summary(qtbot, w: MainWindow) -> None:
-    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
-    qtbot.waitUntil(lambda: _focused() is w.go_button)
-    assert w.strip.text() == f"Enter go · ←→ switch buttons · Esc back · {TAB}"
-
-
-def _go(qtbot, w: MainWindow) -> None:
-    """Enter on the summary (Go focused): Done, Home focused."""
-    _on_summary(qtbot, w)
-    _key(qtbot, Qt.Key.Key_Return)
-    qtbot.waitUntil(lambda: w.current_page() is w.done_page)
-    qtbot.waitUntil(lambda: _focused() is w.home_button)
 
 
 def _files(folder: Path) -> list[str]:
@@ -804,27 +659,6 @@ def test_the_download_dialog_cancels_on_esc_not_enter(qtbot):
 
 
 # ----- every page's and dialog's strip --------------------------------------------------------
-
-def _live(widget: QWidget) -> list[str]:
-    return [f"{label} {word}" for label, word in shortcuts._live(widget)]
-
-
-def _records(focus: QWidget | None, screen: QWidget) -> str:
-    """The live keys of focus's nearest recorded holder below screen, then
-    screen's, one per key."""
-    holder = focus
-    while holder is not None and holder is not screen and not _live(holder):
-        holder = holder.parentWidget()
-    entries = (_live(holder) if holder is not None and holder is not screen else []) + _live(
-        screen)
-    shown, keys = [], set()
-    for entry in entries:
-        key = entry.split(" ")[0]
-        if key not in keys:
-            keys.add(key)
-            shown.append(entry)
-    return " · ".join(shown)
-
 
 def _group(root: Path) -> Group:
     members = []

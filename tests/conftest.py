@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,16 @@ def _dark_theme(qapp):
     from photosort.ui import theme
 
     theme.apply(qapp)
+
+
+@pytest.fixture(autouse=True)
+def _no_waiting_dialog_answers():
+    """A dialog a test waited for (keys._in_dialog) that never came: the
+    wait ends with the test, and so never answers the next test's dialogs."""
+    yield
+    keys = sys.modules.get("keys")  # loaded only by the tests that use it
+    if keys is not None:
+        keys.end_waiting()
 
 
 @pytest.fixture
