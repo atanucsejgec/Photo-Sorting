@@ -105,6 +105,10 @@ def _plain(event) -> bool:
     return modifiers == Qt.KeyboardModifier.NoModifier
 
 
+# The keys Qt's buttons press themselves on: Space, and Select on some keyboards.
+_PRESS_KEYS = (Qt.Key.Key_Space, Qt.Key.Key_Select)
+
+
 class ButtonKeys(QObject):
     """The keys of a page's buttons: Enter presses the focused one, once.
 
@@ -114,8 +118,8 @@ class ButtonKeys(QObject):
     button, such as Go. With sideways, ← and → move the focus to the
     button beside, among the shown and enabled ones, in the given order.
 
-    Space presses a button as Qt does, once however long it is held; with
-    space False it presses none of them (on the Summary and Done, where a
+    Space (or Select) presses a button as Qt does, once however long it is
+    held; with space False it presses none of them (on the Summary and Done, where a
     Space meant for the screen before, such as a face question's skip,
     must never press Go, Undo or Home). With armed, Enter presses a button
     only while armed(button) is true (Go, just after the summary shows,
@@ -140,7 +144,7 @@ class ButtonKeys(QObject):
                 or watched not in self._buttons):
             return False
         key = event.key()
-        if key == Qt.Key.Key_Space and not self._space:
+        if key in _PRESS_KEYS and not self._space:
             return True  # its press and its release: QPushButton clicks on the release
         if kind != QEvent.Type.KeyPress:
             return False

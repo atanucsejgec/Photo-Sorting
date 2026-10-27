@@ -276,6 +276,7 @@ def test_space_on_the_summary_presses_nothing(qtbot, make_window, photos, make_j
         assert _focused() is button
         _key(qtbot, Qt.Key.Key_Space)
         _hold(Qt.Key.Key_Space)
+        _key(qtbot, Qt.Key.Key_Select)  # Qt's other button-press key
         qtbot.wait(20)
         assert w.current_page() is w.summary_page
         _key(qtbot, Qt.Key.Key_Left)
