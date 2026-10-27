@@ -119,10 +119,10 @@ def _hashes(root: Path) -> dict[str, str]:
             for p in root.rglob("*") if p.is_file() and ".photosort" not in p.parts}
 
 
-def test_the_tile_comes_after_type(make_window):
+def test_the_tile_comes_after_no_people(make_window):
     w = make_window()
     keys = list(w.mode_buttons)
-    assert keys[keys.index("type") + 1] == "extension"
+    assert keys[keys.index("no_people") + 1] == "extension"
     tile = w.mode_buttons["extension"]
     assert (tile.name, tile.hint) == ("Extension", "APK, EXE, PDF…")
     assert tile.isEnabled()

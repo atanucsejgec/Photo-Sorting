@@ -27,6 +27,7 @@ TILES = [
     ("location", "Location", "Country / city"),
     ("camera", "Camera", "Per phone"),
     ("type", "Type / source", "WhatsApp, screenshots"),
+    ("no_people", "No people", "Photos without faces"),
     ("extension", "Extension", "APK, EXE, PDF…"),
     ("all_dates", "Date (all files)", "Any file, year / month"),
 ]

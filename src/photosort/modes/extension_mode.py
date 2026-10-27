@@ -11,7 +11,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from photosort.naming import TargetAllocator, fit_name, fold
+from photosort.naming import TargetAllocator, fit_name, fold, resolve_existing_dir
 from photosort.plan import Move, Plan
 from photosort.scanner import walk_all_files
 from photosort.thresholds import FOLDER_NAME_MAX, FOLDER_NAME_MAX_BYTES
@@ -61,6 +61,16 @@ def _taken_names(root: Path, leaving: set[str]) -> set[str]:
                                   and key not in folders)}
 
 
+def _real_folder(root: Path, folder: str) -> bool:
+    """Whether the folder used for folder in root (spelt as on disk, the
+    exact spelling first, see resolve_existing_dir) is a real folder, not a
+    link to one. Where names differ in case, a link "pdf" can sit beside a
+    real "PDF" folder, which is used, as in Date (all files)."""
+    path = root / resolve_existing_dir(root, folder)
+    return (os.path.isdir(path)
+            and not (os.path.islink(path) or os.path.isjunction(path)))
+
+
 def plan_extension(root: Path, files: list[str],
                    progress: Callable[[int, int], None] | None = None) -> Plan:
     """Plan the Extension moves for files (relative POSIX paths under root).
@@ -73,13 +83,15 @@ def plan_extension(root: Path, files: list[str],
     Likewise, when something that stays in root (such as a file "PDF" that
     can't go to No extension) holds a folder's name, or a link does, that
     folder can't be made or used: its files stay, so the run never stops
-    half-way and never moves anything through a link. The summary counts
+    half-way and never moves anything through a link. But a real folder
+    the moves would go into (see _real_folder) is used. The summary counts
     those apart from the files already in place. progress(i, total) is
     called after each file.
     """
     root = Path(root)
     allocator = TargetAllocator(root)
-    no_extension_blocked = fold(NO_EXTENSION) in _taken_names(root, set())
+    no_extension_blocked = (fold(NO_EXTENSION) in _taken_names(root, set())
+                            and not _real_folder(root, NO_EXTENSION))
     leaving = set() if no_extension_blocked else {
         rel for rel in files
         if "/" not in rel and extension_folder(rel) == NO_EXTENSION}
@@ -96,7 +108,7 @@ def plan_extension(root: Path, files: list[str],
         folder = extension_folder(name)
         # A folder on disk spelt another way matches by fold, as resolve_existing_dir does.
         blocked = (no_extension_blocked if folder == NO_EXTENSION
-                   else fold(folder) in taken)
+                   else fold(folder) in taken and not _real_folder(root, folder))
         if fold(parent) == fold(folder):
             unchanged += 1
         elif blocked:

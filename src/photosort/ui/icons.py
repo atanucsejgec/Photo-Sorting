@@ -29,6 +29,7 @@ MODE_ICONS: dict[str, str] = {
     "location": "map-pin",
     "camera": "camera",
     "type": "message-circle",
+    "no_people": "user-x",
     "extension": "file-type",
     "all_dates": "calendar-clock",
 }

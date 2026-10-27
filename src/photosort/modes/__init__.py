@@ -7,9 +7,11 @@ asks_date_source the owner then chooses the date to sort by (see
 modes.all_dates). A mode of kind "groups" finds Groups for the owner to
 review; the files not kept are then set aside, flat, in set_aside_folder.
 A mode of kind "face" finds face matches to ask the owner about, then plans
-(see modes.face_mode); it needs
-the people picked and a face engine, so the main window runs it through
-modes.face_mode, never through prepare. A mode of kind "bad" finds bad
+(see modes.face_mode); it needs the people picked and a face engine, so the
+main window runs it through modes.face_mode, never through prepare. A mode
+of kind "nopeople" plans the moves of the photos with no face into a No
+people folder (see modes.no_people); it needs a face engine, so the main
+window runs it too, never through prepare. A mode of kind "bad" finds bad
 photos (a list of Candidates, see modes.bad_photos) for the owner to tick;
 the ticked ones are set aside, flat, in set_aside_folder. A mode of kind
 "events" finds events (see modes.events) for the owner to name, merge,
@@ -22,8 +24,8 @@ cancelled; the events one also takes gap_hours and min_files keywords,
 from Settings, and the Date (all files) one a date_source keyword, the
 owner's choice. The modules of the "plan", "files", "groups", "bad" and
 "events" modes are imported when such a mode first runs; the main window
-imports the face, content and notes modules (numpy only, no AI runtime)
-itself.
+imports the face, No people, content and notes modules (numpy only, no AI
+runtime) itself.
 """
 
 import threading
@@ -44,6 +46,7 @@ MODES: list[tuple[str, str, bool]] = [
     ("events", "Events", True),
     ("location", "Location", True),
     ("camera", "Camera", True),
+    ("no_people", "No people", True),
     ("extension", "Extension", True),
     ("all_dates", "Date (all files)", True),
 ]
@@ -53,7 +56,8 @@ Progress = Callable[[int, int], None] | None
 
 @dataclass(frozen=True)
 class ModeSpec:
-    kind: Literal["plan", "files", "groups", "face", "bad", "events", "content", "notes"]
+    kind: Literal["plan", "files", "groups", "face", "nopeople", "bad", "events", "content",
+                  "notes"]
     # -> Plan (kinds "plan", "files"), list[Group], list[Candidate] (kind "bad") or
     # (list[Event], files in none) (kind "events"); None if cancelled
     prepare: Callable[..., object]
@@ -155,6 +159,13 @@ def _find_faces(root: Path, include_subfolders: bool, progress: Progress = None,
     raise NotImplementedError("Face mode is run through modes.face_mode")
 
 
+def _find_no_people(root: Path, include_subfolders: bool, progress: Progress = None,
+                    cancel: threading.Event | None = None):
+    # No people also needs a face engine; the main window runs it through
+    # modes.no_people directly.
+    raise NotImplementedError("No people is run through modes.no_people")
+
+
 def _run_by_window(root: Path, include_subfolders: bool, progress: Progress = None,
                    cancel: threading.Event | None = None):
     # Content and Notes & Pages also need a CLIP engine (and Content the
@@ -175,6 +186,7 @@ MODE_SPECS: dict[str, ModeSpec] = {
     "camera": ModeSpec("plan", _prepare_camera),
     "notes": ModeSpec("notes", _run_by_window),
     "content": ModeSpec("content", _run_by_window),
+    "no_people": ModeSpec("nopeople", _find_no_people),
     "extension": ModeSpec("files", _prepare_extension, warn_subfolders=True),
     "all_dates": ModeSpec("files", _prepare_all_dates, warn_subfolders=True,
                           asks_date_source=True),

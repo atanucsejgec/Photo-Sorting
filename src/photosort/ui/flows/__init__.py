@@ -8,6 +8,7 @@
 - bad: bad photos, ticked first;
 - events: events, named, merged, split or skipped first;
 - face: the people to look for, then the unsure matches;
+- no_people: the photos with no face found, planned straight away (No people);
 - clip: Content and Notes & Pages, judged with CLIP, then the unsure photos.
 
 Each module has MODELS, the AI models it needs before it starts, and

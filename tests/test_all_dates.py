@@ -7,6 +7,7 @@ import threading
 from datetime import date, datetime
 
 import pytest
+from fstree import tree
 
 from photosort.executor import execute
 from photosort.journal import RunJournal
@@ -119,7 +120,9 @@ def test_no_statx_in_the_c_library_gives_none_and_is_looked_up_once(tmp_path, mo
 
 @linux_statx
 def test_statx_raises_oserror_when_the_call_fails(tmp_path):
-    with pytest.raises((OSError, AttributeError)):  # AttributeError: no statx at all
+    if all_dates._libc_statx() is None:  # glibc before 2.28: _statx_btime gives None
+        pytest.skip("the C library has no statx")
+    with pytest.raises(FileNotFoundError):  # ENOENT, as os.stat would raise
         all_dates._statx_btime(tmp_path / "missing.pdf")
 
 
@@ -333,25 +336,6 @@ def test_a_file_that_cannot_be_read_stays_and_is_counted(tmp_path, monkeypatch, 
                             "1 files could not be read (they stay)"]
 
 
-def _tree(root):
-    """Everything under root, links as links (never followed): path -> bytes,
-    "dir" or "-> target"."""
-    found = {}
-    for folder, dirs, names in os.walk(root):
-        for name in dirs + names:
-            path = os.path.join(folder, name)
-            rel = os.path.relpath(path, root)
-            if ".photosort" in rel.split(os.sep):
-                continue
-            if os.path.islink(path):
-                found[rel] = "-> " + os.readlink(path)
-            elif os.path.isdir(path):
-                found[rel] = "dir"
-            else:
-                found[rel] = open(path, "rb").read()
-    return found
-
-
 @pytest.mark.parametrize("link", ["2024", "2024/03-March", "2024/03-march"])
 def test_nothing_moves_through_a_link_to_a_folder(tmp_path, link, no_created):
     root, outside = tmp_path / "root", tmp_path / "outside"
@@ -360,14 +344,14 @@ def test_nothing_moves_through_a_link_to_a_folder(tmp_path, link, no_created):
     _touch(root / "b.pdf", date(2023, 1, 1), b"b")
     (root / link).parent.mkdir(parents=True, exist_ok=True)
     os.symlink(outside, root / link, target_is_directory=True)
-    before, outside_before = _tree(root), _tree(outside)
+    before, outside_before = tree(root), tree(outside)
     plan, result, run_id = _sort(root)
     assert _dsts(plan) == {"b.pdf": "2023/01-January/b.pdf"}
     assert plan.summary == ["1 files → 1 month folders, 0 day folders",
                             "1 files stay: a file or link with their folder's name is in the way"]
     assert result.moved == 1 and not result.skipped
-    assert _tree(outside) == outside_before
+    assert tree(outside) == outside_before
     undone = undo_run(root, run_id)
     assert undone.renamed == [] and undone.failed == []
-    assert _tree(root) == before
-    assert _tree(outside) == outside_before
+    assert tree(root) == before
+    assert tree(outside) == outside_before

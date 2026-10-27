@@ -123,7 +123,7 @@ def _assign(faces: list[Face], people: list[Person]) -> list[tuple[Face, Person,
     return matches
 
 
-class _Analyser:
+class Analyser:
     """analyse(path), where one photo failing never stops the scan.
 
     An error other than UnreadableImage is logged with the photo's path and
@@ -152,8 +152,8 @@ class _Analyser:
         return faces
 
 
-def _faces_of(root: Path, rel: str, analyse: _Analyser,
-              cache: AnalysisCache | None) -> list[Face] | None:
+def faces_of(root: Path, rel: str, analyse: Analyser,
+             cache: AnalysisCache | None) -> list[Face] | None:
     """The faces in the photo root/rel, or None if it can't be read (not cached)."""
     path = root / rel
     if cache is not None:
@@ -182,7 +182,7 @@ def find_face_matches(
 
     analyse(path) returns a photo's faces (raising UnreadableImage if it
     can't). A photo it fails on otherwise is counted as unreadable, unless
-    the first photos all fail (see _Analyser). progress(i, total) is called after
+    the first photos all fail (see Analyser). progress(i, total) is called after
     each photo; videos are not looked at. With a cache, a photo analysed
     before is not analysed again. With two or more people, only group photos
     are sorted (FaceScan.groups_only), so a photo's unsure matches are asked
@@ -190,7 +190,7 @@ def find_face_matches(
     """
     root = Path(root)
     groups_only = len(people) >= 2
-    analyser = _Analyser(analyse)
+    analyser = Analyser(analyse)
     photos = [rel for rel in scan(root, include_subfolders) if kind(rel) == "photo"]
     total = len(photos)
     sure: dict[str, set[str]] = {}
@@ -199,7 +199,7 @@ def find_face_matches(
     for i, rel in enumerate(photos, start=1):
         if cancel is not None and cancel.is_set():
             return None
-        faces = _faces_of(root, rel, analyser, cache)
+        faces = faces_of(root, rel, analyser, cache)
         if faces is None:
             unreadable += 1
         else:

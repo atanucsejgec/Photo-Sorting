@@ -4,6 +4,7 @@ import os
 import threading
 
 import pytest
+from fstree import tree
 
 from photosort.executor import execute
 from photosort.journal import RunJournal
@@ -265,25 +266,6 @@ def test_a_symlink_in_the_way_of_a_folder_keeps_its_files_in_place(tmp_path):
     assert "1 files stay: a file or link with their folder's name is in the way" in plan.summary
 
 
-def _tree(root):
-    """Everything under root, links as links (never followed): path -> bytes,
-    "dir" or "-> target"."""
-    found = {}
-    for folder, dirs, names in os.walk(root):
-        for name in dirs + names:
-            path = os.path.join(folder, name)
-            rel = os.path.relpath(path, root)
-            if ".photosort" in rel.split(os.sep):
-                continue
-            if os.path.islink(path):
-                found[rel] = "-> " + os.readlink(path)
-            elif os.path.isdir(path):
-                found[rel] = "dir"
-            else:
-                found[rel] = open(path, "rb").read()
-    return found
-
-
 @pytest.mark.parametrize("link", ["PDF", "pdf"])
 def test_nothing_moves_through_a_link_to_a_folder(tmp_path, link):
     root, outside = tmp_path / "root", tmp_path / "outside"
@@ -291,16 +273,16 @@ def test_nothing_moves_through_a_link_to_a_folder(tmp_path, link):
     _touch(root / "a.pdf", b"a")
     _touch(root / "b.zip", b"b")
     os.symlink(outside, root / link, target_is_directory=True)
-    before, outside_before = _tree(root), _tree(outside)
+    before, outside_before = tree(root), tree(outside)
     plan, result, run_id = _sort(root)
     assert _dsts(plan) == {"b.zip": "ZIP/b.zip"}
     assert plan.summary == ["1 files → 1 folders", "1 files stay: a file or link with their folder's name is in the way"]
     assert result.moved == 1 and not result.skipped
-    assert _tree(outside) == outside_before
+    assert tree(outside) == outside_before
     undone = undo_run(root, run_id)
     assert undone.renamed == [] and undone.failed == []
-    assert _tree(root) == before
-    assert _tree(outside) == outside_before
+    assert tree(root) == before
+    assert tree(outside) == outside_before
 
 
 def test_a_link_beside_a_real_folder_of_that_name_still_stops_it(tmp_path,
@@ -313,3 +295,23 @@ def test_a_link_beside_a_real_folder_of_that_name_still_stops_it(tmp_path,
     plan = prepare_extension_plan(tmp_path / "root", False)
     assert plan.moves == []
     assert plan.summary == ["1 files stay: a file or link with their folder's name is in the way"]
+
+
+def test_a_real_folder_of_that_exact_name_is_used_beside_a_link(tmp_path, case_sensitive_fs):
+    # A real "PDF" folder and a link "pdf": the real folder is the one used,
+    # as in Date (all files), and nothing goes through the link.
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    _touch(outside / "kept.txt", b"k")
+    (root / "PDF").mkdir(parents=True)
+    os.symlink(outside, root / "pdf", target_is_directory=True)
+    _touch(root / "a.pdf", b"a")
+    before, outside_before = tree(root), tree(outside)
+    plan, result, run_id = _sort(root)
+    assert _dsts(plan) == {"a.pdf": "PDF/a.pdf"}
+    assert plan.summary == ["1 files → 1 folders"]
+    assert result.moved == 1 and not result.skipped
+    assert (root / "PDF" / "a.pdf").read_bytes() == b"a"
+    assert tree(outside) == outside_before
+    undone = undo_run(root, run_id)
+    assert undone.renamed == [] and undone.failed == []
+    assert tree(root) == before

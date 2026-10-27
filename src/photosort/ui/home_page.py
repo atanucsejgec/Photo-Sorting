@@ -47,6 +47,7 @@ TILES: tuple[tuple[str, str], ...] = (
     ("location", "Country / city"),
     ("camera", "Per phone"),
     ("type", "WhatsApp, screenshots"),
+    ("no_people", "Photos without faces"),
     ("extension", "APK, EXE, PDF…"),
     ("all_dates", "Any file, year / month"),
 )
