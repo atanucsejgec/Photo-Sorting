@@ -102,7 +102,9 @@ class CategoryEditor(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Content categories")
         self.list_widget = QListWidget()
+        self.list_widget.setObjectName("rowList")  # see theme
         self.list_widget.setMinimumWidth(220)
+        self.list_widget.ensurePolished()  # the rows are laid out at the theme's height
         self.list_widget.addItems(categories)
         self.message_label = QLabel()
         self.message_label.setWordWrap(True)

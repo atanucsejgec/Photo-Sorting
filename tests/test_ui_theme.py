@@ -38,7 +38,8 @@ def test_the_tokens_are_the_spec_palette():
 
 def test_the_stylesheet_targets_the_object_names():
     qss = theme.stylesheet()
-    for name in ("primaryButton", "modeTile", "sidebar", "shortcutStrip", "card", "muted"):
+    for name in ("primaryButton", "modeTile", "sidebar", "shortcutStrip", "card", "muted",
+                 "rowList"):
         assert f"#{name}" in qss, name
 
 

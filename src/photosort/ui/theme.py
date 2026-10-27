@@ -13,7 +13,8 @@ object name:
 - muted: quieter text; error: a problem, in the danger colour;
 - tag: a small pill naming what is wrong (a bad photo's reason);
 - thumb: the grey box a thumbnail or photo shows in while it loads;
-- viewer, viewerOverlay: the full-screen viewer and its caption.
+- viewer, viewerOverlay: the full-screen viewer and its caption;
+- rowList: a list of plain text rows, each with ROW_PAD_* room round it.
 
 The control with keyboard focus gets a 2 px focus ring from the stylesheet
 and, when it is a solid control (a button, a field, a tile, a card), a soft
@@ -59,6 +60,7 @@ COLORS: dict[str, str] = {
 OVERLAY = "rgba(10, 14, 20, 190)"
 
 MIN_POINT_SIZE = 11  # the app's body font is never smaller (see use_min_font)
+ROW_PAD_Y, ROW_PAD_X = 5, 10  # px round each row of a rowList
 HEADING_SCALE = 1.5  # a page's heading, of the body font
 SMALL_SCALE = 0.85  # hints, as the shortcut strip
 
@@ -155,6 +157,7 @@ QListView:focus, QTreeView:focus, QTableView:focus {{ border: 2px solid {c['focu
 QListView::indicator {{ width: 14px; height: 14px; background: {c['panel']};
     border: 1px solid {c['border_hover']}; border-radius: 4px; }}
 QListView::indicator:checked {{ background: {c['focus']}; border-color: {c['focus']}; }}
+QListView#rowList::item {{ padding: {ROW_PAD_Y}px {ROW_PAD_X}px; }}
 QHeaderView::section {{ background: {c['panel']}; color: {c['muted']}; border: none;
     border-bottom: 1px solid {c['border']}; padding: 6px; }}
 QTableCornerButton::section {{ background: {c['panel']}; border: none; }}

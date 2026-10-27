@@ -15,7 +15,7 @@ from photosort.modes import date_mode
 from photosort.people import PeopleStore
 from photosort.plan import Move, Plan
 from photosort.settings import DEFAULT_CONTENT_CATEGORIES, Settings, load_settings
-from photosort.ui import dialogs
+from photosort.ui import dialogs, face_setup_page, theme
 from photosort.ui.category_editor import CategoryEditor
 from photosort.ui.done_page import DonePage
 from photosort.ui.main_window import MainWindow
@@ -317,6 +317,42 @@ def test_people_with_nobody_has_no_forget_key(qtbot, make_window):
     assert w.strip.text() == "↑↓ choose · Esc sidebar · Tab/Shift+Tab area"
 
 
+NOBODY_IN_THE_LIST = 'No people yet. Add them in Face mode, with "Add person…".'
+
+
+def _drawn(widget) -> set[tuple[int, int, int]]:
+    """The colours widget's grab is drawn in."""
+    image = widget.grab().toImage()
+    return {image.pixelColor(x, y).getRgb()[:3]
+            for x in range(0, image.width(), 2) for y in range(0, image.height(), 2)}
+
+
+def test_people_with_nobody_says_how_to_add_them_in_the_list(qtbot, make_window, store):
+    w = make_window()
+    w.sidebar.items["people"].click()
+    page = w.people_page
+    w.show()
+    qtbot.waitExposed(w)
+    assert page.people_list.count() == 0
+    assert page.people_list.placeholder == NOBODY_IN_THE_LIST
+    assert page.list_page.hint_label.text() == face_setup_page.PEOPLE_HINT  # said once
+    drawn = _drawn(page.people_list.viewport())
+    assert len(drawn) > 1  # the hint, not an empty box
+
+    _remember(store, "Atanu", 1)
+    page.load()
+    assert page.people_list.count() == 1
+    assert _drawn(page.people_list.viewport()) != drawn  # the person, without the hint
+
+
+def test_face_setup_keeps_its_own_hint_above_the_list(qtbot, make_window):
+    w = make_window()
+    page = w.face_setup_page
+    page.load(w.people_store)
+    assert page.people_list.placeholder == ""
+    assert page.hint_label.text() == face_setup_page.NOBODY
+
+
 # ----- Settings ---------------------------------------------------------------
 
 def test_settings_saves_each_change_at_once(qtbot, make_window, settings_path, warned):
@@ -402,3 +438,14 @@ def test_the_done_pages_undo_line_shows_only_with_text(qtbot):
     assert not page.undo_label.isHidden()
     page.show_result(["Moved 1 files."], can_undo=True)
     assert page.undo_label.isHidden()
+
+
+def test_the_category_editors_rows_have_the_themes_padding(qtbot):
+    editor = CategoryEditor(list(DEFAULT_CONTENT_CATEGORIES))
+    qtbot.addWidget(editor)
+    editor.show()
+    qtbot.waitExposed(editor)
+    rows = editor.list_widget
+    first, second = rows.visualItemRect(rows.item(0)), rows.visualItemRect(rows.item(1))
+    assert first.height() >= rows.fontMetrics().height() + 2 * theme.ROW_PAD_Y
+    assert second.top() >= first.bottom()  # laid out at that height: no overlap

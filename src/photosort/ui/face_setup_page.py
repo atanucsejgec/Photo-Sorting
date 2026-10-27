@@ -22,7 +22,7 @@ from PIL import Image
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QLabel, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
+    QLabel, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
 
 from photosort.people import PeopleError, PeopleStore, Person
@@ -31,7 +31,7 @@ from photosort.ui.face_naming_dialog import dropped_photo
 from photosort.ui.labels import literal
 from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.theme import heading
-from photosort.ui.widgets import ButtonBar, ButtonKeys
+from photosort.ui.widgets import ButtonBar, ButtonKeys, HintList
 
 _log = logging.getLogger("photosort")
 
@@ -42,7 +42,8 @@ HINT = ("Tick one person to sort their photos into a folder named after them. Wi
         "named after the people in each photo.")
 NOBODY = "No one is remembered yet. Add a person: pick a photo of them and type their name."
 PEOPLE_HINT = "The people Photo Sorter knows by face, for sorting by face."
-NOBODY_LEFT = "No one is remembered."
+# On the People page, in the empty list.
+NOBODY_LEFT = 'No people yet. Add them in Face mode, with "Add person…".'
 FORGET_TITLE = "Forget person"
 _ID_ROLE = Qt.ItemDataRole.UserRole
 
@@ -89,7 +90,9 @@ class FaceSetupPage(QWidget):
         self.hint_label.setWordWrap(True)
         layout.addWidget(self.hint_label)
 
-        self.people_list = QListWidget()
+        self.people_list = HintList()
+        if delete_only:
+            self.people_list.set_placeholder(NOBODY_LEFT)
         self.people_list.setIconSize(QSize(ICON_PX, ICON_PX))
         layout.addWidget(self.people_list, 1)
         self.status_label = QLabel()
@@ -170,7 +173,7 @@ class FaceSetupPage(QWidget):
         if people:
             self.people_list.setCurrentRow(0)
         if self._delete_only:
-            self.hint_label.setText(PEOPLE_HINT if people else NOBODY_LEFT)
+            self.hint_label.setText(PEOPLE_HINT)  # an empty list says NOBODY_LEFT
         else:
             self.hint_label.setText(HINT if people else NOBODY)
         self._update_buttons()

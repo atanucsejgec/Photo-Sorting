@@ -4,7 +4,9 @@ from collections.abc import Sequence
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QCheckBox, QLabel, QLayout, QLayoutItem, QPushButton, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox, QLabel, QLayout, QLayoutItem, QListWidget, QPushButton, QWidget,
+)
 
 from photosort.ui.theme import COLORS
 
@@ -68,6 +70,33 @@ class Switch(QCheckBox):
 
 _ENTER = (Qt.Key.Key_Return, Qt.Key.Key_Enter)
 _SIDEWAYS = {Qt.Key.Key_Left: -1, Qt.Key.Key_Right: 1}
+
+
+class HintList(QListWidget):
+    """A list that, while empty, shows placeholder (if any) in its box, in
+    the muted colour, instead of an empty box."""
+
+    _MARGIN = 16  # px between the hint and the box
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.placeholder = ""
+
+    def set_placeholder(self, text: str) -> None:
+        self.placeholder = text
+        self.viewport().update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if self.count() or not self.placeholder:
+            return
+        painter = QPainter(self.viewport())
+        painter.setPen(QColor(COLORS["muted"]))
+        room = self.viewport().rect().adjusted(self._MARGIN, self._MARGIN,
+                                               -self._MARGIN, -self._MARGIN)
+        painter.drawText(room, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                         self.placeholder)
+        painter.end()
 
 
 def _plain(event) -> bool:
