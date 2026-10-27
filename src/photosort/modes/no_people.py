@@ -7,9 +7,15 @@ folder Face mode has looked at is quick, and both modes agree on what a
 face is. Any face found counts: a photo with one stays where it is, and so
 does a photo that can't be read. Videos and other files are not looked at.
 The folder is made in the sorted folder itself; a photo already directly in
-a No people folder (any case, at any depth) is in place.
+a No people folder (any case, at any depth) is in place. Nothing is ever
+moved through a link: when a link, or anything else that is not a folder,
+holds the name No people (any case) in the sorted folder, the photos with no
+face stay, counted apart, unless a real folder the moves would go into is
+there too (where names differ in case, a real "No people" beside a link "no
+people"), which is used.
 """
 
+import os
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -23,6 +29,23 @@ from photosort.plan import Move, Plan
 from photosort.scanner import scan
 
 NO_PEOPLE = "No people"
+
+
+def _folder_blocked(root: Path, folder: str) -> bool:
+    """Whether nothing can be moved into folder (No people, spelt as on disk)
+    in root: an entry of that name in any case is a link (a symlink or
+    junction, even to a folder) or is not a folder, and folder itself is not
+    a real folder."""
+    path = root / folder
+    if os.path.isdir(path) and not (os.path.islink(path) or os.path.isjunction(path)):
+        return False
+    try:
+        with os.scandir(root) as entries:
+            return any(
+                entry.is_symlink() or entry.is_junction() or not entry.is_dir()
+                for entry in entries if fold(entry.name) == fold(NO_PEOPLE))
+    except OSError:
+        return False
 
 
 def find_no_people(
@@ -46,9 +69,10 @@ def find_no_people(
     photos = [rel for rel in scan(root, include_subfolders) if kind(rel) == "photo"]
     total = len(photos)
     folder = resolve_existing_dir(root, NO_PEOPLE)
+    blocked = _folder_blocked(root, folder)
     allocator = TargetAllocator(root)
     moves: list[Move] = []
-    with_people = unreadable = in_place = 0
+    with_people = unreadable = in_place = stuck = 0
     for i, rel in enumerate(photos, start=1):
         if cancel is not None and cancel.is_set():
             return None
@@ -61,6 +85,8 @@ def find_no_people(
                 unreadable += 1
             elif faces:
                 with_people += 1
+            elif blocked:
+                stuck += 1
             else:
                 moves.append(Move(rel, allocator.allocate(f"{folder}/{name}")))
         if progress is not None:
@@ -74,4 +100,6 @@ def find_no_people(
         summary.append(f"{unreadable} photos could not be read (they stay)")
     if in_place:
         summary.append(f"{in_place} already in place")
+    if stuck:
+        summary.append(f"{stuck} photos stay: a file or link named {NO_PEOPLE} is in the way")
     return Plan("no_people", moves, summary, in_place)

@@ -1,18 +1,23 @@
 """No people: photos where no face is found move into a "No people" folder."""
 
+import os
 import threading
 from pathlib import Path
 
 import numpy as np
 import pytest
+from fstree import tree
 
 from photosort.cache import AnalysisCache
+from photosort.executor import execute
 from photosort.faces import FACES_KIND, Face, pack_faces
 from photosort.imageinfo import UnreadableImage
+from photosort.journal import RunJournal
 from photosort.modes import MODE_SPECS, MODES
 from photosort.modes.no_people import NO_PEOPLE, find_no_people
 from photosort.plan import Move
 from photosort.thresholds import FACE_ENGINE_FAILS
+from photosort.undo import undo_run
 
 
 def _face() -> Face:
@@ -222,3 +227,54 @@ def test_cancel_gives_none(tmp_path, make_jpeg):
         return []
 
     assert find_no_people(tmp_path, False, analyse, cancel=cancel) is None
+
+
+BLOCKED = "photos stay: a file or link named No people is in the way"
+
+
+@pytest.mark.parametrize("link", ["No people", "no PEOPLE"])
+def test_nothing_moves_through_a_link_named_no_people(tmp_path, make_jpeg, link):
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    (outside / "kept.txt").parent.mkdir(parents=True)
+    (outside / "kept.txt").write_bytes(b"k")
+    make_jpeg(root / "sea.jpg")
+    make_jpeg(root / "hills.jpg")
+    make_jpeg(root / "me.jpg")
+    os.symlink(outside, root / link, target_is_directory=True)
+    before, outside_before = tree(root), tree(outside)
+    plan = find_no_people(root, True, FakeEngine({"me.jpg": [_face()]}))
+    assert plan.moves == []
+    assert plan.summary == ["0 photos without faces → No people", "1 photos with people stay",
+                            f"2 {BLOCKED}"]
+    journal = RunJournal.create(root, "no_people", True, len(plan.moves))
+    result = execute(root, plan, journal)
+    assert result.moved == 0
+    assert tree(outside) == outside_before
+    undo_run(root, journal.run_id)
+    assert tree(root) == before
+    assert tree(outside) == outside_before
+
+
+def test_a_file_named_no_people_keeps_the_photos_in_place(tmp_path, make_jpeg):
+    (tmp_path / "no people").write_bytes(b"a note")
+    make_jpeg(tmp_path / "sea.jpg")
+    before = tree(tmp_path)
+    plan = find_no_people(tmp_path, False, FakeEngine())
+    assert plan.moves == []
+    assert plan.summary == ["0 photos without faces → No people", "0 photos with people stay",
+                            f"1 {BLOCKED}"]
+    journal = RunJournal.create(tmp_path, "no_people", False, len(plan.moves))
+    execute(tmp_path, plan, journal)
+    assert tree(tmp_path) == before
+
+
+def test_a_real_folder_of_the_exact_name_is_used_beside_a_link(tmp_path, make_jpeg,
+                                                               case_sensitive_fs):
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    outside.mkdir()
+    (root / "No people").mkdir(parents=True)
+    os.symlink(outside, root / "no people", target_is_directory=True)
+    make_jpeg(root / "sea.jpg")
+    plan = find_no_people(root, False, FakeEngine())
+    assert _dsts(plan) == {"sea.jpg": "No people/sea.jpg"}
+    assert plan.summary == ["1 photos without faces → No people", "0 photos with people stay"]
