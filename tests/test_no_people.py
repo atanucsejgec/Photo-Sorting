@@ -244,8 +244,7 @@ def test_nothing_moves_through_a_link_named_no_people(tmp_path, make_jpeg, link)
     before, outside_before = tree(root), tree(outside)
     plan = find_no_people(root, True, FakeEngine({"me.jpg": [_face()]}))
     assert plan.moves == []
-    assert plan.summary == ["0 photos without faces → No people", "1 photos with people stay",
-                            f"2 {BLOCKED}"]
+    assert plan.summary == ["1 photos with people stay", f"2 {BLOCKED}"]
     journal = RunJournal.create(root, "no_people", True, len(plan.moves))
     result = execute(root, plan, journal)
     assert result.moved == 0
@@ -261,8 +260,7 @@ def test_a_file_named_no_people_keeps_the_photos_in_place(tmp_path, make_jpeg):
     before = tree(tmp_path)
     plan = find_no_people(tmp_path, False, FakeEngine())
     assert plan.moves == []
-    assert plan.summary == ["0 photos without faces → No people", "0 photos with people stay",
-                            f"1 {BLOCKED}"]
+    assert plan.summary == ["0 photos with people stay", f"1 {BLOCKED}"]
     journal = RunJournal.create(tmp_path, "no_people", False, len(plan.moves))
     execute(tmp_path, plan, journal)
     assert tree(tmp_path) == before

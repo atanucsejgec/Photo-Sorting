@@ -11,7 +11,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from photosort.naming import TargetAllocator, fit_name, fold, resolve_existing_dir
+from photosort.naming import TargetAllocator, fit_name, fold, real_dir, resolve_existing_dir
 from photosort.plan import Move, Plan
 from photosort.scanner import walk_all_files
 from photosort.thresholds import FOLDER_NAME_MAX, FOLDER_NAME_MAX_BYTES
@@ -66,9 +66,7 @@ def _real_folder(root: Path, folder: str) -> bool:
     exact spelling first, see resolve_existing_dir) is a real folder, not a
     link to one. Where names differ in case, a link "pdf" can sit beside a
     real "PDF" folder, which is used, as in Date (all files)."""
-    path = root / resolve_existing_dir(root, folder)
-    return (os.path.isdir(path)
-            and not (os.path.islink(path) or os.path.isjunction(path)))
+    return real_dir(root / resolve_existing_dir(root, folder))
 
 
 def plan_extension(root: Path, files: list[str],
@@ -96,6 +94,15 @@ def plan_extension(root: Path, files: list[str],
         rel for rel in files
         if "/" not in rel and extension_folder(rel) == NO_EXTENSION}
     taken = _taken_names(root, leaving)
+    blocked_folders: dict[str, bool] = {}  # folder -> whether its files stay
+
+    def is_blocked(folder: str) -> bool:
+        if folder not in blocked_folders:
+            blocked_folders[folder] = (no_extension_blocked if folder == NO_EXTENSION
+                                       else fold(folder) in taken
+                                       and not _real_folder(root, folder))
+        return blocked_folders[folder]
+
     moves: list[Move] = []
     folders: set[str] = set()
     unchanged = stuck = 0
@@ -107,11 +114,9 @@ def plan_extension(root: Path, files: list[str],
         parent, _, name = rel.rpartition("/")
         folder = extension_folder(name)
         # A folder on disk spelt another way matches by fold, as resolve_existing_dir does.
-        blocked = (no_extension_blocked if folder == NO_EXTENSION
-                   else fold(folder) in taken and not _real_folder(root, folder))
         if fold(parent) == fold(folder):
             unchanged += 1
-        elif blocked:
+        elif is_blocked(folder):
             stuck += 1
         else:
             moves.append(Move(rel, allocator.allocate(f"{folder}/{name}")))

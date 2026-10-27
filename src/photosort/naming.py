@@ -88,6 +88,12 @@ def fold(name: str) -> str:
     return unicodedata.normalize("NFC", unicodedata.normalize("NFC", name).casefold())
 
 
+def real_dir(path: Path) -> bool:
+    """Whether path is a real folder: not a link to one (a symlink or an
+    NTFS junction), nor anything else."""
+    return os.path.isdir(path) and not (os.path.islink(path) or os.path.isjunction(path))
+
+
 def _existing_part(folder: Path, part: str) -> str:
     """Return part as spelt on disk in folder, if a folder by that name exists.
 

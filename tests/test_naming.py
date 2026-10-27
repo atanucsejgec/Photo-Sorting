@@ -2,7 +2,10 @@ import os
 
 import pytest
 
-from photosort.naming import TargetAllocator, fit_name, fold, resolve_existing_dir, safe_name
+from photosort import naming
+from photosort.naming import (
+    TargetAllocator, fit_name, fold, real_dir, resolve_existing_dir, safe_name,
+)
 from photosort.thresholds import FOLDER_NAME_MAX, FOLDER_NAME_MAX_BYTES
 
 
@@ -200,3 +203,25 @@ def test_fit_name_gives_a_valid_scanned_folder(tmp_path, name, cut):
     folder = _fit(name)
     assert folder == cut
     _usable_folder(tmp_path, folder)
+
+
+def test_real_dir(tmp_path):
+    (tmp_path / "folder").mkdir()
+    (tmp_path / "file").write_bytes(b"f")
+    assert real_dir(tmp_path / "folder") is True
+    assert real_dir(tmp_path / "file") is False
+    assert real_dir(tmp_path / "missing") is False
+    try:
+        os.symlink(tmp_path / "folder", tmp_path / "link", target_is_directory=True)
+        os.symlink(tmp_path / "missing", tmp_path / "broken")
+    except OSError:
+        pytest.skip("symlinks are not allowed here")
+    assert real_dir(tmp_path / "link") is False  # a link to a folder is not one
+    assert real_dir(tmp_path / "broken") is False
+
+
+def test_a_junction_is_not_a_real_dir(tmp_path, monkeypatch):
+    (tmp_path / "junction").mkdir()  # Linux has no junctions: pretend it is one
+    monkeypatch.setattr(naming.os.path, "isjunction",
+                        lambda p: os.fspath(p) == os.fspath(tmp_path / "junction"))
+    assert real_dir(tmp_path / "junction") is False
