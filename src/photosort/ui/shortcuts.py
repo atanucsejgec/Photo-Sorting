@@ -227,6 +227,7 @@ class ShortcutStrip(QWidget):
         self._flow = _FlowLayout(self, h_spacing=12, v_spacing=4)
         self._flow.setContentsMargins(0, 8, 0, 0)
         self._screen: QWidget | None = None
+        self._drawn_for: QWidget | None = None  # the screen whose keys are shown
         self._shown: list[tuple[str, str]] = []
         QApplication.instance().focusChanged.connect(self._focus_moved)
 
@@ -236,11 +237,18 @@ class ShortcutStrip(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        """Redraw, e.g. after a shortcut is enabled or disabled."""
+        """Redraw, e.g. after a shortcut is enabled or disabled. While the
+        focus is away from the window (another app, a dialog) the screen's
+        keys stay as they were, so the page's layout does not change; they
+        are redrawn when the focus comes back."""
         if not isValid(self):
             return
-        keys = [] if self._screen is None else keys_for(QApplication.focusWidget(),
-                                                        self._screen)
+        focus = QApplication.focusWidget()
+        if (self._screen is not None and self._screen is self._drawn_for
+                and self._away(focus)):
+            return
+        keys = [] if self._screen is None else keys_for(focus, self._screen)
+        self._drawn_for = self._screen
         if keys == self._shown:
             return
         self._shown = keys
@@ -270,6 +278,14 @@ class ShortcutStrip(QWidget):
     def text(self) -> str:
         """What the strip shows, as plain text: "Enter start · Esc back"."""
         return " · ".join(f"{label} {word}" for label, word in self._shown)
+
+    def _away(self, focus: QWidget | None) -> bool:
+        """focus is outside this window (none in the app, or another
+        window), and not in a popup opened from the screen."""
+        if focus is None:
+            return True
+        return (focus.window() is not self.window()
+                and _popup_keys(focus, self._screen) is None)
 
     def _focus_moved(self, old: QWidget | None, new: QWidget | None) -> None:
         self.refresh()
@@ -313,6 +329,10 @@ def confirm_leave(parent: QWidget | None) -> bool:
                        yes="Leave", no="Stay", default="no")
 
 
+# Focus reasons for the focus coming back to where it was (the window
+# activated again, a popup closed), not moved by the owner.
+_COMING_BACK = (Qt.FocusReason.ActiveWindowFocusReason, Qt.FocusReason.PopupFocusReason)
+
 _STEPS = {Qt.Key.Key_Left: -1, Qt.Key.Key_Right: 1, Qt.Key.Key_Up: 0, Qt.Key.Key_Down: 0}
 
 
@@ -326,7 +346,9 @@ class GridNavigator(QObject):
     scrolled into view (its bottom, with its answers, when it is taller than
     the view). The view stays pinned to it, scrolled into view again when the
     view changes size (reveal_soon), until the owner scrolls it (the wheel, a
-    scrollbar) away; a card taking the focus pins it again.
+    scrollbar) away; a card taking the focus pins it again (not the focus
+    coming back to the current card: the window activated, a popup closed),
+    and so do new cards (set_cards()).
 
     set_cards() swaps in the cards of a reload: the current card stays the
     one with the same key(card) (its identity; by default its place), unless
@@ -362,6 +384,7 @@ class GridNavigator(QObject):
         for card in self.cards:
             card.installEventFilter(self)
         self._make_current(max(0, min(current, len(self.cards) - 1)))
+        self._pinned = True  # new cards: the view follows the focused one
 
     def current(self) -> QWidget | None:
         return self.cards[self._current] if self.cards else None
@@ -436,8 +459,11 @@ class GridNavigator(QObject):
             return False
         kind = event.type()
         if kind == QEvent.Type.FocusIn:
+            back = (watched is self.current() and not self._pinned
+                    and event.reason() in _COMING_BACK)
             self._make_current(self.cards.index(watched))
-            self._scroll_to(watched)
+            if not back:  # the focus coming back leaves the owner's scroll be
+                self._scroll_to(watched)
             self.current_changed.emit()
         elif kind == QEvent.Type.KeyPress and event.key() in _STEPS:
             modifiers = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier

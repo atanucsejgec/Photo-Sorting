@@ -15,7 +15,7 @@ import pytest
 from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QThreadPool, QTimer
 from PySide6.QtGui import QKeyEvent, QWheelEvent
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QMenu, QPushButton, QWidget
 
 from photosort.groups import Candidate, Group
 from photosort.modes._clip_scan import ClipScan
@@ -929,6 +929,95 @@ def test_a_resize_never_pulls_the_view_back_after_the_owner_scrolled(qtbot, make
         qtbot.wait(300)
         assert bar.value() == min(scrolled, bar.maximum()), (screen, size, landed, scrolled)
         assert _focused() is card
+
+
+def _open_review(qtbot, w, root, screen: str):
+    """Open screen's review on its first item (Bad photos with enough cards
+    to scroll a long way); the page."""
+    if screen == "duplicates":
+        _start(qtbot, w, root, "duplicates")
+        groups_flow._on_found(w, [_group(root, "1"), _group(root, "2")])
+        return w.review_page
+    if screen == "bad":
+        _start(qtbot, w, root, "bad")
+        bad_flow._on_found(w, _bad(root, 12))
+        return w.bad_page
+    _start(qtbot, w, root, "content")
+    w.flow_state = _clip_sort(root)
+    clip_flow._ask(w, {})
+    return w.category_review_page
+
+
+def _other_app(qtbot):
+    """A window standing for another application, made the active one (Alt+Tab away)."""
+    other = QWidget()
+    qtbot.addWidget(other)
+    other.resize(200, 200)
+    other.show()
+    qtbot.waitExposed(other)
+    _activate(qtbot, other)
+    return other
+
+
+def _scrolled_away(qtbot, w, root, screen):
+    """The review landed at 819 x 480, then the wheel moved the view away from
+    the focused card: (page, card, the scroll value)."""
+    page = _open_review(qtbot, w, root, screen)
+    card = _on_card(qtbot, page, 0)
+    qtbot.wait(300)
+    bar = page.scroll.verticalScrollBar()
+    landed = bar.value()
+    _wheel(page, 120 if screen == "duplicates" else -120, 3 if screen == "duplicates" else 6)
+    qtbot.wait(50)
+    assert bar.value() != landed and _focused() is card
+    return page, card, bar.value()
+
+
+@pytest.mark.parametrize("screen", ["duplicates", "bad", "content"])
+def test_switching_windows_never_moves_the_review_view(qtbot, make_window, root, screen):
+    """Alt+Tab away and back: the card takes the focus again (for a window
+    activation), the view and the strip stay as they were."""
+    w = make_window(size=(819, 480))
+    page, card, scrolled = _scrolled_away(qtbot, w, root, screen)
+    strip = w.strip.text()
+    _other_app(qtbot)
+    qtbot.wait(100)
+    assert w.strip.text() == strip  # the keys stay, so the view keeps its height
+    assert page.scroll.verticalScrollBar().value() == scrolled
+    _activate(qtbot, w)
+    qtbot.wait(300)
+    assert _focused() is card
+    assert page.scroll.verticalScrollBar().value() == scrolled
+    assert w.strip.text() == strip
+
+
+@pytest.mark.parametrize("screen", ["duplicates", "bad", "content"])
+def test_closing_a_popup_never_moves_the_review_view(qtbot, make_window, root, screen):
+    w = make_window(size=(819, 480))
+    page, card, scrolled = _scrolled_away(qtbot, w, root, screen)
+    menu = QMenu(w)
+    menu.addAction("x")
+    menu.popup(w.mapToGlobal(QPoint(100, 100)))
+    qtbot.waitUntil(menu.isVisible)
+    qtbot.wait(50)
+    menu.close()
+    qtbot.wait(300)
+    assert _focused() is card
+    assert page.scroll.verticalScrollBar().value() == scrolled
+
+
+@pytest.mark.parametrize("screen", ["duplicates", "bad", "content"])
+def test_a_review_opened_while_away_lands_with_the_answers_in_view(qtbot, make_window, root,
+                                                                   screen):
+    """A scan ends while the owner is in another app: on Alt+Tab back the
+    focused card's answers are in view."""
+    w = make_window(size=(819, 480))
+    _other_app(qtbot)
+    page = _open_review(qtbot, w, root, screen)
+    qtbot.wait(300)
+    _activate(qtbot, w)
+    qtbot.wait(300)
+    assert _answers_in_view(page, screen)
 
 
 def test_grid_columns_fill_the_width(qtbot, make_window, root):
