@@ -23,6 +23,7 @@ from keys import (
     _go,
     _in_dialog,
     _key,
+    _on_summary,
     _records,
     _start_by_keyboard,
     _to_tile,
@@ -163,6 +164,18 @@ def test_extension_cancel_or_esc_at_the_warning_goes_home(qtbot, make_window, mi
     assert w.current_page() is w.home
     assert w._plan is None
     assert not w.busy
+    assert _hashes(mixed) == before
+    assert errors == []
+
+
+def test_space_on_the_extension_summary_moves_nothing(qtbot, make_window, mixed, errors):
+    before = _hashes(mixed)
+    w = make_window()
+    _start(qtbot, w, mixed, "extension", subfolders=False)
+    _on_summary(qtbot, w)  # Go focused, and armed
+    _key(qtbot, Qt.Key.Key_Space)
+    qtbot.wait(50)
+    assert w.current_page() is w.summary_page
     assert _hashes(mixed) == before
     assert errors == []
 

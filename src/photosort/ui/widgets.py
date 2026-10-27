@@ -1,6 +1,6 @@
 """Small widgets the pages share."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPen, QPixmap
@@ -113,23 +113,40 @@ class ButtonKeys(QObject):
     summary, Ctrl+Enter on a review) must never press the next screen's
     button, such as Go. With sideways, ← and → move the focus to the
     button beside, among the shown and enabled ones, in the given order.
-    Space presses a button as Qt does, once however long it is held.
+
+    Space presses a button as Qt does, once however long it is held; with
+    space False it presses none of them (on the Summary and Done, where a
+    Space meant for the screen before, such as a face question's skip,
+    must never press Go, Undo or Home). With armed, Enter presses a button
+    only while armed(button) is true (Go, just after the summary shows,
+    is not). A click is never held back.
     """
 
-    def __init__(self, buttons: Sequence[QPushButton], sideways: bool = False) -> None:
+    def __init__(self, buttons: Sequence[QPushButton], sideways: bool = False,
+                 space: bool = True,
+                 armed: Callable[[QPushButton], bool] | None = None) -> None:
         super().__init__(buttons[0])
         self._buttons = list(buttons)
         self._sideways = sideways
+        self._space = space
+        self._armed = armed
         for button in self._buttons:
             button.setAutoDefault(False)  # Enter is handled here, on the focused one
             button.installEventFilter(self)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if event.type() != QEvent.Type.KeyPress or watched not in self._buttons:
+        kind = event.type()
+        if (kind not in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
+                or watched not in self._buttons):
             return False
         key = event.key()
+        if key == Qt.Key.Key_Space and not self._space:
+            return True  # its press and its release: QPushButton clicks on the release
+        if kind != QEvent.Type.KeyPress:
+            return False
         if key in _ENTER:
-            if not event.isAutoRepeat() and _plain(event) and watched.isEnabled():
+            if (not event.isAutoRepeat() and _plain(event) and watched.isEnabled()
+                    and (self._armed is None or self._armed(watched))):
                 watched.click()
             return True
         if self._sideways and key in _SIDEWAYS and _plain(event):

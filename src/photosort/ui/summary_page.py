@@ -6,8 +6,15 @@ Back does; ← and → switch between the buttons, and Tab also reaches "Show
 all moves" (Enter shows or hides the list of every move) and the list.
 A held Enter, or Enter with a modifier (Ctrl+Enter held since a review),
 presses nothing (widgets.ButtonKeys).
+
+Space presses no button here: it skips a face question, and on the last
+one the summary opens with Go focused, so a second Space must never move
+the files. Go takes no key for GO_ARM_SECONDS after the summary shows, so
+a fast second Enter (a quick scan, or Face setup with nothing to ask)
+never moves them either; a click on Go is not held back.
 """
 
+import time
 from collections.abc import Sequence
 
 from PySide6.QtCore import Qt, Signal
@@ -24,6 +31,8 @@ from photosort.ui.widgets import ButtonBar, ButtonKeys
 READY = "Ready to sort"
 SAFE = "Nothing is deleted · Undo is always there"
 ICON_PX = 28
+GO_ARM_SECONDS = 0.3  # Go takes no key this soon after the summary shows
+_now = time.monotonic  # the clock Go is armed by (a test moves it on by hand)
 
 
 class SummaryPage(QWidget):
@@ -35,6 +44,7 @@ class SummaryPage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._moves: Sequence[Move] = ()
+        self._shown_at = float("-inf")  # when show_summary last ran, by _now
         layout = QVBoxLayout(self)
         page_spacing(layout)
         self.heading_label = heading(READY)
@@ -82,7 +92,8 @@ class SummaryPage(QWidget):
         layout.addStretch(0)  # takes the room while the list is hidden
 
         # Keys (see the module doc).
-        ButtonKeys([self.show_moves_button, self.back_button, self.go_button], sideways=True)
+        ButtonKeys([self.show_moves_button, self.back_button, self.go_button], sideways=True,
+                   space=False, armed=lambda b: b is not self.go_button or self.go_armed())
         for button, word in ((self.go_button, "go"), (self.back_button, "back"),
                              (self.show_moves_button, "show/hide moves")):
             shortcuts.describe(button, "Enter", word)
@@ -95,6 +106,7 @@ class SummaryPage(QWidget):
                      mode_label: str | None = None, mode_icon: str | None = None) -> None:
         """Show lines; Go only if can_go; moves for Show all moves."""
         self._moves = moves
+        self._shown_at = _now()
         self.heading_label.setText(
             READY if mode_label is None else f"{READY} by {mode_label}")
         self.icon_label.setVisible(mode_icon is not None)
@@ -107,6 +119,11 @@ class SummaryPage(QWidget):
         self.moves_table.setRowCount(0)
         self.show_moves_button.setChecked(False)
         self.moves_table.hide()
+
+    def go_armed(self) -> bool:
+        """Whether a key can press Go: it can be pressed, and the summary
+        has been shown for GO_ARM_SECONDS."""
+        return self.go_button.isEnabled() and _now() - self._shown_at >= GO_ARM_SECONDS
 
     def focus_first(self) -> None:
         """Go, so Enter moves the files; Back when there is nothing to move."""

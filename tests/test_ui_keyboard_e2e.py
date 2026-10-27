@@ -265,6 +265,133 @@ def test_a_held_ctrl_enter_never_reaches_go(qtbot, make_window, photos, make_pat
     qtbot.waitUntil(lambda: w.current_page() is w.done_page)
 
 
+# ----- Space presses nothing on the summary and Done; Go waits a moment --------------------
+
+def test_space_on_the_summary_presses_nothing(qtbot, make_window, photos, make_jpeg):
+    make_jpeg(photos / "a.jpg", EXIF)
+    w = make_window()
+    _start_by_keyboard(qtbot, w, photos, "date")
+    _on_summary(qtbot, w)  # Go focused, and armed
+    for button in (w.go_button, w.back_button, w.show_moves_button):
+        assert _focused() is button
+        _key(qtbot, Qt.Key.Key_Space)
+        _hold(Qt.Key.Key_Space)
+        qtbot.wait(20)
+        assert w.current_page() is w.summary_page
+        _key(qtbot, Qt.Key.Key_Left)
+    assert not w.show_moves_button.isChecked()
+    assert load_runs(photos) == []
+    assert _files(photos) == ["a.jpg"]
+
+
+def test_space_through_the_face_questions_never_presses_go(qtbot, make_window, photos,
+                                                           make_jpeg, errors):
+    w = make_window()
+    atanu = w.people_store.add("Atanu", _unit(1), Image.new("RGB", (40, 40), "blue"))
+    make_jpeg(photos / "a.jpg", size=(200, 200))
+    make_jpeg(photos / "b.jpg", size=(200, 200))
+    unsure = _towards(atanu.embeddings[0], _unit(7), 0.7)
+    w.engine_factory = lambda use_gpu: FakeEngine({"a.jpg": [_face(unsure)],
+                                                   "b.jpg": [_face(atanu.embeddings[0])]})
+    _start_by_keyboard(qtbot, w, photos, "face")
+    qtbot.waitUntil(lambda: _focused() is w.face_setup_page.people_list)
+    _key(qtbot, Qt.Key.Key_Space)  # tick Atanu
+    _key(qtbot, Qt.Key.Key_Return)  # start sorting
+    page = w.face_question_page
+    qtbot.waitUntil(lambda: _focused() is page.photo_view)
+    _key(qtbot, Qt.Key.Key_Space)  # skip the last question: the summary, Go focused
+    _on_summary(qtbot, w)
+    _key(qtbot, Qt.Key.Key_Space)  # once more, by habit
+    qtbot.wait(50)
+    assert w.current_page() is w.summary_page
+    assert load_runs(photos) == []
+    assert _files(photos) == ["a.jpg", "b.jpg"]
+    assert errors == []
+
+
+def test_space_on_done_presses_nothing(qtbot, make_window, photos, make_jpeg, monkeypatch):
+    opened = []
+    monkeypatch.setattr(main_window.QDesktopServices, "openUrl",
+                        lambda url: opened.append(url) or True)
+    make_jpeg(photos / "a.jpg", EXIF)
+    w = make_window()
+    _start_by_keyboard(qtbot, w, photos, "date")
+    _go(qtbot, w)
+    for button in (w.home_button, w.open_folder_button, w.undo_button):
+        assert _focused() is button
+        _key(qtbot, Qt.Key.Key_Space)
+        qtbot.wait(20)
+        assert w.current_page() is w.done_page
+        _key(qtbot, Qt.Key.Key_Left)
+    qtbot.wait(50)
+    assert opened == []
+    assert w.undo_button.isEnabled() and w.undo_label.text() == ""
+    assert _files(photos) == ["2025/02-February/a.jpg"]
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """The summary's clock, in seconds, moved on by hand (summary_page._now)."""
+    from photosort.ui import summary_page
+
+    now = [0.0]
+    monkeypatch.setattr(summary_page, "_now", lambda: now[0])
+    return now
+
+
+def test_go_waits_a_moment_after_the_summary_shows(qtbot, make_window, photos, make_jpeg,
+                                                   clock):
+    from photosort.ui import summary_page
+
+    make_jpeg(photos / "a.jpg", EXIF)
+    w = make_window()
+    _start_by_keyboard(qtbot, w, photos, "date")
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    qtbot.waitUntil(lambda: _focused() is w.go_button)
+    _key(qtbot, Qt.Key.Key_Return)  # a fast second Enter, at once: nothing
+    clock[0] = summary_page.GO_ARM_SECONDS - 0.01
+    _key(qtbot, Qt.Key.Key_Return)  # still too soon
+    _key(qtbot, Qt.Key.Key_Enter, Qt.KeyboardModifier.KeypadModifier)
+    qtbot.wait(50)
+    assert w.current_page() is w.summary_page
+    assert load_runs(photos) == []
+    clock[0] = summary_page.GO_ARM_SECONDS
+    _key(qtbot, Qt.Key.Key_Return)  # a deliberate Enter: Go, once
+    qtbot.waitUntil(lambda: w.current_page() is w.done_page)
+    assert len(load_runs(photos)) == 1
+    assert _files(photos) == ["2025/02-February/a.jpg"]
+
+
+def test_a_click_on_go_is_not_delayed(qtbot, make_window, photos, make_jpeg, clock):
+    make_jpeg(photos / "a.jpg", EXIF)
+    w = make_window()
+    _start_by_keyboard(qtbot, w, photos, "date")
+    qtbot.waitUntil(lambda: _focused() is w.go_button)
+    qtbot.mouseClick(w.go_button, Qt.MouseButton.LeftButton)  # at once
+    qtbot.waitUntil(lambda: w.current_page() is w.done_page)
+    assert len(load_runs(photos)) == 1
+
+
+def test_go_waits_again_each_time_the_summary_shows(qtbot, make_window, photos, make_jpeg,
+                                                    clock):
+    from photosort.ui import summary_page
+
+    make_jpeg(photos / "a.jpg", EXIF)
+    w = make_window()
+    _start_by_keyboard(qtbot, w, photos, "date")
+    qtbot.waitUntil(lambda: _focused() is w.go_button)
+    clock[0] = summary_page.GO_ARM_SECONDS
+    assert w.summary_page.go_armed()
+    _key(qtbot, Qt.Key.Key_Escape)  # Home
+    _key(qtbot, Qt.Key.Key_Return)  # the same tile again: a new summary
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    qtbot.waitUntil(lambda: _focused() is w.go_button)
+    _key(qtbot, Qt.Key.Key_Return)  # too soon after this one
+    qtbot.wait(50)
+    assert w.current_page() is w.summary_page
+    assert load_runs(photos) == []
+
+
 # ----- Duplicates (a review grid) ----------------------------------------------------------
 
 def test_duplicates_by_keyboard(qtbot, make_window, photos, make_pattern_jpeg, errors):

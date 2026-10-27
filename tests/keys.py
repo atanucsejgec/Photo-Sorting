@@ -165,9 +165,12 @@ def _start_by_keyboard(qtbot, w: MainWindow, folder: Path, mode: str) -> None:
 
 
 def _on_summary(qtbot, w: MainWindow) -> None:
+    """On the summary, Go focused and armed: an Enter now presses it, as
+    the owner's deliberate one does (summary_page.GO_ARM_SECONDS)."""
     qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
     qtbot.waitUntil(lambda: _focused() is w.go_button)
     assert w.strip.text() == f"Enter go · ←→ switch buttons · Esc back · {TAB}"
+    qtbot.waitUntil(w.summary_page.go_armed)
 
 
 def _go(qtbot, w: MainWindow) -> None:

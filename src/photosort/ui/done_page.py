@@ -2,7 +2,8 @@
 
 Home has the focus when the page opens, never Undo, so a second Enter (or
 a held one) can't undo the sort: Enter presses the focused button, once
-(widgets.ButtonKeys), and ← → switch between them. U undoes this run, after
+(widgets.ButtonKeys), and ← → switch between them; Space presses none of
+them (it may be held over from the summary). U undoes this run, after
 asking, with "Cancel" focused; the Undo button (one Tab away) undoes at
 once, as a click always has. Esc goes Home too.
 """
@@ -60,7 +61,7 @@ class DonePage(QWidget):
         layout.addStretch()
 
         ButtonKeys([self.undo_button, self.open_folder_button, self.home_button],
-                   sideways=True)
+                   sideways=True, space=False)
         for button, word in ((self.home_button, "home"), (self.undo_button, "undo"),
                              (self.open_folder_button, "open folder")):
             shortcuts.describe(button, "Enter", word)
