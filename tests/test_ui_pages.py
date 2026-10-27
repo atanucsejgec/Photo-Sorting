@@ -17,6 +17,7 @@ from photosort.plan import Move, Plan
 from photosort.settings import DEFAULT_CONTENT_CATEGORIES, Settings, load_settings
 from photosort.ui import dialogs
 from photosort.ui.category_editor import CategoryEditor
+from photosort.ui.done_page import DonePage
 from photosort.ui.main_window import MainWindow
 
 EXIF = "2025:02:20 10:00:00"
@@ -387,3 +388,17 @@ def test_settings_spin_text_is_not_against_the_ring(make_window):
     w = make_window()
     margins = w.settings_page.gap_spin.lineEdit().textMargins()
     assert margins.left() >= 4
+
+
+def test_the_done_pages_undo_line_shows_only_with_text(qtbot):
+    page = DonePage()
+    qtbot.addWidget(page)
+    page.show()
+    page.show_result(["Moved 3 files."], can_undo=True)
+    assert page.undo_label.isHidden()  # no blank line under the result
+    page.undo_started()
+    assert not page.undo_label.isHidden() and page.undo_label.text() == "Putting files back…"
+    page.undo_ended("Undo complete: 3 files put back.", can_undo_again=False)
+    assert not page.undo_label.isHidden()
+    page.show_result(["Moved 1 files."], can_undo=True)
+    assert page.undo_label.isHidden()

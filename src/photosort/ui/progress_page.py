@@ -79,6 +79,5 @@ class ProgressPage(QWidget):
 
     def _set_cancellable(self, on: bool) -> None:
         self.cancel_button.setEnabled(on)
-        if self._cancel_key.isEnabled() != on:
-            self._cancel_key.setEnabled(on)
+        if shortcuts.follow([(self._cancel_key, self.cancel_button)]):
             self.keys_changed.emit()

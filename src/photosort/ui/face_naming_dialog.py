@@ -203,6 +203,9 @@ class FaceNamingDialog(QDialog):
         self.save_button = QPushButton("Save")
         self.save_button.setObjectName("primaryButton")  # see theme
         ButtonKeys([self.choose_button, self.cancel_button, self.save_button])
+        for button, word in ((self.choose_button, "choose photo"),
+                             (self.cancel_button, "cancel"), (self.save_button, "save")):
+            shortcuts.describe(button, "Enter", word)
         self.save_button.setDefault(True)  # Enter in a name box saves
         layout.addWidget(ButtonBar([self.choose_button], [self.cancel_button, self.save_button]))
         self.strip = ShortcutStrip(self)

@@ -12,6 +12,8 @@ A bound shortcut that is disabled is not listed. While a popup opened from
 the screen has the focus (a picker's list, say), only the popup's keys work,
 so only its records are shown.
 
+follow() switches keys on and off with the buttons they press.
+
 pause_while_focused() switches shortcuts off while a field has the focus,
 where they would clash with typing or with the field's own keys.
 
@@ -24,7 +26,7 @@ lines when narrow, so it is never clipped. It is reference text: nothing in
 it takes focus or clicks.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer, Signal
@@ -80,6 +82,18 @@ def bind(owner: QWidget, keys: str | Sequence[str], label: str, word: str,
 def describe(owner: QWidget, label: str, word: str) -> None:
     """Record a key that owner handles itself, so the strip shows it."""
     _add(owner, _Record(label, word, None))
+
+
+def follow(pairs: Iterable[tuple[QShortcut, QWidget]]) -> bool:
+    """Switch each shortcut on or off with the button it presses, so a key
+    works (and is listed) just while its button can be pressed. True if any
+    changed: the caller then redraws its strip."""
+    changed = False
+    for key, button in pairs:
+        if key.isEnabled() != button.isEnabled():
+            key.setEnabled(button.isEnabled())
+            changed = True
+    return changed
 
 
 TAB_LABEL, TAB_WORD = "Tab/Shift+Tab", "area"

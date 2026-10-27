@@ -44,6 +44,7 @@ class DonePage(QWidget):
             label.setWordWrap(True)
             label.setTextFormat(Qt.TextFormat.PlainText)
             inner.addWidget(label)
+        self.undo_label.hide()  # shown with what an undo did (see _undo_line)
         layout.addWidget(panel)
 
         self.undo_button = QPushButton("Undo")
@@ -65,26 +66,29 @@ class DonePage(QWidget):
                              (self.open_folder_button, "open folder")):
             shortcuts.describe(button, "Enter", word)
             shortcuts.describe(button, "←→", "switch buttons")
-        self._undo_key = shortcuts.bind(self, "U", "U", "undo", self._undo_asked, repeat=False)
-        self._home_key = shortcuts.bind(self, "Escape", "Esc", "home", self.home_button.click,
-                                        repeat=False)
+        # U and Esc work just while Undo and Home can be pressed (see _sync_keys).
+        self._keys = [
+            (shortcuts.bind(self, "U", "U", "undo", self._undo_asked, repeat=False),
+             self.undo_button),
+            (shortcuts.bind(self, "Escape", "Esc", "home", self.home_button.click,
+                            repeat=False), self.home_button)]
         shortcuts.describe_tab(self)
 
     def show_result(self, lines: list[str], can_undo: bool) -> None:
         self.done_label.setText("\n".join(lines))
-        self.undo_label.setText("")
+        self._undo_line("")
         self._set_undoable(can_undo)
         self._set_home(True)
 
     def undo_started(self) -> None:
         self._set_undoable(False)
         self._set_home(False)
-        self.undo_label.setText(UNDOING)
+        self._undo_line(UNDOING)
 
     def undo_ended(self, text: str, can_undo_again: bool) -> None:
         """The undo is over (text says how it went); Undo stays for a retry
         if can_undo_again. The focus goes back to Home."""
-        self.undo_label.setText(text)
+        self._undo_line(text)
         self._set_undoable(can_undo_again)
         self._set_home(True)
         if self.isVisible():
@@ -99,16 +103,20 @@ class DonePage(QWidget):
                 self, UNDO_TITLE, UNDO_QUESTION, yes="Undo", no="Cancel", default="no"):
             self.undo_button.click()
 
+    def _undo_line(self, text: str) -> None:
+        """What an undo did, under the result; hidden while there is none."""
+        self.undo_label.setText(text)
+        self.undo_label.setVisible(bool(text))
+
     def _set_undoable(self, on: bool) -> None:
         self.undo_button.setEnabled(on)
-        self._switch(self._undo_key, on)
+        self._sync_keys()
 
     def _set_home(self, on: bool) -> None:
         """Home, and Esc with it (both wait while an undo runs)."""
         self.home_button.setEnabled(on)
-        self._switch(self._home_key, on)
+        self._sync_keys()
 
-    def _switch(self, key, on: bool) -> None:
-        if key.isEnabled() != on:
-            key.setEnabled(on)
+    def _sync_keys(self) -> None:
+        if shortcuts.follow(self._keys):
             self.keys_changed.emit()

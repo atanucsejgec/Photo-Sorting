@@ -281,11 +281,13 @@ def test_editor_reset_to_defaults(editor):
 def test_editor_message_clears(qtbot, monkeypatch):
     e = CategoryEditor([f"Category {n}" for n in range(30)])
     qtbot.addWidget(e)
+    e.show()
+    assert e.message_label.isHidden()  # no blank line while there is nothing to say
     e.add_button.click()
-    assert e.message_label.text()
+    assert e.message_label.text() and not e.message_label.isHidden()
     e.list_widget.setCurrentRow(0)
     e.remove_button.click()
-    assert e.message_label.text() == ""
+    assert e.message_label.text() == "" and e.message_label.isHidden()
 
 
 # ----- the main window ---------------------------------------------------------

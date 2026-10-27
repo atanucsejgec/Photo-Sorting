@@ -8,9 +8,9 @@ Remove the last one left.
 
 Keys, in the editor: ↑↓ choose, Insert or A add, F2 rename, Delete remove,
 Alt+↑ and Alt+↓ move the chosen one, R resets to the defaults, Enter is OK
-and Esc cancels (Enter presses a button Tab has reached instead). In the
-name dialog: Enter OK, Esc cancel. A key whose button is disabled does
-nothing, and is not listed.
+and Esc cancels (Enter presses a button Tab has reached instead, once:
+widgets.ButtonKeys). In the name dialog: Enter OK, Esc cancel. A key whose
+button is disabled does nothing, and is not listed.
 """
 
 from PySide6.QtCore import Qt
@@ -24,7 +24,7 @@ from photosort.thresholds import CONTENT_CATEGORIES_MAX
 from photosort.ui import shortcuts
 from photosort.ui.shortcuts import ShortcutStrip
 from photosort.ui.theme import heading
-from photosort.ui.widgets import ButtonBar
+from photosort.ui.widgets import ButtonBar, ButtonKeys
 
 EDITOR_MIN_WIDTH = 600
 
@@ -107,6 +107,7 @@ class CategoryEditor(QDialog):
         self.message_label = QLabel()
         self.message_label.setWordWrap(True)
         self.message_label.setObjectName("error")  # see theme
+        self.message_label.hide()  # shown with a problem to tell (see _message)
 
         self.add_button = QPushButton("Add…")
         self.rename_button = QPushButton("Rename…")
@@ -129,6 +130,8 @@ class CategoryEditor(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
         layout = _frame(self)
         layout.addWidget(heading("Content categories"))
         hint = QLabel("Content mode sorts each photo into the folder of "
@@ -142,6 +145,7 @@ class CategoryEditor(QDialog):
         layout.addWidget(ButtonBar([self.reset_button], [buttons]))
         self.setMinimumWidth(EDITOR_MIN_WIDTH)  # the strip on two rows, not four
 
+        self._keys: list = []  # (shortcut, the button it presses), switched on with it
         self.add_button.clicked.connect(self._add)
         self.rename_button.clicked.connect(self._rename)
         self.remove_button.clicked.connect(self._remove)
@@ -154,6 +158,13 @@ class CategoryEditor(QDialog):
         # what the button does and is off while the button is.
         shortcuts.describe(self.list_widget, "↑↓", "choose")
         shortcuts.bind(self.list_widget, "Return", "Enter", "OK", self.accept, repeat=False)
+        words = ((self.add_button, "add"), (self.rename_button, "rename"),
+                 (self.remove_button, "remove"), (self.up_button, "move up"),
+                 (self.down_button, "move down"), (self.reset_button, "reset"),
+                 (self.ok_button, "OK"), (self.cancel_button, "cancel"))
+        ButtonKeys([button for button, _ in words])
+        for button, word in words:
+            shortcuts.describe(button, "Enter", word)
         self._keys = [
             (shortcuts.bind(self, keys, label, word, button.click, repeat=repeat), button)
             for keys, label, word, button, repeat in (
@@ -179,13 +190,13 @@ class CategoryEditor(QDialog):
         self.remove_button.setEnabled(row >= 0 and count > 1)
         self.up_button.setEnabled(row > 0)
         self.down_button.setEnabled(0 <= row < count - 1)
-        changed = False
-        for key, button in getattr(self, "_keys", ()):
-            if key.isEnabled() != button.isEnabled():
-                key.setEnabled(button.isEnabled())
-                changed = True
-        if changed:
+        if shortcuts.follow(self._keys):
             self.strip.refresh()
+
+    def _message(self, text: str) -> None:
+        """A problem to tell, under the list; hidden while there is none."""
+        self.message_label.setText(text)
+        self.message_label.setVisible(bool(text))
 
     def _ask_name(self, title: str, name: str, others: list[str]) -> str | None:
         """The name the owner gave, or None if they cancelled."""
@@ -198,10 +209,9 @@ class CategoryEditor(QDialog):
     def _add(self) -> None:
         names = self.categories()
         if len(names) >= CONTENT_CATEGORIES_MAX:
-            self.message_label.setText(
-                f"You can have up to {CONTENT_CATEGORIES_MAX} categories.")
+            self._message(f"You can have up to {CONTENT_CATEGORIES_MAX} categories.")
             return
-        self.message_label.setText("")
+        self._message("")
         name = self._ask_name("Add a category", "", names)
         if name is not None:
             self.list_widget.addItem(name)
@@ -221,7 +231,7 @@ class CategoryEditor(QDialog):
         row = self.list_widget.currentRow()
         if row < 0 or self.list_widget.count() <= 1:
             return
-        self.message_label.setText("")
+        self._message("")
         self.list_widget.takeItem(row)
         self._update_buttons()
 
@@ -235,7 +245,7 @@ class CategoryEditor(QDialog):
         self.list_widget.setCurrentRow(to)
 
     def _reset(self) -> None:
-        self.message_label.setText("")
+        self._message("")
         self.list_widget.clear()
         self.list_widget.addItems(list(DEFAULT_CONTENT_CATEGORIES))
         self.list_widget.setCurrentRow(0)

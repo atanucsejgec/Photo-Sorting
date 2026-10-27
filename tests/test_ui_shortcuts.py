@@ -240,3 +240,17 @@ def test_ask_buttons_are_both_plain(qtbot):
                 yes="Leave", no="Stay")
     assert seen["focus"] == "Stay"
     assert seen["primary"] == []  # the safe default is not "the primary action"
+
+
+def test_follow_switches_each_key_with_its_button(qtbot, screen):
+    one = shortcuts.bind(screen, "1", "1", "one", lambda: None)
+    two = shortcuts.bind(screen, "2", "2", "two", lambda: None)
+    other = QPushButton("Other", screen)
+    pairs = [(one, screen.button), (two, other)]
+    assert shortcuts.follow(pairs) is False  # all on already
+    other.setEnabled(False)
+    assert shortcuts.follow(pairs) is True
+    assert one.isEnabled() and not two.isEnabled()
+    assert shortcuts.follow(pairs) is False
+    other.setEnabled(True)
+    assert shortcuts.follow(pairs) is True and two.isEnabled()

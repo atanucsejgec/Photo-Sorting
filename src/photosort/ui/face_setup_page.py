@@ -113,7 +113,12 @@ class FaceSetupPage(QWidget):
         buttons = [self.add_button, self.more_button, self.delete_button, self.back_button,
                    self.start_button]
         ButtonKeys(buttons)
+        for button, word in ((self.add_button, "add person"), (self.more_button, "add photos"),
+                             (self.delete_button, "forget"), (self.back_button, "back"),
+                             (self.start_button, "start")):
+            shortcuts.describe(button, "Enter", word)
 
+        self._keys: list = []  # (shortcut, the button it presses), switched on with it
         self.people_list.itemChanged.connect(self._ticks_changed)
         self.people_list.currentItemChanged.connect(self._update_buttons)
         self.add_button.clicked.connect(self.add_requested)
@@ -121,7 +126,6 @@ class FaceSetupPage(QWidget):
         self.delete_button.clicked.connect(self._forget)
         self.start_button.clicked.connect(lambda: self.start.emit(self.ticked_ids()))
 
-        self._keys: list = []  # (shortcut, the button it presses), switched on with it
         if not delete_only:
             shortcuts.describe(self.people_list, "↑↓", "choose")
             shortcuts.describe(self.people_list, "Space", "tick")
@@ -206,12 +210,7 @@ class FaceSetupPage(QWidget):
         self.more_button.setEnabled(person is not None)
         self.delete_button.setEnabled(person is not None)
         self.start_button.setEnabled(bool(self.ticked_ids()))
-        changed = False
-        for key, button in self._keys:
-            if key.isEnabled() != button.isEnabled():
-                key.setEnabled(button.isEnabled())
-                changed = True
-        if changed:
+        if shortcuts.follow(self._keys):
             self.keys_changed.emit()
 
     def focus_first(self) -> None:

@@ -19,8 +19,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from PIL import Image
-from PySide6.QtCore import QEvent, Qt, QThreadPool, QTimer
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QPushButton, QWidget
 
@@ -505,7 +504,7 @@ def test_face_naming_by_keyboard(qtbot, make_window, photos, tmp_path, make_jpeg
     _start_by_keyboard(qtbot, w, photos, "face")
     setup = w.face_setup_page
     qtbot.waitUntil(lambda: _focused() is setup.add_button)  # nobody to list
-    assert w.strip.text() == f"A add person · Esc back · {TAB}"
+    assert w.strip.text() == f"Enter add person · A add person · Esc back · {TAB}"
     seen = []
 
     def name_the_face(dialog: FaceNamingDialog):
@@ -987,6 +986,94 @@ def test_every_dialog_fits_the_smallest_window(qtbot, tmp_path):
     QThreadPool.globalInstance().waitForDone()
 
 
+# ----- a focused button lists Enter, on every screen with buttons --------------------------------
+
+def _strips_on(qtbot, strip: ShortcutStrip, buttons) -> list[str]:
+    """The strip while each of buttons has the focus."""
+    shown = []
+    for button in buttons:
+        button.setFocus(Qt.FocusReason.TabFocusReason)
+        qtbot.waitUntil(lambda: _focused() is button)
+        shown.append(strip.text())
+    return shown
+
+
+def test_the_naming_dialogs_buttons_list_enter(qtbot, tmp_path, make_jpeg):
+    photo = make_jpeg(tmp_path / "one.jpg", size=(200, 200))
+    dialog = FaceNamingDialog(photo, FakeEngine({"one.jpg": [_face(_unit(1))]}),
+                              PeopleStore(tmp_path / "people"))
+    qtbot.addWidget(dialog)
+    dialog.show()
+    _activate(qtbot, dialog)
+    qtbot.waitUntil(lambda: dialog.rows and dialog.choose_button.isEnabled())
+    assert _strips_on(qtbot, dialog.strip, (dialog.choose_button, dialog.cancel_button,
+                                            dialog.save_button)) == [
+        f"Enter choose photo · Esc cancel · {TAB}",
+        f"Enter cancel · Esc cancel · {TAB}",
+        f"Enter save · Esc cancel · {TAB}"]
+
+
+def test_face_setups_buttons_list_enter(qtbot, make_window, photos):
+    w = make_window()
+    w.people_store.add("Atanu", _unit(1), Image.new("RGB", (40, 40), "blue"))
+    _start_by_keyboard(qtbot, w, photos, "face")
+    setup = w.face_setup_page
+    qtbot.waitUntil(lambda: _focused() is setup.people_list)
+    _key(qtbot, Qt.Key.Key_Space)  # tick Atanu: Start sorting can be pressed
+    keys = f"A add person · Delete forget · Esc back · {TAB}"
+    assert _strips_on(qtbot, w.strip, (setup.add_button, setup.more_button,
+                                       setup.delete_button, setup.back_button,
+                                       setup.start_button)) == [
+        f"Enter add person · {keys}", f"Enter add photos · {keys}", f"Enter forget · {keys}",
+        f"Enter back · {keys}", f"Enter start · {keys}"]
+
+
+def test_the_people_pages_forget_lists_enter(qtbot, make_window):
+    w = make_window()
+    w.people_store.add("Atanu", _unit(1), Image.new("RGB", (40, 40), "blue"))
+    w.sidebar.items["people"].setFocus()
+    _key(qtbot, Qt.Key.Key_Return)
+    people = w.people_page
+    qtbot.waitUntil(lambda: w.current_page() is people)
+    _key(qtbot, Qt.Key.Key_Tab)  # into the page
+    assert _strips_on(qtbot, w.strip, [people.delete_button]) == [
+        f"Enter forget · Delete forget · Esc sidebar · {TAB}"]
+
+
+@pytest.mark.real_dialogs
+def test_the_category_editors_buttons_list_enter(qtbot, monkeypatch):
+    names = []
+    monkeypatch.setattr(CategoryEditor, "_ask_name",
+                        lambda self, title, name, others: names.append(title) or "Zed")
+    editor = CategoryEditor(["Food", "Pets", "Cars", "Sky"])
+    qtbot.addWidget(editor)
+    editor.show()
+    _activate(qtbot, editor)
+    editor.list_widget.setCurrentRow(1)  # Move up and Move down can both be pressed
+    keys = (f"Insert/A add · F2 rename · Delete remove · Alt+↑ move up · Alt+↓ move down · "
+            f"R reset · Esc cancel · {TAB}")
+    buttons = (editor.add_button, editor.rename_button, editor.remove_button,
+               editor.up_button, editor.down_button, editor.reset_button, editor.ok_button,
+               editor.cancel_button)
+    words = ("add", "rename", "remove", "move up", "move down", "reset", "OK", "cancel")
+    assert _strips_on(qtbot, editor.strip, buttons) == [f"Enter {word} · {keys}"
+                                                        for word in words]
+    editor.remove_button.setFocus()
+    qtbot.waitUntil(lambda: _focused() is editor.remove_button)
+    _key(qtbot, Qt.Key.Key_Return)  # presses Remove, once even if held
+    _hold(Qt.Key.Key_Return)
+    assert editor.categories() == ["Food", "Cars", "Sky"]
+    assert names == []
+    editor.add_button.setFocus()
+    qtbot.waitUntil(lambda: _focused() is editor.add_button)
+    _key(qtbot, Qt.Key.Key_Return)
+    assert names == ["Add a category"] and editor.categories()[-1] == "Zed"
+    editor.cancel_button.setFocus()
+    qtbot.waitUntil(lambda: _focused() is editor.cancel_button)
+    _key(qtbot, Qt.Key.Key_Return)
+    assert editor.result() == QDialog.DialogCode.Rejected
+
+
 # ----- the strip while the window is away (Task 4 carry-overs) ---------------------------------
 
 def test_no_focus_in_the_active_window_is_not_away(qtbot):
@@ -1038,5 +1125,3 @@ def test_a_held_key_shortcut_check(qtbot):
     _key(qtbot, Qt.Key.Key_U)
     _hold(Qt.Key.Key_U)
     assert pressed == [1]
-    held = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_U, NONE, "u", True)
-    assert held.isAutoRepeat()
