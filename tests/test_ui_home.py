@@ -309,17 +309,27 @@ def test_the_count_is_photos_and_videos_and_follows_the_switch(qtbot, make_windo
     make_jpeg(photos / "sub" / "c.jpg")
     w = make_window()
     w.folder_edit.setText(str(photos))
-    qtbot.waitUntil(lambda: w.home.count_label.text() == "3 files")
+    qtbot.waitUntil(lambda: w.home.count_label.text() == "3 photos and videos")
     w.home.subfolders_switch.setChecked(True)
-    qtbot.waitUntil(lambda: w.home.count_label.text() == "4 files")
+    qtbot.waitUntil(lambda: w.home.count_label.text() == "4 photos and videos")
     w.folder_edit.setText(str(photos / "sub"))
-    qtbot.waitUntil(lambda: w.home.count_label.text() == "1 file")
+    qtbot.waitUntil(lambda: w.home.count_label.text() == "1 photo or video")
     w.folder_edit.setText(str(photos / "missing"))
     qtbot.waitUntil(lambda: w.home.count_label.text() == "No such folder")
     w.folder_edit.setText(str(photos / "a.jpg"))  # a file, not a folder
     assert w.home.count_label.text() == "No such folder"
     w.folder_edit.setText("")
     assert w.home.count_label.text() == ""
+
+
+def test_the_count_says_it_counts_photos_and_videos(qtbot, make_window, tmp_path):
+    folder = tmp_path / "apps"
+    folder.mkdir()
+    for n in range(3):
+        (folder / f"a{n}.apk").write_bytes(b"x")  # Extension sorts these; the count does not
+    w = make_window()
+    w.folder_edit.setText(str(folder))
+    qtbot.waitUntil(lambda: w.home.count_label.text() == "0 photos and videos")
 
 
 def test_a_stale_count_is_dropped(qtbot, monkeypatch, tmp_path):
@@ -343,9 +353,9 @@ def test_a_stale_count_is_dropped(qtbot, monkeypatch, tmp_path):
     page.folder_edit.setText(str(tmp_path / "new"))
     qtbot.wait(page.COUNT_DELAY_MS + 50)
     release.set()
-    qtbot.waitUntil(lambda: page.count_label.text() == "7 files")
+    qtbot.waitUntil(lambda: page.count_label.text() == "7 photos and videos")
     qtbot.wait(50)
-    assert page.count_label.text() == "7 files"
+    assert page.count_label.text() == "7 photos and videos"
     assert calls == ["old", "new"]  # one count at a time
     QThreadPool.globalInstance().waitForDone()
 
@@ -367,7 +377,7 @@ def test_the_count_never_blocks_the_window(qtbot, monkeypatch, photos):
     qtbot.wait(50)  # ... while the window goes on
     assert page.count_label.text() == "Counting…"
     releases[0].set()
-    qtbot.waitUntil(lambda: page.count_label.text() == "1 file")
+    qtbot.waitUntil(lambda: page.count_label.text() == "1 photo or video")
 
     page.subfolders_switch.toggle()  # another count ...
     qtbot.waitUntil(lambda: len(started) == 2)
@@ -385,16 +395,17 @@ def test_coming_home_keeps_the_count_without_counting_flicker(qtbot, make_window
     make_jpeg(photos / "a.jpg")
     w = make_window()
     w.folder_edit.setText(str(photos))
-    qtbot.waitUntil(lambda: w.home.count_label.text() == "1 file")
+    qtbot.waitUntil(lambda: w.home.count_label.text() == "1 photo or video")
     shown = []
     real_show = w.home._show_count
     monkeypatch.setattr(w.home, "_show_count", lambda text: shown.append(text) or real_show(text))
     w.show_page(w.history_page)
     w.show_page(w.home)  # the same folder and switch: the last count stays ...
-    assert w.home.count_label.text() == "1 file"
+    assert w.home.count_label.text() == "1 photo or video"
     make_jpeg(photos / "b.jpg")
     w.show_page(w.home)
-    qtbot.waitUntil(lambda: w.home.count_label.text() == "2 files")  # ... until the new one
+    # ... until the new one
+    qtbot.waitUntil(lambda: w.home.count_label.text() == "2 photos and videos")
     assert "Counting…" not in shown
     w.home.subfolders_switch.toggle()  # another count: says so
     assert w.home.count_label.text() == "Counting…"

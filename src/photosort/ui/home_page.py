@@ -79,8 +79,9 @@ def count_media(root: Path, include_subfolders: bool, progress=None,
     return n
 
 
-def _files(n: int) -> str:
-    return "1 file" if n == 1 else f"{n} files"
+def _media(n: int) -> str:
+    """The count, saying what it counts: a mode for any file sorts more."""
+    return "1 photo or video" if n == 1 else f"{n} photos and videos"
 
 
 def _inserted(old: str, new: str) -> str:
@@ -415,7 +416,7 @@ class HomePage(QWidget):
         task.start()
 
     def _counted(self, n: int | None) -> None:
-        self._count_done(None if n is None else _files(n))
+        self._count_done(None if n is None else _media(n))
 
     def _count_failed(self, message: str) -> None:
         self._count_done("Can't read this folder")
