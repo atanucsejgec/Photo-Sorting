@@ -43,6 +43,7 @@ HEADING = "Sort a folder"
 TILES: tuple[tuple[str, str], ...] = (
     ("date", "Year / month"),
     ("face", "Per person"),
+    ("pick_faces", "Click faces, make folders"),
     ("duplicates", "Exact copies"),
     ("repeated", "Bursts, keep best"),
     ("content", "Food, pets, nature…"),

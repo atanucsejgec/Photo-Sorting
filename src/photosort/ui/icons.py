@@ -20,6 +20,7 @@ FOLDER = Path(__file__).with_name("icons")
 MODE_ICONS: dict[str, str] = {
     "date": "calendar",
     "face": "scan-face",
+    "pick_faces": "users",
     "duplicates": "copy",
     "repeated": "film",
     "content": "shapes",

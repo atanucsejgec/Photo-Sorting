@@ -151,6 +151,56 @@ def test_group_people_memory_bounded():
     assert took < 60, f"took {took:.1f} s"
 
 
+def test_group_people_memory_bounded_clustered():
+    # 300 people with 100 faces each: every face has far more than
+    # _NEIGHBOURS candidates, the case where most merges are found.
+    rng = np.random.default_rng(_RNG_SEED)
+    people, each = 300, 100
+    centres = rng.normal(size=(people, 512)).astype(np.float32)
+    centres /= np.linalg.norm(centres, axis=1, keepdims=True)
+    landmarks = np.zeros((5, 2), np.float32)
+    faces = []
+    for k in range(each):
+        noise = rng.normal(0.0, 0.03, size=(people, 512)).astype(np.float32)
+        vectors = centres + noise
+        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+        # Photo k has face p of person p: a person's faces are all in different photos.
+        faces += [FoundFace(f"{k}.jpg", p,
+                            Face((0.0, 0.0, 9.0, 9.0), landmarks, 0.9, vectors[p], (10, 10)))
+                  for p in range(people)]
+    del centres, noise, vectors
+    tracemalloc.start()
+    try:
+        started = time.monotonic()
+        groups = group_people(faces)
+        took = time.monotonic() - started
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert sum(len(g.faces) for g in groups) == people * each
+    assert len(groups) == people
+    assert {len(g.photos) for g in groups} == {each}
+    assert peak < 400 * 1024 * 1024, f"peak {peak / 2**20:.0f} MB"
+    assert took < 60, f"took {took:.1f} s"
+
+
+def test_group_people_more_than_twenty_alike_faces():
+    # 70 faces of each person: more candidates per face than are kept.
+    rng = np.random.default_rng(_RNG_SEED)
+    faces = [_found(f"{p}{n}.jpg", 0, _person_face(rng, axis))
+             for n in range(70) for p, axis in (("a", 0), ("b", 1), ("c", 2))]
+    groups = group_people(faces)
+    assert [len(g.photos) for g in groups] == [70, 70, 70]
+    assert sorted(g.best.rel[0] for g in groups) == ["a", "b", "c"]
+
+
+def test_group_people_takes_the_embedding_size_from_the_faces():
+    small = [_found(f"{n}.jpg", 0, Face((0.0, 0.0, 9.0, 9.0), np.zeros((5, 2), np.float32), 0.9,
+                                       _unit(np.array([1.0, 0.1 * n, 0.0, 0.0])), (10, 10)))
+             for n in range(3)]
+    assert [len(g.photos) for g in group_people(small)] == [3]
+
+
 # --- scanning ---------------------------------------------------------------
 
 
@@ -261,7 +311,7 @@ def test_plan_pick_single_and_conflict_choices(tmp_path):
     ]
     assert plan.unchanged == 1  # Friend/g.jpg is already there
     assert plan.summary == ["2 photos → Friend", "2 photos → Family",
-                            "2 left where they are", "1 already in their folders"]
+                            "2 left where they are", "1 already in place"]
 
 
 def test_plan_pick_joins_existing_folder_any_case(tmp_path):
@@ -270,6 +320,15 @@ def test_plan_pick_joins_existing_folder_any_case(tmp_path):
     plan = plan_pick(tmp_path, [friend], {})
     assert plan.moves == [Move("a.jpg", "fRiEnD/a.jpg")]
     assert plan.summary == ["1 photos → fRiEnD"]
+
+
+def test_plan_pick_no_line_for_a_folder_with_no_photos(tmp_path):
+    touch(tmp_path, "a.jpg", "Family/b.jpg")
+    friend = PickFolder("Friend", frozenset({("a.jpg", 0)}), False)
+    family = PickFolder("Family", frozenset({("Family/b.jpg", 0)}), False)
+    empty = PickFolder("Nobody", frozenset(), False)
+    plan = plan_pick(tmp_path, [friend, family, empty], {})
+    assert plan.summary == ["1 photos → Friend", "1 already in place"]
 
 
 def _hashes(root: Path) -> dict[str, str]:

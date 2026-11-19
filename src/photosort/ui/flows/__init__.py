@@ -8,6 +8,8 @@
 - bad: bad photos, ticked first;
 - events: events, named, merged, split or skipped first;
 - face: the people to look for, then the unsure matches;
+- pick_faces: every face grouped into people, for the owner to pick and
+  make folders of (Pick faces);
 - no_people: the photos with no face found, planned straight away (No people);
 - clip: Content and Notes & Pages, judged with CLIP, then the unsure photos.
 

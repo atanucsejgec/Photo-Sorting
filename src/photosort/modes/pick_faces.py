@@ -16,7 +16,12 @@ in rounds with numpy alone and in bounded memory:
    compared block by block (at most _BLOCK rows at a time, against the
    groups after them), and for each group the up to _NEIGHBOURS most alike
    later groups at or above the join are kept. No matrix larger than
-   _BLOCK x (number of groups) is ever held.
+   _BLOCK x (number of groups) is ever held. The cap on candidates keeps
+   memory bounded when a person has hundreds of faces; it can, rarely, miss
+   a merge (a pair outside both groups' top _NEIGHBOURS whose average
+   linkage is still at or above the join, once the round's merges are
+   done). The next round compares the merged groups afresh, so such a pair
+   is usually found then.
 3. The candidates are merged, most alike first, if the two groups are still
    apart, their average linkage (worked out afresh, as earlier merges of the
    round may have changed it) is still at or above the join, and they share
@@ -48,7 +53,9 @@ from photosort.thresholds import PICK_FACES_JOIN
 MODE = "pick_faces"
 
 _BLOCK = 512  # rows of similarities worked out at once (<= 1024)
-_NEIGHBOURS = 20  # candidate merges kept per group and round
+# Candidate merges kept per group and round: enough for any one merge to be
+# found within a few rounds, few enough to keep memory bounded (see step 2).
+_NEIGHBOURS = 20
 _TOP_ROWS = 128  # rows ranked at once when a row has more candidates than that
 
 
@@ -181,7 +188,8 @@ def group_people(faces: list[FoundFace], join: float = PICK_FACES_JOIN) -> list[
     """
     if not faces:
         return []
-    sums = np.stack([np.asarray(f.face.embedding, np.float32).reshape(512) for f in faces])
+    size = np.asarray(faces[0].face.embedding).size  # the embedding's length (512)
+    sums = np.stack([np.asarray(f.face.embedding, np.float32).reshape(size) for f in faces])
     counts = np.ones(len(faces), np.int64)
     members: list[list[int]] = [[n] for n in range(len(faces))]
     photos: list[set[str]] = [{f.rel} for f in faces]
@@ -291,9 +299,9 @@ def plan_pick(root: Path, folders: list[PickFolder], choices: dict[str, str | No
             continue
         moves.append(Move(rel, allocator.allocate(f"{folder}/{file_name}")))
         moved[name] += 1
-    summary = [f"{moved[f.name]} photos → {dirs[f.name]}" for f in folders]
+    summary = [f"{moved[f.name]} photos → {dirs[f.name]}" for f in folders if moved[f.name]]
     if left:
         summary.append(f"{left} left where they are")
     if unchanged:
-        summary.append(f"{unchanged} already in their folders")
+        summary.append(f"{unchanged} already in place")
     return Plan(MODE, moves, summary, unchanged)
