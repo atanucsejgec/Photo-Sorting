@@ -73,6 +73,10 @@ EVENT_MIN_FILES_RANGE = (2, 1000)
 EVENT_THUMBS = 4  # thumbnails shown for each event ...
 EVENT_THUMB_PX = 120  # ... at most this long on their longest side
 
+# Date: a day with at least this many photos (videos don't count) is a busy
+# day, which the owner may name: its folder is then "DD-MM-YYYY <name>".
+BUSY_DAY_MIN_PHOTOS = 11
+
 # Video metadata: the most box payload read from one video, in bytes (box
 # headers are read by seeking; the video data itself is never read).
 MP4_META_MAX = 4 * 1024 * 1024
