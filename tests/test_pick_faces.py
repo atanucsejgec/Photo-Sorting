@@ -153,7 +153,8 @@ def test_group_people_memory_bounded():
 
 def test_group_people_memory_bounded_clustered():
     # 300 people with 100 faces each: every face has far more than
-    # _NEIGHBOURS candidates, the case where most merges are found.
+    # _NEIGHBOURS candidates, so only its top _NEIGHBOURS are kept each
+    # round and the merges take several rounds.
     rng = np.random.default_rng(_RNG_SEED)
     people, each = 300, 100
     centres = rng.normal(size=(people, 512)).astype(np.float32)
@@ -182,6 +183,30 @@ def test_group_people_memory_bounded_clustered():
     assert {len(g.photos) for g in groups} == {each}
     assert peak < 400 * 1024 * 1024, f"peak {peak / 2**20:.0f} MB"
     assert took < 60, f"took {took:.1f} s"
+
+
+class _CancelAfter:
+    """A cancel event that is set from its checks-th is_set() on."""
+
+    def __init__(self, checks: int) -> None:
+        self.checks = checks
+        self.asked = 0
+
+    def is_set(self) -> bool:
+        self.asked += 1
+        return self.asked >= self.checks
+
+
+def test_group_people_cancel_between_rounds():
+    rng = np.random.default_rng(_RNG_SEED)
+    faces = [_found(f"{p}{n}.jpg", 0, _person_face(rng, axis))
+             for n in range(70) for p, axis in (("a", 0), ("b", 1))]
+    assert group_people(faces, cancel=_CancelAfter(1)) is None  # before the first round
+    later = _CancelAfter(2)
+    assert group_people(faces, cancel=later) is None  # after the first round
+    assert later.asked == 2
+    unset = threading.Event()
+    assert [len(g.photos) for g in group_people(faces, cancel=unset)] == [70, 70]
 
 
 def test_group_people_more_than_twenty_alike_faces():

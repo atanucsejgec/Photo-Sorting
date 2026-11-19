@@ -1,10 +1,12 @@
 """Pick faces: the people grid, the folders made from it, and the flow round it."""
 
+import dataclasses
 from pathlib import Path
 
 import numpy as np
 import pytest
 from PySide6.QtCore import Qt
+from PIL import Image
 from PySide6.QtWidgets import QCheckBox, QPushButton
 
 from keys import (
@@ -18,7 +20,9 @@ from keys import (
 )
 from photosort.faces import Face
 from photosort.hashing import sha256_file
+from photosort.executor import execute
 from photosort.modes import MODE_SPECS, MODES
+from photosort.people import PeopleError
 from photosort.thresholds import FACE_ENGINE_FAILS
 from photosort.ui import dialogs, main_window
 from photosort.ui.flows import face as face_flow
@@ -26,18 +30,20 @@ from photosort.ui.flows import pick_faces as pick_flow
 from photosort.ui.pick_faces_page import PersonTile
 
 CTRL = Qt.KeyboardModifier.ControlModifier
+WHICH_STRIP = ("↑↓ move · 1–9 folder · 0 leave here · Ctrl+Enter continue · Esc back · "
+               "Tab/Shift+Tab area")
 STRIP = ("Arrows move · Space pick · Enter open · N name · Del remove folder · "
          "Ctrl+Enter continue · Esc leave · Tab/Shift+Tab area")
 
 
-def _face(axis: int, seed: int) -> Face:
+def _face(axis: int, seed: int, x: float = 20.0) -> Face:
     """A face of the person on axis: about 0.7 alike to the person's other faces."""
     rng = np.random.default_rng(seed)
     v = np.zeros(512)
     v[axis] = 1.0
     v += rng.normal(0.0, 0.03, 512)
     v = (v / np.linalg.norm(v)).astype(np.float32)
-    return Face((20.0, 20.0, 80.0, 80.0), np.zeros((5, 2), np.float32), 0.9, v, (200, 200))
+    return Face((x, 20.0, x + 60.0, 80.0), np.zeros((5, 2), np.float32), 0.9, v, (200, 200))
 
 
 class FakeEngine:
@@ -195,6 +201,7 @@ def test_select_two_tiles_add_folder_badges_them(qtbot, make_window, root, engin
     _key(qtbot, Qt.Key.Key_Space)
     assert page.tiles[0].picked
     assert page.tiles[0].status_label.text() == "✓ Picked"
+    assert page.tiles[0].status_label.objectName() == "pickedTag"  # not a bad photo's red
     _key(qtbot, Qt.Key.Key_Space)  # a second Space unpicks
     assert not page.tiles[0].picked
     _key(qtbot, Qt.Key.Key_Space)
@@ -439,3 +446,307 @@ def test_a_double_click_opens_a_tile_and_leaves_its_pick(qtbot, make_window, roo
     qtbot.mouseClick(page.once_header, Qt.MouseButton.LeftButton)  # a click opens it
     assert _counts(page.once_tiles) == ["in 1 photo", "in 1 photo"]
     assert all(t.isVisible() for t in page.once_tiles)
+
+
+# ----- which folder ------------------------------------------------------------------------
+
+# Ann and Ben are together in two photos.
+PAIRS = {"a1.jpg": [(0, 1)], "ab.jpg": [(0, 3), (1, 4)], "ab2.jpg": [(0, 8), (1, 9)],
+         "b1.jpg": [(1, 5)]}
+
+
+@pytest.fixture
+def pairs(tmp_path, make_jpeg) -> tuple[Path, FakeEngine]:
+    folder = tmp_path / "pairs"
+    for name in PAIRS:
+        make_jpeg(folder / name, size=(200, 200))
+    return folder, FakeEngine({name: [_face(axis, seed, 20.0 + 100 * n)
+                                      for n, (axis, seed) in enumerate(faces)]
+                               for name, faces in PAIRS.items()})
+
+
+def _make_folders(qtbot, page, names=("Friend", "Family")) -> None:
+    """The first tile (Ann) into the first folder, the second (Ben) into the second."""
+    for n, name in enumerate(names):
+        page.navigator.focus(n)
+        _key(qtbot, Qt.Key.Key_Space)
+        _type_name(qtbot, page, name)
+
+
+def _to_which(qtbot, w):
+    _key(qtbot, Qt.Key.Key_Return, CTRL)
+    which = w.which_folder_page
+    qtbot.waitUntil(lambda: w.current_page() is which)
+    qtbot.waitUntil(lambda: _focused() is which.rows[0])
+    return which
+
+
+def _summary(qtbot, w) -> list[str]:
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    return w.summary_label.text().splitlines()
+
+
+def _done(qtbot, w) -> list[str]:
+    lines = _summary(qtbot, w)
+    assert w.go_button.isEnabled(), lines
+    w.go_button.click()
+    qtbot.waitUntil(lambda: w.current_page() is w.done_page)
+    return w.done_label.text().splitlines()
+
+
+def test_conflict_rows_and_all_to_buttons(qtbot, make_window, root, engine):
+    w = make_window()
+    page = _on_grid(qtbot, w, root, engine)
+    _make_folders(qtbot, page)
+    which = _to_which(qtbot, w)
+    assert which.heading_label.text() == "Which folder?"
+    assert [r.rel for r in which.rows] == ["ab.jpg"]
+    row = which.rows[0]
+    assert [b.text() for b in row.buttons] == ["1 Friend", "2 Family", "0 Leave it here"]
+    assert not any(b.isChecked() for b in row.buttons)
+    assert [b.text() for b in which.all_buttons] == [
+        "All to Friend", "All to Family", "Leave all here"]
+    qtbot.waitUntil(row.photo_view.has_photo)
+    assert len(row.photo_view.boxes()) == 2  # Ann's face and Ben's
+    assert w.strip.text() == WHICH_STRIP
+    which.all_buttons[1].click()
+    assert which.choices() == {"ab.jpg": "Family"}
+    assert [b.isChecked() for b in row.buttons] == [False, True, False]
+    which.continue_button.click()
+    assert _summary(qtbot, w) == ["2 photos → Friend", "2 photos → Family"]
+    # Back: this page again, as it was left.
+    w.back_button.click()
+    assert w.current_page() is which
+    assert which.choices() == {"ab.jpg": "Family"}
+    which.all_buttons[2].click()  # Leave all here
+    assert which.choices() == {"ab.jpg": None}
+    assert [b.isChecked() for b in row.buttons] == [False, False, True]
+    row.buttons[0].click()  # a row's own button
+    assert which.choices() == {"ab.jpg": "Friend"}
+    which.all_buttons[2].click()
+    _key(qtbot, Qt.Key.Key_Return, CTRL)
+    assert _summary(qtbot, w) == ["2 photos → Friend", "1 photos → Family",
+                                  "1 left where they are"]
+
+
+def test_digit_keys_choose_and_zero_leaves(qtbot, make_window, pairs):
+    root, engine = pairs
+    w = make_window()
+    page = _on_grid(qtbot, w, root, engine)
+    _make_folders(qtbot, page)
+    which = _to_which(qtbot, w)
+    assert [r.rel for r in which.rows] == ["ab.jpg", "ab2.jpg"]
+    _key(qtbot, Qt.Key.Key_2)
+    assert which.choices() == {"ab.jpg": "Family"}
+    _key(qtbot, Qt.Key.Key_Down)
+    assert _focused() is which.rows[1]
+    _key(qtbot, Qt.Key.Key_3)  # there is no third folder
+    assert which.choices() == {"ab.jpg": "Family"}
+    _key(qtbot, Qt.Key.Key_1)
+    assert which.choices() == {"ab.jpg": "Family", "ab2.jpg": "Friend"}
+    _key(qtbot, Qt.Key.Key_0)
+    assert which.choices() == {"ab.jpg": "Family", "ab2.jpg": None}
+    assert [b.isChecked() for b in which.rows[1].buttons] == [False, False, True]
+    _key(qtbot, Qt.Key.Key_Up)
+    assert _focused() is which.rows[0]
+    # Esc: the grid, as it was; Continue comes back here with the answers.
+    _key(qtbot, Qt.Key.Key_Escape)
+    assert w.current_page() is page
+    assert [r.label.text() for r in page.folder_rows] == [
+        "Friend: 1 person, 3 photos", "Family: 1 person, 3 photos"]
+    which = _to_which(qtbot, w)
+    assert which.choices() == {"ab.jpg": "Family", "ab2.jpg": None}
+    _key(qtbot, Qt.Key.Key_Return, CTRL)
+    assert _summary(qtbot, w) == ["1 photos → Friend", "2 photos → Family",
+                                  "1 left where they are"]
+    assert sorted((m.src, m.dst) for m in w._plan.moves) == [
+        ("a1.jpg", "Friend/a1.jpg"), ("ab.jpg", "Family/ab.jpg"), ("b1.jpg", "Family/b1.jpg")]
+
+
+def test_unanswered_rows_stay_where_they_are(qtbot, make_window, pairs):
+    root, engine = pairs
+    w = make_window()
+    page = _on_grid(qtbot, w, root, engine)
+    _make_folders(qtbot, page)
+    which = _to_which(qtbot, w)
+    _key(qtbot, Qt.Key.Key_1)  # ab.jpg; ab2.jpg is not answered
+    assert which.choices() == {"ab.jpg": "Friend"}
+    assert which.rows[1].status_label.text() == "Not chosen: stays where it is"
+    _key(qtbot, Qt.Key.Key_Return, CTRL)
+    assert _summary(qtbot, w) == ["2 photos → Friend", "1 photos → Family",
+                                  "1 left where they are"]
+
+
+def test_no_conflicts_skips_page(qtbot, make_window, root, engine):
+    w = make_window()
+    page = _on_grid(qtbot, w, root, engine)
+    _make_folders(qtbot, page, ("Friend",))
+    _key(qtbot, Qt.Key.Key_Return, CTRL)
+    assert _summary(qtbot, w) == ["3 photos → Friend"]
+    assert w.which_folder_page.rows == []
+    w.back_button.click()  # straight back to the grid
+    assert w.current_page() is page
+
+
+def test_which_folder_fits_1024x600(qtbot, make_window, pairs):
+    root, engine = pairs
+    w = make_window(size=(1024, 600))
+    page = _on_grid(qtbot, w, root, engine)
+    _make_folders(qtbot, page)
+    which = _to_which(qtbot, w)
+    qtbot.wait(20)
+    room = w.stack.size()
+    assert which.minimumSizeHint().width() <= room.width()
+    assert which.minimumSizeHint().height() <= room.height()
+    strip_top = w.strip.mapTo(w, w.strip.rect().topLeft()).y()
+    for widget in (which.continue_button, which.back_button, *which.all_buttons):
+        bottom_right = widget.mapTo(w, widget.rect().bottomRight())
+        assert bottom_right.y() < strip_top, widget.text()
+        assert bottom_right.x() <= w.width(), widget.text()
+    for button in which.findChildren(QPushButton):
+        if button.isVisible():  # none crushed below its text
+            assert button.width() >= button.minimumSizeHint().width(), button.text()
+    assert not which.scroll.horizontalScrollBar().isVisible()
+    row = which.rows[0]
+    assert row.mapTo(which.scroll.viewport(), row.rect().bottomLeft()).y() <= (
+        which.scroll.viewport().height())
+
+
+# ----- remember ----------------------------------------------------------------------------
+
+def _ann(seeds=(1, 2, 3)) -> np.ndarray:
+    return np.stack([_face(0, seed).embedding for seed in seeds])
+
+
+def _remember_friend(qtbot, w, root, engine):
+    """Ann into Friend, Remember ticked (by keyboard), on to the summary."""
+    page = _on_grid(qtbot, w, root, engine)
+    _make_folders(qtbot, page, ("Friend",))
+    qtbot.waitUntil(page.folder_rows[0].isVisible)  # shown once the event loop runs
+    _key(qtbot, Qt.Key.Key_Tab)  # from the faces to the folder list
+    assert _focused() is page.folder_rows[0]
+    _key(qtbot, Qt.Key.Key_Space)
+    assert page.folder_rows[0].remember_check.isChecked()
+    _key(qtbot, Qt.Key.Key_Return, CTRL)
+    assert _summary(qtbot, w) == ["3 photos → Friend"]
+    return page
+
+
+def test_remember_after_success_adds_person(qtbot, make_window, root, engine, errors):
+    w = make_window()
+    _remember_friend(qtbot, w, root, engine)
+    assert w.after_run is not None
+    assert w.people_store.people() == []  # not before the run
+    lines = _done(qtbot, w)
+    assert lines == ["Moved 3 files.", "Friend remembered on the People page"]
+    people = w.people_store.people()
+    assert [p.name for p in people] == ["Friend"]
+    mean = _ann().mean(axis=0)
+    np.testing.assert_allclose(people[0].embeddings, [mean / np.linalg.norm(mean)], atol=1e-5)
+    with Image.open(people[0].thumb) as thumb:
+        assert thumb.size == (160, 160)
+    assert w.after_run is None
+    assert errors == []
+
+
+def test_remember_adds_samples_to_existing_name(qtbot, make_window, root, engine):
+    w = make_window()
+    other = _face(5, 99).embedding
+    friend = w.people_store.add("friend", other, Image.new("RGB", (40, 40), "blue"))
+    _remember_friend(qtbot, w, root, engine)
+    assert _done(qtbot, w) == ["Moved 3 files.", "Friend remembered on the People page"]
+    people = w.people_store.people()
+    assert [(p.id, p.name) for p in people] == [(friend.id, "friend")]
+    np.testing.assert_allclose(people[0].embeddings, np.vstack([other, _ann()]), atol=1e-6)
+
+
+def test_remember_store_error_never_fails_the_run(qtbot, make_window, root, engine,
+                                                  monkeypatch, errors):
+    w = make_window()
+
+    def full(*args, **kwargs):
+        raise PeopleError("No room left")
+
+    monkeypatch.setattr(w.people_store, "add", full)
+    _remember_friend(qtbot, w, root, engine)
+    assert _done(qtbot, w) == ["Moved 3 files.", "Couldn't remember Friend: No room left"]
+    assert (root / "Friend" / "a1.jpg").is_file()
+    assert w.undo_button.isEnabled()
+    assert errors == []
+
+
+def test_cancelled_run_remembers_nobody(qtbot, make_window, root, engine, monkeypatch):
+    def cancelled(*args, **kwargs):
+        return dataclasses.replace(execute(*args, **kwargs), cancelled=True)
+
+    monkeypatch.setattr(main_window, "execute", cancelled)
+    w = make_window()
+    _remember_friend(qtbot, w, root, engine)
+    lines = _done(qtbot, w)
+    assert lines[0] == "Moved 3 files."
+    assert not any("remember" in line for line in lines)
+    assert w.people_store.people() == []
+    assert w.after_run is None
+
+
+def test_failed_run_remembers_nobody(qtbot, make_window, root, engine, monkeypatch, errors):
+    def broken(root, plan, journal, **kwargs):
+        journal.finish("failed")
+        raise OSError("drive gone")
+
+    monkeypatch.setattr(main_window, "execute", broken)
+    w = make_window()
+    _remember_friend(qtbot, w, root, engine)
+    lines = _done(qtbot, w)
+    assert lines[0] == "The sort stopped because of a problem."
+    assert w.people_store.people() == []
+    assert w.after_run is None
+    assert errors == ["The sort stopped: drive gone"]
+
+
+def test_undo_keeps_remembered_person(qtbot, make_window, root, engine, errors):
+    before = _hashes(root)
+    w = make_window()
+    _remember_friend(qtbot, w, root, engine)
+    _done(qtbot, w)
+    w.undo_button.click()
+    qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
+    assert _hashes(root) == before
+    assert [p.name for p in w.people_store.people()] == ["Friend"]
+    assert errors == []
+
+
+def test_back_from_the_summary_forgets_remember(qtbot, make_window, root, engine):
+    w = make_window()
+    page = _remember_friend(qtbot, w, root, engine)
+    assert w.after_run is not None
+    w.back_button.click()
+    assert w.current_page() is page
+    assert w.after_run is None
+    page.folder_rows[0].remember_check.setChecked(False)
+    _key(qtbot, Qt.Key.Key_Return, CTRL)
+    _done(qtbot, w)
+    assert w.people_store.people() == []
+
+
+def test_a_new_start_forgets_after_run(qtbot, make_window, root, engine):
+    w = make_window()
+    _remember_friend(qtbot, w, root, engine)
+    w.show_page(w.home)
+    w.mode_buttons["date"].click()
+    assert w.after_run is None
+
+
+def test_the_pages_hold_no_people_after_done(qtbot, make_window, root, engine):
+    w = make_window()
+    page = _on_grid(qtbot, w, root, engine)
+    _make_folders(qtbot, page)
+    page.folder_rows[0].remember_check.setChecked(True)
+    which = _to_which(qtbot, w)
+    _key(qtbot, Qt.Key.Key_1)
+    _key(qtbot, Qt.Key.Key_Return, CTRL)
+    assert _done(qtbot, w)[-1] == "Friend remembered on the People page"
+    assert page.groups == [] and page.tiles == [] and page.once_tiles == []
+    assert page.folder_rows == []
+    assert which.rows == []
+    assert w.after_run is None

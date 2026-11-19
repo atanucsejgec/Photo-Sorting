@@ -140,7 +140,8 @@ class PersonTile(QFrame):
         width = self.status_label.width()
         self.status_label.setText(self.status_label.fontMetrics().elidedText(
             text, Qt.TextElideMode.ElideRight, width))
-        name = "tag" if self.picked and self.folder is None else "muted"  # picked stands out
+        # Picked stands out, in the accent's pill (see theme).
+        name = "pickedTag" if self.picked and self.folder is None else "muted"
         if self.status_label.objectName() != name:
             self.status_label.setObjectName(name)
             self.status_label.style().unpolish(self.status_label)
@@ -340,6 +341,7 @@ class PickFacesPage(QWidget):
         self._left_out: set[tuple[str, int]] = set()  # faces unticked in a FacesDialog
         self._folders: list[_Folder] = []
         self._old_dialog: FacesDialog | None = None
+        self.groups: list[PersonGroup] = []  # everyone found (as load had them)
         self.tiles: list[PersonTile] = []  # the people seen in more than one photo
         self.once_tiles: list[PersonTile] = []  # made when the section first opens
         self.faces_dialog: FacesDialog | None = None  # while one is open
@@ -444,6 +446,7 @@ class PickFacesPage(QWidget):
         self._generation += 1
         self._next_id = 0
         self._root = Path(root)
+        self.groups = list(groups)
         self._left_out = set()
         for folder in self._folders:
             folder.row.deleteLater()

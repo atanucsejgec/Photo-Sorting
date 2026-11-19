@@ -179,8 +179,10 @@ def _candidates(means: np.ndarray, join: float) -> tuple[np.ndarray, np.ndarray,
     return i[order], j[order], s[order]
 
 
-def group_people(faces: list[FoundFace], join: float = PICK_FACES_JOIN) -> list[PersonGroup]:
-    """The faces grouped into people (see the module's docstring), most photos first.
+def group_people(faces: list[FoundFace], join: float = PICK_FACES_JOIN,
+                 cancel: threading.Event | None = None) -> list[PersonGroup] | None:
+    """The faces grouped into people (see the module's docstring), most
+    photos first; None if cancel is set (it is looked at before each round).
 
     Groups with as many photos are ordered by their best face's photo (rel),
     then its index. Two faces of one photo are never in one group. Ids are
@@ -194,6 +196,8 @@ def group_people(faces: list[FoundFace], join: float = PICK_FACES_JOIN) -> list[
     members: list[list[int]] = [[n] for n in range(len(faces))]
     photos: list[set[str]] = [{f.rel} for f in faces]
     while True:
+        if cancel is not None and cancel.is_set():
+            return None
         means = sums if np.all(counts == 1) else sums / counts[:, None].astype(np.float32)
         cand_i, cand_j, _ = _candidates(means, join)
         del means

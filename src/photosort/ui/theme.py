@@ -10,8 +10,12 @@ object name:
 - section: a quiet panel grouping a page's controls (Settings);
 - sidebar, sidebarItem: the left column and its page buttons;
 - shortcutStrip: the key strip along the bottom (see shortcuts.ShortcutStrip);
+- answerButton: a checkable button for one answer of several; the answer
+  chosen shows in the accent's colours (Which folder?'s folder buttons);
 - muted: quieter text; error: a problem, in the danger colour;
 - tag: a small pill naming what is wrong (a bad photo's reason);
+- pickedTag: the same pill in the accent's colours, for a state chosen (a
+  Pick faces tile picked);
 - thumb: the grey box a thumbnail or photo shows in while it loads;
 - viewer, viewerOverlay: the full-screen viewer and its caption;
 - rowList: a list of plain text rows, each with ROW_PAD_* room round it.
@@ -96,6 +100,8 @@ QLabel#error {{ color: {c['danger']}; }}
 QLabel#thumb {{ background: {c['thumb_bg']}; color: {c['muted']}; }}
 QLabel#tag {{ background: {c['tag_bg']}; color: {c['tag_text']}; border-radius: 8px;
     padding: 1px 8px; }}
+QLabel#pickedTag {{ background: {c['selection']}; color: {c['focus']}; border-radius: 8px;
+    padding: 1px 8px; }}
 
 QPushButton {{ background: {c['raised']}; color: {c['text']}; border: 1px solid {c['border']};
     border-radius: 8px; padding: 7px 14px; }}
@@ -104,6 +110,8 @@ QPushButton:pressed, QPushButton:checked {{ background: {c['border']}; }}
 QPushButton:focus {{ border: 2px solid {c['focus']}; padding: 6px 13px; }}
 QPushButton:disabled {{ background: {c['panel']}; color: {c['disabled']};
     border-color: {c['border_soft']}; }}
+QPushButton#answerButton:checked {{ background: {c['selection']}; color: {c['focus']};
+    border-color: {c['focus']}; }}
 QPushButton#primaryButton {{ background: {gradient}; color: {c['on_accent']};
     font-weight: bold; border: 1px solid transparent; }}
 QPushButton#primaryButton:focus {{ border: 2px solid {c['focus']}; }}
