@@ -256,6 +256,7 @@ def test_keyboard_only_date_with_busy_day(qtbot, make_window, photos, make_jpeg,
     _key(qtbot, Qt.Key.Key_A)
     qtbot.waitUntil(lambda: _focused() is page.all_view.grid)
     assert w.strip.text() == "↑↓←→ move · Esc close · Tab/Shift+Tab area"
+    assert w.strip.text().count("Esc") == 1
     _key(qtbot, Qt.Key.Key_Escape)
     assert _focused() is page.rows[0]
     _key(qtbot, Qt.Key.Key_Return)  # name it
@@ -309,3 +310,30 @@ def test_fits_1024x600(qtbot, make_window, photos, make_jpeg):
     assert page.all_view.close_button.isVisible()
     close = page.all_view.close_button
     assert window.contains(QRect(close.mapTo(w, QPoint(0, 0)), close.size()))
+
+
+def test_show_all_by_mouse_while_typing_a_name_has_one_esc(qtbot, make_window, photos,
+                                                          make_jpeg):
+    # Show all clicked while the name box has the focus: the focus leaving the
+    # box must not switch the page's Esc (leave) back on beside Show all's.
+    _day(make_jpeg, photos, D20, 11)
+    w = make_window()
+    _start(qtbot, w, photos)
+    page = w.busy_days_page
+    qtbot.waitUntil(lambda: w.current_page() is page)
+    qtbot.waitUntil(lambda: _focused() is page.rows[0])
+    _key(qtbot, Qt.Key.Key_Return)
+    assert _focused() is page.rows[0].name_edit
+    qtbot.keyClicks(_focused(), "Puri")
+    page.rows[0].show_all_button.click()  # by mouse, still typing
+    assert page.all_view.isVisible()
+    qtbot.waitUntil(lambda: _focused() is page.all_view.grid)
+    assert not page._esc_key.isEnabled() and not page._continue_key.isEnabled()
+    assert w.strip.text() == "↑↓←→ move · Esc close · Tab/Shift+Tab area"
+    assert w.strip.text().count("Esc") == 1
+    _key(qtbot, Qt.Key.Key_Escape)  # closes Show all, does not ask to leave
+    assert not page.all_view.isVisible()
+    assert _focused() is page.rows[0]
+    assert page.rows[0].name_edit.text() == "Puri"
+    assert w.strip.text() == ("↑↓ day · Enter name · A all photos · Ctrl+Enter continue · "
+                              "Esc leave · Tab/Shift+Tab area")

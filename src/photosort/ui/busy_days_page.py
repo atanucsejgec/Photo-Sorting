@@ -301,7 +301,8 @@ class BusyDaysPage(QWidget):
             row = DayRow(row_id, day, files)
             row.show_all_button.clicked.connect(lambda _=False, r=row: self.show_all(r))
             shortcuts.pause_while_focused(
-                row.name_edit, [self._name_key, self._all_key, self._esc_key])
+                row.name_edit, [self._name_key, self._all_key, self._esc_key],
+                resume=self._sync_keys)
             self.rows.append(row)
             self._list.insertWidget(len(self.rows) - 1, row)
             for n, rel in enumerate(row.collage_files):
@@ -345,10 +346,10 @@ class BusyDaysPage(QWidget):
         for n, rel in enumerate(row.files):
             if kind(rel) != "video":
                 self._request_all_thumbnail(n, self._root / rel)
-        self._continue_key.setEnabled(False)
-        self._esc_key.setEnabled(False)
         self.views.setCurrentWidget(self.all_view)
+        # The focus first (a name box losing it switches its paused keys on), then the keys.
         self.all_view.grid.setFocus(Qt.FocusReason.OtherFocusReason)
+        self._sync_keys()
         self.keys_changed.emit()
 
     def close_all(self) -> None:
@@ -359,12 +360,22 @@ class BusyDaysPage(QWidget):
         self._all_generation += 1
         self.all_view.grid.clear()
         row, self._all_row = self._all_row, None
-        self._continue_key.setEnabled(True)
-        self._esc_key.setEnabled(True)
         self.views.setCurrentWidget(self._rows_view)
         if row in self.rows and self.isVisible():
             self.navigator.focus(self.rows.index(row))
+        self._sync_keys()
         self.keys_changed.emit()
+
+    def _sync_keys(self) -> None:
+        """While Show all is open, its Esc is the only one and the page's keys
+        are off; otherwise the page's are on (but for those a name box pauses
+        while typed in). Also the name boxes' resume: the focus leaving one
+        for Show all's grid must not switch the page's Esc back on."""
+        rows = self.views.currentWidget() is not self.all_view
+        editing = any(row.name_edit.hasFocus() for row in self.rows)
+        self._continue_key.setEnabled(rows)
+        for key in (self._name_key, self._all_key, self._esc_key):
+            key.setEnabled(rows and not editing)
 
     def _stop_all(self) -> None:
         for task in self._all_tasks.values():
