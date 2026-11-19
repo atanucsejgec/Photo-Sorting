@@ -36,7 +36,7 @@ from PySide6.QtCore import QElapsedTimer, QEvent, QObject, QSize, Qt, Signal
 from PySide6.QtGui import QFont, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 from shiboken6 import isValid
 
@@ -197,6 +197,38 @@ class SeenOnceHeader(QFrame):
             self.clicked.emit()
 
 
+class _FolderLabel(QLabel):
+    """"<name><rest>", wrapping at spaces, with a name too long for one
+    line cut with "…" in the middle to the label's width; the whole text as
+    its tooltip. A long folder name never clips, nor pushes the row's
+    buttons away (its width never asks for more than it is given)."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._name, self._rest = "", ""
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setWordWrap(True)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def set_parts(self, name: str, rest: str) -> None:
+        self._name, self._rest = name, rest
+        self.setToolTip(name + rest)
+        self._elide()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 (Qt's name)
+        return QSize(0, super().minimumSizeHint().height())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        name = self.fontMetrics().elidedText(self._name, Qt.TextElideMode.ElideMiddle,
+                                              max(self.width(), 1))
+        if self.text() != name + self._rest:
+            self.setText(name + self._rest)
+
+
 class FolderRow(QFrame):
     """A folder made on the page: "Friend: 2 people, 57 photos", Remember
     and Remove. The row takes the focus; its keys tick and remove."""
@@ -206,8 +238,7 @@ class FolderRow(QFrame):
         self.name = name
         styled(self, "card")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.label = QLabel()
-        self.label.setWordWrap(True)
+        self.label = _FolderLabel()  # a long name is cut with "…", never clipped
         self.remove_button = QPushButton("Remove")
         self.remember_check = QCheckBox(REMEMBER)
         self.remember_check.setToolTip("After the move, remember these faces as "
@@ -751,9 +782,9 @@ class PickFacesPage(QWidget):
         """The folder rows' texts and keys, for the folders as they are."""
         for folder in self._folders:
             people = len(folder.tiles)
-            folder.row.label.setText(
-                f"{folder.name}: {people} {'person' if people == 1 else 'people'}, "
-                f"{_photos(self._photo_count(folder.tiles))}")
+            folder.row.label.set_parts(
+                folder.name, f": {people} {'person' if people == 1 else 'people'}, "
+                             f"{_photos(self._photo_count(folder.tiles))}")
         self.folder_rows = [f.row for f in self._folders]
         self.folder_navigator.set_cards(self.folder_rows, current)
         self.no_folders_label.setVisible(not self._folders)

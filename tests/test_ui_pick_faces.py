@@ -616,6 +616,62 @@ def test_which_folder_fits_1024x600(qtbot, make_window, pairs):
         which.scroll.viewport().height())
 
 
+def _below_strip_and_inside(w, widget) -> None:
+    strip_top = w.strip.mapTo(w, w.strip.rect().topLeft()).y()
+    bottom_right = widget.mapTo(w, widget.rect().bottomRight())
+    assert bottom_right.y() < strip_top, widget
+    assert bottom_right.x() <= w.width(), widget
+    assert widget.isVisible(), widget
+
+
+def test_a_long_folder_name_is_elided_and_remove_stays_in_view(
+        qtbot, make_window, root, engine, monkeypatch):
+    """A 100-character name with no space (the check is set aside here: the
+    row must cope with any name) never clips nor pushes Remove away."""
+    from photosort.ui import pick_faces_page
+    monkeypatch.setattr(pick_faces_page, "check_folder_name", lambda *a: None)
+    name = "F" * 100
+    w = make_window(size=(1024, 600))
+    page = _on_grid(qtbot, w, root, engine)
+    _key(qtbot, Qt.Key.Key_Space)
+    _type_name(qtbot, page, name)
+    qtbot.wait(20)
+    row = page.folder_rows[0]
+    assert page.minimumSizeHint().width() <= w.stack.width()
+    assert not page.scroll.horizontalScrollBar().isVisible()
+    for widget in (row.remove_button, row.remember_check, page.continue_button):
+        _below_strip_and_inside(w, widget)
+    assert "…" in row.label.text()  # elided, not clipped
+    assert row.label.toolTip().startswith(name)  # the whole of it, on hover
+    assert row.label.width() <= row.width()
+    shown_name = row.label.text().split(":")[0]  # the rest wraps at its spaces
+    assert row.label.fontMetrics().horizontalAdvance(shown_name) <= row.label.width()
+
+
+def test_which_folder_with_six_folders_fits_1024x600(qtbot, make_window, pairs):
+    root, _ = pairs
+    w = make_window(size=(1024, 600))
+    names = [f"Folder {n} of the long trip to the mountains" for n in range(1, 7)]
+    which = w.which_folder_page
+    which.load(root, {"ab.jpg": names, "ab2.jpg": names[:3]}, {})
+    w.show_page(which)
+    qtbot.waitUntil(lambda: _focused() is which.rows[0])
+    qtbot.wait(20)
+    assert which.minimumSizeHint().width() <= w.stack.width()
+    assert which.minimumSizeHint().height() <= w.stack.height()
+    assert which._all_bar.rows() > 1  # the All to buttons wrap
+    for widget in (which.continue_button, which.back_button, *which.all_buttons):
+        _below_strip_and_inside(w, widget)
+    assert not which.scroll.horizontalScrollBar().isVisible()
+    row = which.rows[0]
+    viewport = which.scroll.viewport()
+    assert row.mapTo(viewport, row.rect().topLeft()).y() < viewport.height()  # in view
+    for button in row.buttons:  # every answer of the row reachable, none crushed
+        assert button.mapTo(row, button.rect().bottomRight()).x() <= row.width()
+        assert button.width() >= button.minimumSizeHint().width(), button.text()
+    which.clear()
+
+
 # ----- remember ----------------------------------------------------------------------------
 
 def _ann(seeds=(1, 2, 3)) -> np.ndarray:
