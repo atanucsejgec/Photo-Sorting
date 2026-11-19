@@ -1029,6 +1029,9 @@ def test_history_undo_brings_old_records_in_first(qtbot, make_window, photos, ma
     monkeypatch.setattr(history_page.dialogs, "ask", lambda *a, **k: True)
     monkeypatch.setattr(history_page.dialogs, "warn", lambda parent, title, text:
                         warned.append(text))
+    # None of the run's files is where it put it, so History asks where the
+    # folder is: here, the owner says.
+    monkeypatch.setattr(history_page, "choose_folder", lambda *a: photos)
     w.sidebar.items["history"].click()
     page = w.history_page
     assert page.undo_button.isEnabled()

@@ -21,9 +21,11 @@ Forget (the button, or Delete) deletes the picked records, never a file. A
 run that older, not undone runs depend on (journal records they placed
 files that it moved: undo.dependents) is only forgotten together with them.
 
-A run whose folder is gone shows "Folder not found"; undoing it first asks
-where the folder is now. A folder holding at least one of the run's moved
-files at its recorded place is taken as the same one: every run of the old
+A run whose folder is gone shows "Folder not found": the folder is not
+there, or holds none of its runs' files (undo.root_present: an unplugged
+drive's empty mount point). Undoing it first asks where the folder is now.
+A folder holding at least one of the run's moved files at its recorded
+place is taken as the same one: every run of the old
 path, or of a folder inside it, is re-pointed there (journal.relocate_root).
 """
 
@@ -48,7 +50,8 @@ from photosort.ui.theme import heading, page_spacing
 from photosort.ui.widgets import Switch
 from photosort.ui.worker import Task
 from photosort.undo import (
-    BlockingRun, UndoBlocked, UndoResult, blocking_runs, dependents, related_roots, undo_run,
+    BlockingRun, UndoBlocked, UndoResult, blocking_runs, dependents, files_in, related_roots,
+    root_present, undo_run,
 )
 
 _log = logging.getLogger("photosort")
@@ -208,12 +211,26 @@ def choose_folder(parent: QWidget | None, title: str, start: str) -> Path | None
 
 def looks_like(root: Path, run_id: str, picked: Path) -> bool:
     """Whether picked holds at least one file the run moved, at its
-    recorded place (dst, relative to the run's root)."""
+    recorded place (dst): undo.files_in, as root_present looks at a run's
+    own folder. A file back where it was (src) is not enough here: a name
+    like "IMG_0001.jpg" at the top of another folder proves nothing, and a
+    wrong folder accepted would be re-pointed to for good."""
     try:
         moves = load_moves(root, run_id)
     except _UNREADABLE:
         return False
-    return any(m.done and os.path.lexists(Path(picked) / m.dst) for m in moves)
+    return Path(picked).is_dir() and files_in(picked, moves, back_home=False)
+
+
+def folder_found(root: Path, runs: list[RunInfo]) -> bool:
+    """Whether root is there: undo.root_present of any run of root, or of
+    a folder inside it (one run's files may all have been moved on by a
+    later run, of root or of a folder inside it). root's own runs first."""
+    if not root.is_dir():
+        return False
+    mine = [run for run in runs if run.root == root]
+    inside = [run for run in runs if run.root != root and run.root.is_relative_to(root)]
+    return any(root_present(run) for run in mine + inside)
 
 
 def _nearest_existing(path: Path) -> Path:
@@ -403,13 +420,14 @@ class HistoryPage(QWidget):
             journal.finish_relocations()  # so each Status is right
         except (OSError, ValueError) as e:
             _log.warning("Moved folders not all re-pointed yet: %s", e)
-        runs = load_all_runs()
+        every = load_all_runs()
+        runs = every
         if self.filter_switch.isChecked() and self.root is not None:
             runs = [r for r in runs if _inside(r.root, self.root)]
         found: dict[Path, bool] = {}
         for run in runs:
             if run.root not in found:
-                found[run.root] = run.root.is_dir()
+                found[run.root] = folder_found(run.root, every)
         self._rows = [_row(run, found[run.root]) for run in runs]
         self._related = {}
 
@@ -526,14 +544,18 @@ class HistoryPage(QWidget):
         None if the owner cancels, the folder picked is not the same, or the
         records can't all be re-pointed (shown)."""
         for wanted in todo:
-            roots = {r.run_id: r.root for r in load_all_runs()}
-            root = roots.get(wanted.run_id)
-            if root is None or root.is_dir():
-                continue  # forgotten meanwhile, or re-pointed with an earlier one
+            every = load_all_runs()
+            root = next((r.root for r in every if r.run_id == wanted.run_id), None)
+            if root is None or folder_found(root, every):
+                continue  # forgotten meanwhile, there, or re-pointed with an earlier one
             picked = choose_folder(self, WHERE, str(_nearest_existing(root.parent)))
             if picked is None:
                 return None
-            picked = Path(os.path.abspath(picked))
+            picked = journal.norm_root(picked)
+            if journal.root_key(picked) == journal.root_key(root):
+                # "It is here": no re-pointing. The undo goes ahead and says
+                # what is wrong (blocked, or none of its files are there).
+                continue
             if not looks_like(root, wanted.run_id, picked):
                 self.show_error(f"{NOT_SAME}.\nNone of the files this sort moved are "
                                 f"in {picked}.")

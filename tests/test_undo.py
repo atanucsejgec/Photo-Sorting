@@ -162,12 +162,15 @@ def test_undo_recreates_removed_dirs_and_keeps_foreign_files(tmp_path):
 
 def test_undo_recreates_removed_empty_dir_without_files(tmp_path):
     # A folder removed by the run that no restored file goes back into.
+    # (b.jpg, still there, shows the folder is the one sorted.)
     _write(tmp_path / "sub/a.jpg", b"a")
-    run_id = _run(tmp_path, [("sub/a.jpg", "x/a.jpg")])
+    _write(tmp_path / "b.jpg", b"b")
+    run_id = _run(tmp_path, [("sub/a.jpg", "x/a.jpg"), ("b.jpg", "x/b.jpg")])
     (tmp_path / "x/a.jpg").unlink()
     result = undo_run(tmp_path, run_id)
     assert result.missing == ["sub/a.jpg"]
     assert (tmp_path / "sub").is_dir()
+    assert (tmp_path / "b.jpg").read_bytes() == b"b"
     assert not (tmp_path / "x").exists()
 
 
@@ -263,11 +266,13 @@ def test_undo_reuses_case_twin_folder_for_restored_file(tmp_path):
 @needs_case_sensitive_fs
 def test_undo_does_not_recreate_removed_dir_beside_case_twin(tmp_path):
     _write(tmp_path / "deep/er/a.jpg", b"a")
-    run_id = _run(tmp_path, [("deep/er/a.jpg", "x/a.jpg")])
+    _write(tmp_path / "deep/er/b.jpg", b"b")  # still there: the folder is the one sorted
+    run_id = _run(tmp_path, [("deep/er/a.jpg", "x/a.jpg"), ("deep/er/b.jpg", "x/b.jpg")])
     (tmp_path / "x/a.jpg").unlink()
     (tmp_path / "DEEP/ER").mkdir(parents=True)
     result = undo_run(tmp_path, run_id)
     assert result.missing == ["deep/er/a.jpg"]
+    assert (tmp_path / "DEEP/ER/b.jpg").read_bytes() == b"b"
     assert sorted(os.listdir(tmp_path)) == ["DEEP"]
     assert os.listdir(tmp_path / "DEEP") == ["ER"]
 
@@ -645,3 +650,44 @@ def test_undo_never_removes_a_folder_that_was_there_before(tmp_path, case_sensit
     assert (tmp_path / "PDF").is_dir()
     assert result.renamed == [("pdf", "pdf (1)")]
     assert (tmp_path / "a.pdf").read_bytes() == b"a"
+
+
+# ----- the drive unplugged: an empty mount point left behind ------------------
+
+def test_root_present_needs_one_of_the_runs_files(tmp_path):
+    root = tmp_path / "drive"
+    _write(root / "a.jpg", b"a")
+    run_id = _run(root, [("a.jpg", "d/a.jpg")])
+    (run,) = load_runs(root)
+    assert undo.root_present(run)
+    os.rename(root / "d" / "a.jpg", root / "a.jpg")  # put back by hand: src counts
+    assert undo.root_present(run)
+    (root / "a.jpg").unlink()
+    os.rmdir(root / "d")  # an empty mount point: the drive is unplugged
+    assert not undo.root_present(run)
+    os.rmdir(root)
+    assert not undo.root_present(run)
+    assert run_id
+
+
+def test_root_present_of_a_run_that_moved_nothing_is_the_folder(tmp_path):
+    j = RunJournal.create(tmp_path, "date", False, 0)
+    j.finish("done")
+    (run,) = load_runs(tmp_path)
+    assert undo.root_present(run)
+
+
+def test_undo_with_none_of_the_files_there_refuses_and_stays_undoable(tmp_path):
+    root = tmp_path / "drive"
+    _write(root / "old" / "a.jpg", b"a")
+    plan = Plan("date", [Move("old/a.jpg", "d/a.jpg")], [])
+    j = RunJournal.create(root, "date", False, 1)
+    execute(root, plan, j)
+    assert not (root / "old").exists()  # emptied, so removed: undo would make it again
+    for path in sorted(root.rglob("*"), reverse=True):  # the drive unplugged
+        path.rmdir() if path.is_dir() else path.unlink()
+    with pytest.raises(undo.FolderMissing, match=(
+            f"None of this sort's files are in {root}. Is the drive plugged in?")):
+        undo_run(root, j.run_id)
+    assert not _undone(root, j.run_id)
+    assert list(root.iterdir()) == []  # nothing made in the empty mount point

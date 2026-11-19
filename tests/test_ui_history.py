@@ -714,6 +714,63 @@ def test_folder_not_found_then_wrong_pick_refused(qtbot, make_history, tmp_path,
     assert _column(d, STATUS) == ["Folder not found"]
 
 
+def _unplugged(tmp_path) -> tuple[Path, str]:
+    """A run on a drive since unplugged: its mount point is left, empty."""
+    mount = tmp_path / "drive"
+    _write(mount / "a.jpg", b"a")
+    run = _run(mount, [("a.jpg", "d/a.jpg")])
+    (mount / "d" / "a.jpg").unlink()
+    (mount / "d").rmdir()
+    return mount, run
+
+
+def test_an_empty_mount_point_is_folder_not_found(qtbot, make_history, tmp_path, asked,
+                                                  shown, picker):
+    mount, run = _unplugged(tmp_path)
+    d = make_history(None)
+    assert _column(d, STATUS) == ["Folder not found"]
+    _select(d, 0)
+    picker.picks = [tmp_path / "elsewhere"]
+    (tmp_path / "elsewhere").mkdir()
+    d.undo_button.click()  # another folder without its files: not the same
+    assert picker.calls == [("Where is this folder now?", str(tmp_path))]
+    assert shown == ["This doesn't look like the same folder.\n"
+                     f"None of the files this sort moved are in {tmp_path / 'elsewhere'}."]
+    assert asked.calls == []
+    picker.picks = [mount]  # "it is here": the undo says what is wrong
+    d.undo_button.click()
+    qtbot.waitUntil(lambda: not d.undoing() and len(shown) == 2)
+    assert shown[1] == (f"Could not undo: None of this sort's files are in {mount}. "
+                        "Is the drive plugged in?")
+    assert list(mount.iterdir()) == []
+    assert [(r.root, r.undone) for r in load_all_runs()] == [(mount, False)]
+    assert _column(d, STATUS) == ["Folder not found"]
+
+
+def test_a_folder_whose_newest_run_moved_everything_on_is_found(
+        qtbot, make_history, tmp_path):
+    """One run's files all moved on by a later run of the same folder: the
+    folder is still there (another run's files are)."""
+    root = tmp_path / "photos"
+    _write(root / "a.jpg", b"a")
+    _run(root, [("a.jpg", "d/a.jpg")])
+    _run(root, [("d/a.jpg", "e/a.jpg")])
+    d = make_history(None)
+    assert _column(d, STATUS) == ["Done", "Done"]
+
+
+def test_dones_undo_on_an_empty_mount_point_refuses(qtbot, make_window, tmp_path, errors):
+    mount, run = _unplugged(tmp_path)
+    w = make_window()
+    w.root, w._run_id = mount, run  # as if Done showed its sort
+    w._undo()
+    qtbot.waitUntil(lambda: errors != [])
+    assert errors == [f"Could not undo: None of this sort's files are in {mount}. "
+                      "Is the drive plugged in?"]
+    assert list(mount.iterdir()) == []  # nothing made in the mount point
+    assert [r.undone for r in load_all_runs()] == [False]
+
+
 def test_relocate_then_undo_restores(qtbot, make_history, tmp_path, asked, shown, picker):
     old = tmp_path / "photos"
     _write(old / "a.jpg", b"a")

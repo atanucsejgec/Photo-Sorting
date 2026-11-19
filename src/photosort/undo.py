@@ -19,7 +19,7 @@ from pathlib import Path
 
 from photosort.executor import PHOTOSORT_DIR, move_file
 from photosort.journal import (
-    RunInfo, load_all_runs, load_dirs, load_moves, load_runs, mark_undone,
+    JournalMove, RunInfo, load_all_runs, load_dirs, load_moves, load_runs, mark_undone,
 )
 from photosort.naming import TargetAllocator, resolve_existing_dir
 
@@ -48,6 +48,16 @@ class UndoBlocked(Exception):
         self.blocking = blocking
 
 
+class FolderMissing(Exception):
+    """None of the run's files are in its folder (a drive unplugged, its
+    empty mount point left behind): nothing was done. str() is for the owner."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(f"None of this sort's files are in {root}. "
+                         "Is the drive plugged in?")
+        self.root = root
+
+
 @dataclass
 class UndoResult:
     restored: int
@@ -56,6 +66,30 @@ class UndoResult:
     # (src, error message) of files that could not be moved back this time;
     # when any, the run is left not undone so undo can be tried again.
     failed: list[tuple[str, str]] = field(default_factory=list)
+
+
+def files_in(folder: Path, moves: list[JournalMove], back_home: bool = True) -> bool:
+    """Whether folder holds at least one file of the done moves, at its
+    recorded place (dst) or, with back_home, back where it was (src)."""
+    folder = Path(folder)
+    return any(m.done and (os.path.lexists(folder / m.dst)
+                           or (back_home and os.path.lexists(folder / m.src)))
+               for m in moves)
+
+
+def root_present(run: RunInfo) -> bool:
+    """Whether the run's folder is there: a folder, holding at least one
+    file of its done moves (files_in). An empty mount point, left behind by
+    an unplugged drive, is not. A run that moved nothing needs the folder
+    only; one whose record can't be read is taken as there (its undo says
+    what is wrong)."""
+    if not run.root.is_dir():
+        return False
+    try:
+        moves = load_moves(run.root, run.run_id)
+    except (OSError, ValueError, KeyError, TypeError):
+        return True
+    return not any(m.done for m in moves) or files_in(run.root, moves)
 
 
 def _run_index(root: Path, run_id: str) -> tuple[list, int]:
@@ -219,8 +253,10 @@ def undo_run(
 ) -> UndoResult:
     """Move the run's files back, restore its removed folders, remove its new ones.
 
-    Raises ValueError if the run is unknown or already undone, and
-    UndoBlocked if a newer run must be undone first. progress(processed,
+    Raises ValueError if the run is unknown or already undone,
+    UndoBlocked if a newer run must be undone first, and FolderMissing
+    (nothing done, the run still undoable) if the run had done moves and
+    not one of its files is in root, moved or back. progress(processed,
     total) is called after each recorded move.
 
     A file that can't be moved back (an OSError, such as a file held open)
@@ -280,6 +316,13 @@ def undo_run(
         # else: the file never left (or is already back); nothing to do.
         if progress is not None:
             progress(n, total)
+
+    if (any(m.done for m in moves) and result.restored == 0 and not result.failed
+            and len(result.missing) == total):
+        # Not one file is there, not even back home: the folder is not the
+        # one sorted (a drive unplugged, its empty mount point left). Undo
+        # nothing, make nothing there, and keep the run undoable.
+        raise FolderMissing(root)
 
     for rel in sorted(removed, key=lambda r: r.count("/")):  # parents first
         if _is_ours(rel):

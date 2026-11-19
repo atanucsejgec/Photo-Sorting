@@ -88,6 +88,15 @@ def _no_waiting_dialogs(request, monkeypatch):
         raise AssertionError(message)
 
     monkeypatch.setattr(QDialog, "exec", refuse)
+
+    def refuse_folder_picker(*args, **kwargs) -> str:  # a C++ static: patched by name
+        message = ("QFileDialog.getExistingDirectory opened and would wait for an "
+                   "answer: patch it (e.g. history_page.choose_folder)")
+        opened.append(message)
+        return ""  # as if cancelled
+
+    from PySide6.QtWidgets import QFileDialog
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", refuse_folder_picker)
     yield opened  # what was refused, for the test of this guard
     if opened:
         pytest.fail(opened[0], pytrace=False)
