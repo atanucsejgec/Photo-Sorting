@@ -17,7 +17,9 @@ names that are not valid UTF-8 (lone surrogates in Python) round-trip
 unchanged.
 
 A folder that was moved is re-pointed (relocate_root) under a marker,
-"relocating.json": the {old, new} pair is written there first and taken off
+"relocating.json": the {old, new, at} pair is written there first (at: when;
+only runs started before it are re-pointed, so a later sort recorded at the
+old path is never moved) and taken off
 only once every record is re-pointed, so a pair left half done (a failed
 write, the app closed) is finished by finish_relocations, which every undo
 calls first.
@@ -402,10 +404,14 @@ def relocate_root(old: Path, new: Path) -> int:
     pair = {"old": _abs(old), "new": str(norm_root(new))}
     with _relocating:
         pending = _pending_for_update()
-        if pair not in pending:
+        same = [p for p in pending if _same_pair(p, pair)]
+        if same:
+            pair = same[0]  # its time is the first one's
+        else:
+            pair["at"] = _now()
             _runs_dir().mkdir(parents=True, exist_ok=True)
             _write_meta(_runs_dir() / _RELOCATING, pending + [pair])
-        changed, errors = _repoint(Path(pair["old"]), Path(pair["new"]))
+        changed, errors = _repoint(Path(pair["old"]), Path(pair["new"]), pair.get("at"))
         _raise_any(errors)
         _drop_pending(pair)
     return changed
@@ -420,7 +426,7 @@ def finish_relocations() -> None:
     with _relocating:
         errors: list[OSError] = []
         for pair in _pending_for_update():
-            _, failed = _repoint(Path(pair["old"]), Path(pair["new"]))
+            _, failed = _repoint(Path(pair["old"]), Path(pair["new"]), pair.get("at"))
             if failed:
                 errors += failed
             else:
@@ -445,7 +451,12 @@ def _pending_for_update() -> list[dict]:
             and isinstance(p.get("new"), str) for p in pairs):
         raise ValueError(f"The list of moved folders still being re-pointed ({path}) "
                          "can't be read")
-    return [{"old": p["old"], "new": p["new"]} for p in pairs]
+    return [{"old": p["old"], "new": p["new"],
+             **({"at": p["at"]} if isinstance(p.get("at"), str) else {})} for p in pairs]
+
+
+def _same_pair(a: dict, b: dict) -> bool:
+    return a["old"] == b["old"] and a["new"] == b["new"]
 
 
 def _drop_pending(pair: dict) -> None:
@@ -453,7 +464,7 @@ def _drop_pending(pair: dict) -> None:
     pending is harmless, as re-pointing it again changes nothing."""
     path = _runs_dir() / _RELOCATING
     try:
-        pending = [p for p in _pending_for_update() if p != pair]
+        pending = [p for p in _pending_for_update() if not _same_pair(p, pair)]
         if pending:
             _write_meta(path, pending)
         else:
@@ -463,13 +474,27 @@ def _drop_pending(pair: dict) -> None:
         _log.warning("Could not update %s: %s", path, e)
 
 
-def _repoint(old_path: Path, new_path: Path) -> tuple[int, list[OSError]]:
-    """Re-point the records under old_path, trying every one; return how
-    many changed and the errors of those that couldn't be."""
+def _started_before(meta: dict, at: str | None) -> bool:
+    """Whether the run started before at (a pair's time; None: any run).
+    A run whose time can't be read is re-pointed, as before times were kept."""
+    if at is None:
+        return True
+    try:
+        return datetime.fromisoformat(str(meta["started"])) < datetime.fromisoformat(at)
+    except (KeyError, TypeError, ValueError):
+        return True
+
+
+def _repoint(old_path: Path, new_path: Path,
+             at: str | None = None) -> tuple[int, list[OSError]]:
+    """Re-point the records under old_path that started before at (the
+    pair's time: a run recorded at the old path later is another sort there,
+    never moved), trying every one; return how many changed and the errors
+    of those that couldn't be."""
     changed, errors = 0, []
     for path, meta in _metas():
         root = meta.get("root")
-        if not isinstance(root, str):
+        if not isinstance(root, str) or not _started_before(meta, at):
             continue
         root_path = Path(root)
         if root_path != old_path and not root_path.is_relative_to(old_path):

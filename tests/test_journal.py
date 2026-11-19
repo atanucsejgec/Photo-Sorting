@@ -167,8 +167,29 @@ def _failing_writes(monkeypatch, bad: set[str]):
 
 
 def _pending():
+    """The pending pairs, without the time each was made."""
     path = appdata.runs_dir() / "relocating.json"
-    return json.loads(path.read_text()) if path.exists() else []
+    pairs = json.loads(path.read_text()) if path.exists() else []
+    return [{"old": p["old"], "new": p["new"]} for p in pairs]
+
+
+def test_a_pending_relocation_never_moves_a_run_recorded_after_it(monkeypatch):
+    """The drive is back at its old path and sorted again before the
+    pending pair is finished: that newer run stays where it was recorded."""
+    ids = _three_under("/x/a")
+    _failing_writes(monkeypatch, {ids[1]})
+    with pytest.raises(OSError):
+        relocate_root(Path("/x/a"), Path("/y"))
+    (pair,) = json.loads((appdata.runs_dir() / "relocating.json").read_text())
+    assert datetime.fromisoformat(pair["at"]) >= datetime.fromisoformat(
+        _meta(ids[2])["started"])
+    monkeypatch.undo()
+    later = RunJournal.create(Path("/x/a/b"), "date", False, 0)
+    later.finish("done")
+    journal.finish_relocations()
+    assert [_meta(i)["root"] for i in ids] == ["/y", "/y/b", "/y/c"]
+    assert _meta(later.run_id)["root"] == "/x/a/b"  # recorded after: kept
+    assert _pending() == []
 
 
 def test_relocate_root_tries_every_record_and_keeps_the_pair_pending(monkeypatch):
