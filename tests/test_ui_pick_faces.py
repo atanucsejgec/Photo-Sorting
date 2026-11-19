@@ -339,6 +339,33 @@ def test_continue_without_folder_says_make_a_folder_first(qtbot, make_window, ro
     assert w.current_page() is page
 
 
+def test_grouping_shows_a_progress_line_and_stop_still_works(qtbot, make_window, root,
+                                                              engine, monkeypatch):
+    import threading
+    entered, release = threading.Event(), threading.Event()
+    real = pick_flow.group_people
+
+    def slow(faces, cancel=None, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        return real(faces, cancel=cancel, **kwargs)  # looks at cancel before each round
+
+    monkeypatch.setattr(pick_flow, "group_people", slow)
+    w = make_window()
+    _start(qtbot, w, root, engine)
+    try:
+        assert entered.wait(10)
+        progress = w.progress_page
+        qtbot.waitUntil(lambda: progress.progress_label.text() == "Grouping faces…")
+        assert (progress.progress_bar.minimum(), progress.progress_bar.maximum()) == (0, 0)
+        assert progress.cancel_button.isEnabled()
+        progress.cancel_button.click()
+        assert progress.progress_label.text() == "Stopping…"
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: w.current_page() is w.home)  # stopped: nothing to pick
+
+
 def test_fits_1024x600(qtbot, make_window, root, engine):
     w = make_window(size=(1024, 600))
     page = _on_grid(qtbot, w, root, engine)

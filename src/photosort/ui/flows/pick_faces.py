@@ -50,16 +50,24 @@ NO_FACES = "No faces found"
 _CROP_TRIES = 5  # faces tried, clearest first, for a remembered person's picture
 
 
+GROUPING = "Grouping faces…"
+
+
 def _find_people(root: Path, include_subfolders: bool, engine_factory, use_gpu: bool,
-                 progress=None, cancel=None) -> list[PersonGroup] | None:
+                 stage=None, progress=None, cancel=None) -> list[PersonGroup] | None:
     """Every face under root, grouped into people; None if cancelled. The
-    face engine is made here, on the worker thread; the central analysis cache is used."""
+    face engine is made here, on the worker thread; the central analysis
+    cache is used. stage(GROUPING) is called as the grouping starts (it has
+    no count: the progress page shows a busy bar); Stop is still looked at
+    before each of its rounds."""
     engine = engine_factory(use_gpu)
     with AnalysisCache() as cache:
         faces = scan_faces(root, include_subfolders, engine.analyse, cache,
                            progress=progress, cancel=cancel)
     if faces is None:
         return None
+    if stage is not None:
+        stage(GROUPING)
     return group_people(faces, cancel=cancel)
 
 
@@ -68,7 +76,7 @@ def start(window: "MainWindow", root: Path, include_subfolders: bool, spec: Mode
     window.begin_progress("Looking for faces…", joiner="of")
     window.run_task(
         Task(_find_people, root, include_subfolders, window.engine_factory,
-             window.settings.use_gpu),
+             window.settings.use_gpu, window.progress_page.stage_requested.emit),
         partial(_on_found, window), partial(_on_scan_error, window))
 
 

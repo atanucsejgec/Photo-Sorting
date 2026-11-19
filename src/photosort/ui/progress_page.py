@@ -20,7 +20,10 @@ class ProgressPage(QWidget):
     """"<prefix> <i> <joiner> <total>" over a bar; cancel_requested on Cancel or Esc."""
 
     cancel_requested = Signal()
-    keys_changed = Signal()  # Esc was switched on or off (the strip redraws)
+    keys_changed = Signal()
+    # stage_requested.emit(text) may be called from a worker thread (it is
+    # queued to the page): show_stage(text).
+    stage_requested = Signal(str)  # Esc was switched on or off (the strip redraws)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -51,6 +54,16 @@ class ProgressPage(QWidget):
 
         self._cancel_key = shortcuts.bind(self, "Escape", "Esc", "cancel",
                                           self.cancel_button.click, repeat=False)
+        self.stage_requested.connect(self.show_stage)
+
+    def show_stage(self, text: str) -> None:
+        """The work moved on to a step without a count: text over a busy
+        bar. Once stopping, "Stopping…" stays."""
+        if not self.cancel_button.isEnabled():
+            return
+        self._prefix = text
+        self.progress_bar.setRange(0, 0)
+        self.progress_label.setText(text)
 
     def begin(self, prefix: str, total: int | None, joiner: str) -> None:
         """Start again: "<prefix>", or "<prefix> 0 <joiner> <total>", the bar busy
