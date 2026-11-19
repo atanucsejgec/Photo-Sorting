@@ -59,7 +59,7 @@ def find_duplicate_groups(
     digests: dict[str, str] = {}  # only for files whose byte size collides
     hashes: dict[str, int] = {}  # perceptual hashes of readable photos
     candidates: dict[str, Candidate] = {}  # files that may be in a group
-    with AnalysisCache(root) as cache:
+    with AnalysisCache() as cache:
         for i, rel in enumerate(files, start=1):
             if cancel is not None and cancel.is_set():
                 return None

@@ -40,7 +40,7 @@ def _sort_by_clip(root: Path, include_subfolders: bool, mode: str, choices: list
     thread, through root's analysis cache; then judge them for mode
     ("content", choices being the categories, or "notes")."""
     engine = engine_factory(use_gpu)
-    with AnalysisCache(root) as cache:
+    with AnalysisCache() as cache:
         scan = embed_photos(root, include_subfolders, engine.image_embedding,
                             progress=progress, cancel=cancel, cache=cache)
     if scan is None or (cancel is not None and cancel.is_set()):

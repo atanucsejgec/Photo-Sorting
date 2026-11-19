@@ -428,11 +428,11 @@ def test_cache_used_on_second_scan(tmp_path):
     touch(tmp_path, "x.jpg", "y.jpg", "bad.jpg")
     faces = {"x.jpg": [face({0: 0.9})], "y.jpg": [face({0: 0.375})],
              "bad.jpg": UnreadableImage("bad")}
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         first = find_face_matches(tmp_path, False, [ATANU], FakeEngine(faces),
                                   cache=cache)
     engine = FakeEngine(faces)
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         second = find_face_matches(tmp_path, False, [ATANU], engine, cache=cache)
     assert engine.calls == ["bad.jpg"]  # unreadable photos are not cached
     assert second.sure == first.sure == {"x.jpg": {ATANU.id}}
@@ -444,7 +444,7 @@ def test_cache_used_on_second_scan(tmp_path):
 def test_unusable_cache_entry_analysed_again(tmp_path):
     touch(tmp_path, "x.jpg")
     engine = FakeEngine({"x.jpg": [face({0: 0.9})]})
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         cache.put(FACES_KIND, tmp_path / "x.jpg", b"garbage")
         scan = find_face_matches(tmp_path, False, [ATANU], engine, cache=cache)
         assert cache.get(FACES_KIND, tmp_path / "x.jpg") != b"garbage"  # replaced
@@ -472,10 +472,10 @@ def test_one_photo_failing_is_logged_and_counted_unreadable(tmp_path, caplog):
 def test_failed_photo_is_not_cached(tmp_path):
     touch(tmp_path, "a.jpg", "b.jpg")
     faces = {"a.jpg": [face({0: 0.9})], "b.jpg": RuntimeError("model trouble")}
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         find_face_matches(tmp_path, False, [ATANU], FakeEngine(faces), cache=cache)
     engine = FakeEngine(faces)
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         scan = find_face_matches(tmp_path, False, [ATANU], engine, cache=cache)
     assert engine.calls == ["b.jpg"]
     assert scan.unreadable == 1

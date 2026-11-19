@@ -40,7 +40,7 @@ def find_repeated_groups(
     photos = [rel for rel in scan(root, include_subfolders) if kind(rel) == "photo"]
     total = len(photos)
     shots: list[tuple[Candidate, int]] = []  # each with its perceptual hash
-    with AnalysisCache(root) as cache:
+    with AnalysisCache() as cache:
         for i, rel in enumerate(photos, start=1):
             if cancel is not None and cancel.is_set():
                 return None

@@ -50,7 +50,7 @@ def find_bad_photos(
     photos = [rel for rel in scan(root, include_subfolders) if kind(rel) == "photo"]
     total = len(photos)
     bad: list[Candidate] = []
-    with AnalysisCache(root) as cache:
+    with AnalysisCache() as cache:
         for i, rel in enumerate(photos, start=1):
             if cancel is not None and cancel.is_set():
                 return None

@@ -300,7 +300,7 @@ def test_embed_photos_looks_into_subfolders_only_when_asked(tmp_path):
 def test_embed_photos_counts_unreadable_and_never_caches_it(tmp_path):
     touch(tmp_path, "a.jpg", "bad.jpg")
     embed = FakeEmbed({"bad.jpg": UnreadableImage("bad.jpg: broken")})
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         scan = embed_photos(tmp_path, False, embed, cache=cache)
         assert sorted(scan.embeddings) == ["a.jpg"]
         assert (scan.photos, scan.unreadable) == (2, 1)
@@ -312,10 +312,10 @@ def test_embed_photos_second_run_is_all_cache_hits(tmp_path):
     touch(tmp_path, "a.jpg", "b.jpg", "bad.jpg")
     found = {"a.jpg": photo({0: 50.0}), "b.jpg": photo({1: 50.0}),
              "bad.jpg": UnreadableImage("bad.jpg: broken")}
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         first = embed_photos(tmp_path, False, FakeEmbed(found), cache=cache)
     again = FakeEmbed(found)
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         second = embed_photos(tmp_path, False, again, cache=cache)
     assert again.calls == ["bad.jpg"]  # an unreadable photo is tried again
     assert sorted(second.embeddings) == sorted(first.embeddings) == ["a.jpg", "b.jpg"]
@@ -327,7 +327,7 @@ def test_embed_photos_second_run_is_all_cache_hits(tmp_path):
 def test_embed_photos_garbage_cache_entry_is_embedded_again(tmp_path):
     touch(tmp_path, "a.jpg")
     embed = FakeEmbed({"a.jpg": photo({0: 50.0})})
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         cache.put(CLIP_KIND, tmp_path / "a.jpg", b"not an embedding")
         scan = embed_photos(tmp_path, False, embed, cache=cache)
         assert embed.calls == ["a.jpg"]
@@ -476,7 +476,7 @@ def test_changed_categories_rejudge_without_reading_photos(tmp_path):
     touch(tmp_path, "a.jpg", "Food/b.jpg", "doc.jpg")
     found = {"a.jpg": photo({0: 50.0}), "b.jpg": photo({0: 50.0}),
              "doc.jpg": photo({8: 50.0})}  # on no axis of the first categories
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         scan = embed_photos(tmp_path, True, FakeEmbed(found), cache=cache)
     sure, _ = judge(scan, CATEGORIES, TEXT, BACKGROUND)
     plan = plan_content(tmp_path, scan, sure, {})
@@ -486,7 +486,7 @@ def test_changed_categories_rejudge_without_reading_photos(tmp_path):
     renamed = ["Meals"] + CATEGORIES[1:] + ["Documents"]  # Meals on axis 0, Documents on 8
     text = np.eye(512, dtype=np.float32)[:len(renamed)]
     again = FakeEmbed(found)
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         rerun = embed_photos(tmp_path, True, again, cache=cache)
     assert again.calls == []
     for each in (scan, rerun):
@@ -500,6 +500,6 @@ def test_changed_categories_rejudge_without_reading_photos(tmp_path):
 
 def test_cache_holds_packed_embeddings(tmp_path):
     touch(tmp_path, "a.jpg")
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         embed_photos(tmp_path, False, FakeEmbed({"a.jpg": photo({3: 50.0})}), cache=cache)
         assert cache.get(CLIP_KIND, tmp_path / "a.jpg") == pack(photo({3: 50.0}))

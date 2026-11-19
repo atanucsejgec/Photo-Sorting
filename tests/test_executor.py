@@ -323,7 +323,8 @@ def test_folder_left_holding_only_the_cache_is_removed(tmp_path, make_pattern_jp
     make_pattern_jpeg(x / "a.jpg", 1, exif_dt="2025:02:20 10:00:00")
     make_pattern_jpeg(x / "b.jpg", 2, exif_dt="2025:02:21 10:00:00")
     find_duplicate_groups(x, include_subfolders=False)
-    assert (x / ".photosort" / "cache.db").is_file()
+    assert not (x / ".photosort").exists()  # the cache is central now
+    _write(x / ".photosort" / "cache.db", b"an old cache")  # left by an older version
 
     result, journal = _date_run(tmp_path)
     assert result.moved == 2

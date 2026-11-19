@@ -173,7 +173,9 @@ def test_summary_then_go_then_undo_restores_every_file(qtbot, make_window, photo
         "2 photos with people stay",
     ]
     assert sorted(engine.calls) == ["hills.jpg", "me.jpg", "sea.jpg", "us.jpg"]
-    assert (photos / ".photosort" / "cache.db").is_file()  # the face cache was used
+    from photosort import appdata
+    assert (appdata.data_dir() / "cache.db").is_file()  # the face cache was used
+    assert not (photos / ".photosort").exists()  # nothing written in the folder
 
     w.go_button.click()
     qtbot.waitUntil(lambda: w.current_page() is w.done_page)

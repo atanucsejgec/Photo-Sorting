@@ -115,14 +115,14 @@ def test_rgba_and_palette_pngs(tmp_path):
 def test_unreadable_is_none_and_not_cached(tmp_path):
     bad = tmp_path / "bad.jpg"
     bad.write_bytes(b"not a photo")
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         assert measure_quality(bad, cache) is None
         assert cache.get(QUALITY_KIND, bad) is None
 
 
 def test_cached_quality_is_read_back(tmp_path, make_pattern_jpeg, monkeypatch):
     path = make_pattern_jpeg(tmp_path / "a.jpg", 1)
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         first = measure_quality(path, cache)
         assert len(cache.get(QUALITY_KIND, path)) == struct.calcsize("<5d")
 
@@ -131,5 +131,5 @@ def test_cached_quality_is_read_back(tmp_path, make_pattern_jpeg, monkeypatch):
 
     monkeypatch.setattr(imageinfo, "decode", no_decoding)
     monkeypatch.setattr(quality, "decode", no_decoding)
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         assert measure_quality(path, cache) == first

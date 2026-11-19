@@ -445,7 +445,7 @@ def test_duplicates_end_to_end(qtbot, make_window, photos, make_pattern_jpeg, er
     w.undo_button.click()
     qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
     assert not (photos / "Duplicates").exists()
-    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == before
+    assert sorted(p.name for p in photos.iterdir()) == before
     assert errors == []
 
 
@@ -576,7 +576,7 @@ def test_repeated_end_to_end(qtbot, make_window, photos, make_pattern_jpeg, erro
     w.undo_button.click()
     qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
     assert not (photos / "Repeated Shots").exists()
-    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == [
+    assert sorted(p.name for p in photos.iterdir()) == [
         "a.jpg", "b.jpg", "c.jpg",
     ]
     assert errors == []
@@ -603,8 +603,8 @@ def test_cancel_review_returns_home(qtbot, make_window, photos, make_pattern_jpe
     w.review_page.cancel_button.click()
     assert w.current_page() is w.home
     assert w.flow_state is None and w.back_to is None  # the groups are let go
-    # the analysis cache is in .photosort; no photo moved
-    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == ["a.jpg", "b.jpg"]
+    # no photo moved, and the analysis cache is central: nothing else in the folder
+    assert sorted(p.name for p in photos.iterdir()) == ["a.jpg", "b.jpg"]
 
 
 @pytest.mark.parametrize("page", ["review_page", "bad_page", "events_page",
@@ -644,8 +644,8 @@ def test_planning_error_goes_home(qtbot, make_window, photos, make_pattern_jpeg,
     w.review_page.keep_one_button.click()
     assert w.current_page() is w.home
     assert errors == ["Could not plan the moves: drive gone"]
-    # the analysis cache is in .photosort; no photo moved
-    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == ["a.jpg", "b.jpg"]
+    # no photo moved, and the analysis cache is central: nothing else in the folder
+    assert sorted(p.name for p in photos.iterdir()) == ["a.jpg", "b.jpg"]
 
 
 def test_back_to_cleared_on_start_and_go(qtbot, make_window, photos, make_pattern_jpeg,
@@ -875,7 +875,7 @@ def _go_and_undo(qtbot, w, photos, mode: str, moved: dict[str, str]):
     w.undo_button.click()
     qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
     assert f"Undo complete: {len(moved)} files put back." in w.undo_label.text()
-    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == before
+    assert sorted(p.name for p in photos.iterdir()) == before
 
 
 def test_camera_end_to_end(qtbot, make_window, photos, errors):

@@ -22,7 +22,7 @@ from photosort.naming import TargetAllocator
 from photosort.plan import Plan
 
 PHOTOSORT_DIR = ".photosort"
-CACHE_NAME = "cache.db"  # photosort.cache's database, in a .photosort folder
+CACHE_NAME = "cache.db"  # photosort.cache's database (older versions kept one in each .photosort)
 
 
 def _exists(path: Path) -> bool:
@@ -109,8 +109,8 @@ def _is_empty_dir(path: Path) -> bool:
         return False
 
 
-# The exact names photosort.cache creates in a .photosort folder: the
-# database, SQLite's side files, and set-aside copies of both. Matched
+# The exact names older versions of photosort.cache created in a .photosort
+# folder: the database, SQLite's side files, and set-aside copies of both. Matched
 # case-sensitively and in full, so an owner's look-alike is never taken.
 _CACHE_FILE = re.compile(
     re.escape(CACHE_NAME) + r"(\.broken-[0-9]+)?(-journal|-wal|-shm)?")

@@ -32,7 +32,7 @@ def _scan(root: Path, include_subfolders: bool,
     """find_no_people with a face engine made here, on the worker thread,
     and root's analysis cache."""
     engine = engine_factory(use_gpu)
-    with AnalysisCache(root) as cache:
+    with AnalysisCache() as cache:
         return find_no_people(root, include_subfolders, engine.analyse,
                               progress=progress, cancel=cancel, cache=cache)
 

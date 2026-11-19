@@ -1,9 +1,12 @@
-"""Results of slow photo analysis, remembered between runs in <root>/.photosort/cache.db.
+"""Results of slow photo analysis, remembered between runs in one central
+cache.db in the app's data folder (appdata.data_dir()), never in the owner's
+photo folders.
 
 An entry is found by its kind (what was worked out, and in which format,
 e.g. "photo-v1" or "faces-v1"), the file's casefolded name, its byte size
 and its modified time. Moving a file within the folder (say, by a Date sort)
-keeps its entries; changing its content loses them.
+keeps its entries, as does moving it to another folder altogether; changing
+its content loses them.
 
 The cache never stops a run. A database found corrupt (on opening, or later)
 is renamed to cache.db.broken-<n>; on opening, a fresh one is then started.
@@ -12,6 +15,9 @@ turns the cache off for the run: get() finds nothing and put() stores
 nothing. Each is logged once, as a warning.
 
 Data is bytes the caller packs (with struct or numpy), never pickles.
+
+Older versions kept one cache per folder, in <root>/.photosort/cache.db;
+merge_cache brings such a file's entries into the central cache.
 """
 
 import logging
@@ -19,26 +25,28 @@ import os
 import sqlite3
 from pathlib import Path
 
-from photosort.executor import CACHE_NAME, PHOTOSORT_DIR
+from photosort import appdata
+from photosort.executor import CACHE_NAME
 
 _log = logging.getLogger("photosort")
 
 _COMMIT_EVERY = 200  # puts between commits, so a crash loses little work
+_TIMEOUT = 5.0  # seconds to wait for a database another program has locked
 _SCHEMA = """CREATE TABLE IF NOT EXISTS entries (
     kind TEXT, name TEXT, size INT, mtime_ns INT, data BLOB,
     PRIMARY KEY (kind, name, size, mtime_ns))"""
 
 
 class AnalysisCache:
-    """The analysis cache of the folder root, as a context manager.
+    """The central analysis cache (or the one at path), as a context manager.
 
     Open it (enter it) on the thread that uses it, and use it from that one
     thread only: the SQLite connection is tied to it. Changes are committed
     every _COMMIT_EVERY puts and on exit.
     """
 
-    def __init__(self, root: Path) -> None:
-        self.path = Path(root) / PHOTOSORT_DIR / CACHE_NAME
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = Path(path) if path is not None else appdata.data_dir() / CACHE_NAME
         self._conn: sqlite3.Connection | None = None
         self._puts = 0
 
@@ -98,7 +106,7 @@ class AnalysisCache:
     def _open(self) -> sqlite3.Connection | None:
         """A connection to a working database, or None (logged) to do nothing."""
         try:
-            self.path.parent.mkdir(exist_ok=True)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             _log.warning("Analysis cache off: can't create %s: %s", self.path.parent, e)
             return None
@@ -119,6 +127,28 @@ class AnalysisCache:
             _log.warning("Analysis cache %s was unusable (%s); moved to %s, starting afresh",
                          self.path, first, broken.name)
             return conn
+
+    def _merge(self, rows) -> bool:
+        """Insert rows (another cache's entries) where not already here, all
+        or none. False (logged) when the cache is off or the rows can't be
+        read or stored."""
+        if self._conn is None:
+            return False
+        try:
+            self._conn.executemany("INSERT OR IGNORE INTO entries VALUES (?, ?, ?, ?, ?)",
+                                   rows)
+            self._conn.commit()
+        except _Unreadable as e:
+            _log.warning("Old analysis cache not merged: can't read %s", e)
+            try:
+                self._conn.rollback()
+            except sqlite3.Error as rollback_error:
+                self._give_up(rollback_error)
+            return False
+        except sqlite3.Error as e:
+            self._give_up(e)
+            return False
+        return True
 
     def _give_up(self, error: sqlite3.Error) -> None:
         """Stop using the cache for the rest of this run (logged once).
@@ -147,6 +177,47 @@ class AnalysisCache:
                 pass
 
 
+_MERGE_BATCH = 200  # rows read at a time from an old cache, so memory stays small
+
+
+class _Unreadable(Exception):
+    """An old cache being merged can't be read (it is not the central one's fault)."""
+
+
+def merge_cache(old_db: Path) -> bool:
+    """Bring the entries of old_db (an old <root>/.photosort/cache.db) into
+    the central cache; an entry already there is kept as it is.
+
+    True only once every entry is in the central cache. old_db is only ever
+    read, never changed or deleted: a corrupt, unreadable or missing one gives
+    False (logged) and is left alone, and so does trouble with the central
+    cache (which follows AnalysisCache's rules: a corrupt one is set aside).
+    """
+    old_db = Path(old_db)
+    try:
+        old = sqlite3.connect(old_db.absolute().as_uri() + "?mode=ro", uri=True,
+                              timeout=_TIMEOUT)
+    except sqlite3.Error as e:
+        _log.warning("Old analysis cache not merged: can't open %s: %s", old_db, e)
+        return False
+    try:
+        with AnalysisCache() as cache:
+            return cache._merge(_old_rows(old, old_db))
+    finally:
+        old.close()
+
+
+def _old_rows(conn: sqlite3.Connection, path: Path):
+    """Every entry of the cache open on conn, a few at a time; any trouble
+    reading it is raised as _Unreadable."""
+    try:
+        cursor = conn.execute("SELECT kind, name, size, mtime_ns, data FROM entries")
+        while batch := cursor.fetchmany(_MERGE_BATCH):
+            yield from batch
+    except sqlite3.Error as e:
+        raise _Unreadable(f"{path}: {e}") from e
+
+
 def _is_corrupt(error: sqlite3.Error) -> bool:
     """Whether error says the file is damaged or not a database at all.
 
@@ -160,7 +231,7 @@ def _is_corrupt(error: sqlite3.Error) -> bool:
 def _connect(path: Path) -> sqlite3.Connection:
     """Open path and make sure the table exists (a file that isn't a database
     fails here; damage further in shows up when it is read)."""
-    conn = sqlite3.connect(path)  # check_same_thread: one thread only
+    conn = sqlite3.connect(path, timeout=_TIMEOUT)  # check_same_thread: one thread only
     try:
         conn.execute(_SCHEMA)
         conn.commit()
