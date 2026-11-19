@@ -22,7 +22,7 @@ from photosort.ui import dialogs, shortcuts
 from photosort.ui.theme import heading, page_spacing
 from photosort.ui.worker import Task
 from photosort.undo import (
-    BlockingRun, UndoBlocked, UndoResult, blocking_runs, related_folders, undo_run,
+    BlockingRun, UndoBlocked, UndoResult, blocking_runs, related_roots, undo_run,
 )
 
 _STATUS_LABELS = {"done": "Done", "cancelled": "Cancelled", "failed": "Failed"}
@@ -181,9 +181,7 @@ class HistoryPage(QWidget):
             self._rows, self._related = [], []
         else:
             self._rows = [_row(self.root, run) for run in load_runs(self.root)]
-            # Walked once here, not on every selection (the tree can be big);
-            # undo_run itself always checks afresh.
-            self._related = related_folders(self.root)
+            self._related = related_roots(self.root)
         self.runs_table.blockSignals(True)
         self.runs_table.clearSelection()
         self.runs_table.setRowCount(len(self._rows))

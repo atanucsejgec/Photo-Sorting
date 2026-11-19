@@ -7,10 +7,12 @@ import pytest
 
 from photosort import undo
 from photosort.executor import execute
-from photosort.journal import RunJournal, load_runs
+from photosort.journal import RunJournal, load_all_runs, load_runs
 from photosort.modes.date_mode import prepare_date_plan
 from photosort.plan import Move, Plan
-from photosort.undo import BlockingRun, UndoBlocked, UndoResult, blocking_runs, undo_run
+from photosort.undo import (
+    BlockingRun, UndoBlocked, UndoResult, blocking_runs, dependents, related_roots, undo_run,
+)
 
 
 def _write(path, data: bytes):
@@ -436,6 +438,170 @@ def test_undone_nested_runs_do_not_block(tmp_path):
     assert blocking_runs(n, run1) == [BlockingRun(run2, "d")]
     undo_run(n / "d", run2)
     assert blocking_runs(n, run1) == []
+
+
+# ----- related roots: found in the central store, not on disk ------------
+
+
+def _record(root: Path) -> str:
+    """A run recorded for root, which need not exist on disk."""
+    return _crashed_journal(root, [])
+
+
+def test_related_roots_are_root_around_and_inside_from_the_store(tmp_path):
+    n = tmp_path / "n"
+    for root in (tmp_path, n, n / "X", n / "X" / "a" / "b", n / "X" / "c",
+                 n / "Y", tmp_path / "other"):
+        _record(root)
+    _record(n / "X")  # a second run: each root is listed once
+    assert related_roots(n / "X") == [
+        n / "X",              # the folder itself
+        n, tmp_path,          # around it, nearest first
+        n / "X" / "a" / "b", n / "X" / "c",  # inside it
+    ]
+    assert related_roots(n / "Y") == [n / "Y", n, tmp_path]
+
+
+def test_related_roots_need_no_record_for_root_itself(tmp_path):
+    _record(tmp_path)
+    _record(tmp_path / "a" / "b")
+    assert related_roots(tmp_path / "a") == [tmp_path, tmp_path / "a" / "b"]
+    assert related_roots(tmp_path / "elsewhere") == [tmp_path]
+
+
+def test_related_roots_with_an_empty_store(tmp_path):
+    assert related_roots(tmp_path) == []
+
+
+def test_related_roots_do_not_walk_the_disk(tmp_path, monkeypatch):
+    # An old .photosort folder on disk is not a run in the store (migration
+    # brings those in); the store's roots count even when gone from disk.
+    (tmp_path / "pics" / "old" / ".photosort" / "runs").mkdir(parents=True)
+    _record(tmp_path / "pics" / "gone")
+
+    real_scandir = os.scandir
+
+    def no_walk(path=".", *args, **kwargs):
+        if Path(path).is_relative_to(tmp_path):  # the store is elsewhere
+            raise AssertionError(f"related_roots walked the disk: {path}")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", no_walk)
+    assert related_roots(tmp_path / "pics") == [tmp_path / "pics" / "gone"]
+
+
+def test_related_roots_take_a_relative_path(tmp_path, monkeypatch):
+    _record(tmp_path / "a" / "b")
+    monkeypatch.chdir(tmp_path)
+    assert related_roots(Path("a")) == [tmp_path / "a" / "b"]
+
+
+def test_root_with_shared_prefix_is_not_related(tmp_path):
+    x = tmp_path / "x"
+    _record(x / "ab")
+    _record(x / "a" / "c")
+    assert related_roots(x / "a") == [x / "a" / "c"]
+    assert related_roots(x / "ab") == [x / "ab"]
+    _record(x / "a")
+    assert related_roots(x / "ab") == [x / "ab"]
+    assert x / "ab" not in related_roots(x / "a" / "c")
+
+
+def test_related_roots_compare_case_insensitively(tmp_path):
+    # The owner's drive is NTFS: /x/A and /x/a can be the same folder.
+    x = tmp_path / "x"
+    _record(x / "A")
+    _record(x / "a" / "B" / "c")
+    _record(x / "AB")
+    assert related_roots(x / "a" / "b") == [x / "A", x / "a" / "B" / "c"]
+    assert related_roots(x / "a") == [x / "A", x / "a" / "B" / "c"]
+
+
+def test_blocking_found_in_a_case_twin_folder_around(tmp_path):
+    n = tmp_path / "n"
+    inner = n / "X"
+    _write(inner / "a.jpg", b"a")
+    run_a = _run(inner, [("a.jpg", "d/a.jpg")])
+    twin = tmp_path / "N"  # the same folder on NTFS, recorded in other case
+    run_b = _crashed_journal(twin, [("x/d/a.jpg", "e/a.jpg", True)])
+    assert blocking_runs(inner, run_a) == [BlockingRun(run_b, str(twin))]
+    with pytest.raises(UndoBlocked):
+        undo_run(inner, run_a)
+
+
+def test_blocking_found_in_a_case_twin_folder_inside(tmp_path):
+    n = tmp_path / "n"
+    _write(n / "a.jpg", b"a")
+    run1 = _run(n, [("a.jpg", "d/a.jpg")])
+    run2 = _crashed_journal(n / "D", [("a.jpg", "e/a.jpg", True)])
+    assert blocking_runs(n, run1) == [BlockingRun(run2, "D")]
+
+
+def test_blocking_found_in_a_case_twin_of_root_itself(tmp_path):
+    n = tmp_path / "n"
+    _write(n / "a.jpg", b"a")
+    run1 = _run(n, [("a.jpg", "d/a.jpg")])
+    twin = tmp_path / "N"
+    run2 = _crashed_journal(twin, [("D/a.jpg", "e/a.jpg", True)])
+    assert blocking_runs(n, run1) == [BlockingRun(run2, str(twin))]
+
+
+def test_blocking_ignores_shared_prefix_folders(tmp_path):
+    x = tmp_path / "x"
+    _write(x / "a" / "f.jpg", b"f")
+    run1 = _run(x / "a", [("f.jpg", "d/f.jpg")])
+    _crashed_journal(x / "ab", [("d/f.jpg", "e/f.jpg", True)])
+    _crashed_journal(x, [("ab/d/f.jpg", "e/f.jpg", True)])
+    assert blocking_runs(x / "a", run1) == []
+
+
+def test_blocking_runs_accepts_related_with_root_in_it(tmp_path):
+    _write(tmp_path / "a.jpg", b"a")
+    run1 = _run(tmp_path, [("a.jpg", "d/a.jpg")])
+    run2 = _run(tmp_path, [("d/a.jpg", "e/a.jpg")])
+    related = related_roots(tmp_path)
+    assert related == [tmp_path]
+    assert blocking_runs(tmp_path, run1, related) == [BlockingRun(run2, "")]
+
+
+# ----- dependents: older runs a run blocks ---------------------------------
+
+
+def test_dependents_lists_older_runs_this_one_blocks(tmp_path):
+    _write(tmp_path / "a.jpg", b"a")
+    run_a = _run(tmp_path, [("a.jpg", "d/a.jpg")])
+    run_b = _run(tmp_path, [("d/a.jpg", "e/a.jpg")])
+    (info_a,) = [r for r in load_all_runs() if r.run_id == run_a]
+    assert dependents(tmp_path, run_b) == [info_a]
+    assert dependents(tmp_path, run_a) == []
+
+
+def test_dependents_across_related_folders_newest_first(tmp_path):
+    n = tmp_path / "n"
+    inner = n / "X"
+    _write(inner / "a.jpg", b"a")
+    _write(n / "b.jpg", b"b")
+    run_outer = _run(n, [("b.jpg", "X/b.jpg")])        # places X/b.jpg
+    run_inner = _run(inner, [("a.jpg", "d/a.jpg")])    # places X/d/a.jpg
+    _run(n / "Xtra", [])                               # unrelated sibling
+    mover = _run(inner, [("b.jpg", "e/b.jpg"), ("d/a.jpg", "e/a.jpg")])
+    by_id = {r.run_id: r for r in load_all_runs()}
+    assert dependents(inner, mover) == [by_id[run_inner], by_id[run_outer]]
+    assert dependents(n, run_outer) == []
+
+
+def test_dependents_skip_undone_runs(tmp_path):
+    _write(tmp_path / "a.jpg", b"a")
+    run_a = _run(tmp_path, [("a.jpg", "d/a.jpg")])
+    run_b = _run(tmp_path, [("d/a.jpg", "e/a.jpg")])
+    undo_run(tmp_path, run_b)
+    undo_run(tmp_path, run_a)
+    assert dependents(tmp_path, run_b) == []
+
+
+def test_dependents_unknown_run_raises(tmp_path):
+    with pytest.raises(ValueError):
+        dependents(tmp_path, "nope")
 
 
 def test_undo_leaves_a_folder_it_did_not_make(tmp_path):

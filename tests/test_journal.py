@@ -195,6 +195,34 @@ def test_import_run_missing_log_raises_and_leaves_nothing(tmp_path):
     assert not (appdata.runs_dir() / "r.json").exists()
 
 
+@pytest.mark.parametrize("which", ["json", "jsonl"])
+def test_import_run_copy_mismatch_removes_partial_copy_and_raises(
+        tmp_path, monkeypatch, which):
+    old = tmp_path / "pics" / ".photosort" / "runs"
+    lines = b'{"op": "move", "i": 0, "src": "a.jpg", "dst": "x/a.jpg"}\n'
+    _old_run(old, "r", "2025-01-01T12:00:00+00:00", lines)
+    central = appdata.runs_dir() / f"r.{which}"
+    real_read_bytes = Path.read_bytes
+
+    def read_back_differs(self):
+        data = real_read_bytes(self)
+        if self != central:
+            return data
+        return b"{}" if which == "json" else data + b"\n"  # the disk lied
+
+    monkeypatch.setattr(Path, "read_bytes", read_back_differs)
+    with pytest.raises(ValueError, match="does not match"):
+        import_run(old, "r", tmp_path / "pics")
+    monkeypatch.undo()
+    assert not (appdata.runs_dir() / "r.json").exists()
+    assert not (appdata.runs_dir() / "r.jsonl").exists()
+    assert load_all_runs() == []
+    # The old copy is untouched, so a later try can bring it in.
+    assert (old / "r.json").is_file()
+    assert (old / "r.jsonl").read_bytes() == lines
+    assert import_run(old, "r", tmp_path / "pics") == "r"
+
+
 def test_journal_roundtrip(tmp_path):
     j = RunJournal.create(tmp_path, "date", False, 2)
     i0 = j.record_intent("a", "b")
