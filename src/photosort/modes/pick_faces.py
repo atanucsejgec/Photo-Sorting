@@ -39,11 +39,11 @@ from photosort.cache import AnalysisCache
 from photosort.faces import Face
 from photosort.media import kind
 from photosort.modes.face_mode import Analyser, faces_of
-from photosort.naming import TargetAllocator, fits, fold, resolve_existing_dir
-from photosort.people import TOGETHER, clean_name
+from photosort.naming import TargetAllocator, fold, resolve_existing_dir
+from photosort.people import clean_name, name_problem
 from photosort.plan import Move, Plan
-from photosort.scanner import scan, skipped_folder
-from photosort.thresholds import PERSON_NAME_MAX, PERSON_NAME_MAX_BYTES, PICK_FACES_JOIN
+from photosort.scanner import scan
+from photosort.thresholds import PICK_FACES_JOIN
 
 MODE = "pick_faces"
 
@@ -231,21 +231,14 @@ def check_folder_name(root: Path, name: str, taken: list[str]) -> str | None:
     """Why name can't be a new folder of the list (taken holds the list's
     names), or None if it can.
 
-    The name is cleaned as a person's is (people.clean_name), and refused as
-    a person's is (it may be remembered as one); it also must not be the name
+    The name is cleaned and refused as a person's is (people.name_problem:
+    it may be remembered as one); it also must not be the name
     of a file in root (case-insensitively), nor be in taken. A folder of that
     name in root is fine: it is joined.
     """
-    if not name.replace(".", "").strip():
-        return "Type a name."
-    name = clean_name(name)
-    if not fits(name, PERSON_NAME_MAX, PERSON_NAME_MAX_BYTES):
-        return "That name is too long."
-    if skipped_folder(name):
-        return "Photo Sorter uses that name for its own folder. Pick another name."
-    if TOGETHER in name:
-        return (f'A name can\'t contain "{TOGETHER}". Photo Sorter uses it '
-                "for photos with several people.")
+    name, problem = name_problem(name)
+    if problem is not None:
+        return problem
     if fold(name) in {fold(t) for t in taken}:
         return f"There is already a folder called {name} in your list"
     try:

@@ -86,17 +86,9 @@ class PeopleStore:
 
     def add(self, name: str, embedding: np.ndarray, thumb: Image.Image) -> Person:
         """Remember a new person with one sample embedding and a face picture."""
-        if not name.replace(".", "").strip():
-            raise PeopleError("Type a name.")
-        name = clean_name(name)
-        if _too_long(name):
-            raise PeopleError("That name is too long.")
-        if skipped_folder(name):
-            raise PeopleError("Photo Sorter uses that name for its own folder. "
-                              "Pick another name.")
-        if TOGETHER in name:
-            raise PeopleError(f'A name can\'t contain "{TOGETHER}". Photo Sorter uses it '
-                              "for photos with several people.")
+        name, problem = name_problem(name)
+        if problem is not None:
+            raise PeopleError(problem)
         entries = self._load()
         if fold(name) in {fold(n) for n in map(_name_of, entries) if n}:
             raise PeopleError(f"A person called {name} already exists.")
@@ -234,6 +226,25 @@ class PeopleStore:
 def person_scores(embedding: np.ndarray, people: list[Person]) -> dict[str, float]:
     """Each person's similarity to embedding: that of their most similar sample."""
     return {p.id: max(similarity(row, embedding) for row in p.embeddings) for p in people}
+
+
+def name_problem(name: str) -> tuple[str, str | None]:
+    """name cleaned (clean_name), and why it can't be a person's name, or None.
+
+    PeopleStore.add refuses a name for this reason; so does Pick faces for a
+    folder name, as such a folder may be remembered as a person.
+    """
+    if not name.replace(".", "").strip():
+        return name, "Type a name."
+    name = clean_name(name)
+    if _too_long(name):
+        return name, "That name is too long."
+    if skipped_folder(name):
+        return name, "Photo Sorter uses that name for its own folder. Pick another name."
+    if TOGETHER in name:
+        return name, (f'A name can\'t contain "{TOGETHER}". Photo Sorter uses it '
+                      "for photos with several people.")
+    return name, None
 
 
 def clean_name(name: str) -> str:
