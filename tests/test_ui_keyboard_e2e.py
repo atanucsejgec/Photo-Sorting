@@ -914,7 +914,7 @@ def _each_page(qtbot, w: MainWindow, root: Path):
     face_flow._on_scan(w, people, scan)
     yield w.face_question_page
     w.mode = "pick_faces"
-    pick_flow._on_found(w, _people(root))
+    pick_flow._on_found(w, (_people(root), {}))
     yield w.pick_faces_page
     face = w.pick_faces_page.groups[0].faces[0]
     w.which_folder_page.load(root, {face.rel: ["Friend", "Family"]}, {face.rel: [face.face]})

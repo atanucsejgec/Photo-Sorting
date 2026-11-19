@@ -4,23 +4,36 @@ for the owner to pick and make folders of.
 Each tile shows the person's clearest face (PersonGroup.best), cropped on a
 pool thread (faces.face_crop) and tagged with the page generation and the
 tile it was asked for; one for a page loaded since is ignored. Under the face
-is "in N photos" and the tile's state: "✓ Picked", or "→ Friend" once it is
+is its name line, then "in N photos" and the tile's state: "✓ Picked", or "→ Friend" once it is
 in the folder Friend (it can't then be picked for another). The people seen
 in one photo only come last, under a "Seen once (N)" header on a row of its
 own, closed until it is opened; their tiles are made when it first opens.
+
+The name line shows the person's name on the People page, if the group is
+someone remembered (set_known_names, from the flow), else a muted "No name".
+R on a tile, or a click on its name line, opens the "Who is this?" dialog
+(NameDialog): the face and a name box, prefilled with the tile's name. Enter
+saves a name people.name_problem takes (a refusal is shown in the dialog,
+which stays), Esc cancels. The page then says "Saving…" on the name line
+and emits name_requested(tile_id, name); the flow saves the tile's ticked
+faces (ticked_faces) on a pool thread and answers with set_tile_name, or
+name_failed (the old name stays, the message line says why). R is the
+grid's key, so it types in a text box.
 
 A tile opened (Enter, or a double-click) shows every face of the person,
 each ticked, in a FacesDialog; unticking one leaves that face out of the
 person for the rest of the page's life, so its photo is not moved for them.
 
 Picked tiles become a folder with the name box and Add (N to type the name,
-Enter to add). The name is checked with modes.pick_faces.check_folder_name,
+Enter to add; into an empty box, N or a click fills in the name every
+picked tile has, if they all have the same one, selected). The name is checked with modes.pick_faces.check_folder_name,
 and a refusal is shown under the box. The folders are listed beside the grid,
 "Friend: 2 people, 57 photos", each with Remember on the People page (off)
 and Remove, which frees its tiles.
 
 Keys: the arrows move between the tiles and the header (by the rows shown),
-Space picks a tile (or opens and closes the header), Enter opens it. In the
+Space picks a tile (or opens and closes the header), Enter opens it, R
+names it. In the
 folder list ↑↓ move and Space ticks Remember. Anywhere, N types a name, Del
 removes the folder of the focused row or tile, Ctrl+Enter continues
 (continued(folders); with no folder, "Make a folder first") and Esc asks
@@ -32,7 +45,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, QEvent, QObject, QSize, Qt, Signal
+from PySide6.QtCore import QElapsedTimer, QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -43,12 +56,12 @@ from shiboken6 import isValid
 from photosort.faces import Box, face_crop
 from photosort.imageinfo import UnreadableImage
 from photosort.modes.pick_faces import FoundFace, PersonGroup, PickFolder, check_folder_name
-from photosort.people import clean_name
+from photosort.people import clean_name, name_problem
 from photosort.ui import shortcuts
 from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.review_page import LOADING
 from photosort.ui.shortcuts import GridNavigator, ShortcutStrip
-from photosort.ui.theme import page_spacing, styled
+from photosort.ui.theme import heading, page_spacing, styled
 from photosort.ui.widgets import ButtonBar, Thumbnail
 from photosort.ui.worker import Task
 
@@ -62,6 +75,9 @@ PICKED = "✓ Picked"
 NOTHING_PICKED = "Pick one or more faces first"
 NO_FOLDER = "Make a folder first"
 REMEMBER = "Remember on the People page"
+NO_NAME = "No name"
+SAVING = "Saving…"
+WHO = "Who is this?"
 
 TILE_CROP_PX = 112  # a tile's face crop
 DIALOG_CROP_PX = 96  # a face crop in the FacesDialog
@@ -95,19 +111,39 @@ def _render_crop(token: tuple[int, int], path: Path, box: Box, size: int,
     return (*token, image)
 
 
+class _NameLine(QLabel):
+    """A tile's name line: a click on it names the tile (it doesn't pick)."""
+
+    clicked = Signal()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt's name)
+        if event.button() == Qt.MouseButton.LeftButton:
+            event.accept()  # not the tile's: no pick
+            self.clicked.emit()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        event.accept()  # the tile's would open its faces
+
+
 class PersonTile(QFrame):
-    """One person: the clearest face, "in N photos" and the tile's state.
-    The tile takes the focus."""
+    """One person: the clearest face, its name line, "in N photos" and the
+    tile's state. The tile takes the focus."""
 
     clicked = Signal()
     # True when the double-click's first click (a press just before) picked
     # or unpicked the tile
     double_clicked = Signal(bool)
 
-    def __init__(self, tile_id: int, group: PersonGroup, parent: QWidget | None = None) -> None:
+    def __init__(self, tile_id: int, group: PersonGroup, parent: QWidget | None = None,
+                 group_index: int = 0) -> None:
         super().__init__(parent)
         self.tile_id = tile_id  # unique within a page generation
         self.group = group
+        self.group_index = group_index  # its place in the page's groups
+        self.name: str | None = None  # the name shown (None: "No name")
+        self.saving = False  # a name is being saved
         self.picked = False
         self.folder: str | None = None  # the folder the tile is in
         self._pressed = QElapsedTimer()  # since the last press
@@ -116,19 +152,47 @@ class PersonTile(QFrame):
         self.setFixedWidth(_TILE_WIDTH)
         self.setToolTip("Click to pick · double-click to see every face")
         self.crop_label = Thumbnail(LOADING, TILE_CROP_PX)
+        self.name_label = _NameLine()
+        self.name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.name_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.name_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self.count_label = QLabel()
         self.count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_label = QLabel()
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_label.setObjectName("muted")
-        for label in (self.count_label, self.status_label):
+        for label in (self.name_label, self.count_label, self.status_label):
             label.setFixedWidth(TILE_CROP_PX)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(_TILE_PAD, _TILE_PAD, _TILE_PAD, _TILE_PAD)
         layout.setSpacing(4)
         layout.addWidget(self.crop_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(self.name_label)
         layout.addWidget(self.count_label)
         layout.addWidget(self.status_label)
+
+    def set_name(self, name: str | None) -> None:
+        """Show name (None: "No name"); a save, if any, is over."""
+        self.name = name or None
+        self.saving = False
+        self._show_name()
+
+    def set_saving(self) -> None:
+        """Say "Saving…" on the name line until set_name."""
+        self.saving = True
+        self._show_name()
+
+    def _show_name(self) -> None:
+        label = self.name_label
+        text = SAVING if self.saving else self.name or NO_NAME
+        label.setToolTip(self.name or "Click or R to name")
+        label.setText(label.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight,
+                                                     TILE_CROP_PX))
+        name = "" if self.name and not self.saving else "muted"
+        if label.objectName() != name:
+            label.setObjectName(name)
+            label.style().unpolish(label)
+            label.style().polish(label)
 
     def set_count(self, photos: int) -> None:
         self.count_label.setText(f"in {_photos(photos)}")
@@ -321,6 +385,62 @@ class FacesDialog(QDialog):
         self.navigator.focus()
 
 
+class NameDialog(QDialog):
+    """"Who is this?": a tile's face and a name box, prefilled with name.
+    Enter (Save) takes a name people.name_problem doesn't refuse, else the
+    refusal is shown and the dialog stays; Esc (Cancel) cancels."""
+
+    def __init__(self, name: str, crop: QPixmap | None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(WHO)
+        self.crop_label = QLabel()
+        self.crop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if crop is not None and not crop.isNull():
+            self.crop_label.setPixmap(crop)
+        self.name_edit = QLineEdit(name)
+        self.name_edit.setPlaceholderText("Name, e.g. Asha")
+        self.message_label = QLabel()
+        self.message_label.setObjectName("error")  # see theme
+        self.message_label.setWordWrap(True)
+        self.cancel_button = QPushButton("Cancel")
+        self.save_button = QPushButton("Save")
+        self.save_button.setObjectName("primaryButton")  # see theme
+        for button in (self.cancel_button, self.save_button):
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # Enter and Esc do these
+        self.save_button.setDefault(True)  # Enter in the box saves
+        self.cancel_button.clicked.connect(self.reject)
+        self.save_button.clicked.connect(self.accept)
+        self.name_edit.textChanged.connect(self.message_label.clear)
+        self.strip = ShortcutStrip(self)
+        shortcuts.describe(self, "Enter", "save")
+        shortcuts.describe(self, "Esc", "cancel")
+        self.setMinimumWidth(320)
+        layout = QVBoxLayout(self)
+        layout.addWidget(heading(WHO))
+        layout.addWidget(self.crop_label)
+        layout.addWidget(self.name_edit)
+        layout.addWidget(self.message_label)
+        layout.addWidget(ButtonBar([], [self.cancel_button, self.save_button]))
+        layout.addWidget(self.strip)
+        self.strip.show_for(self)
+
+    def name(self) -> str:
+        return self.name_edit.text()
+
+    def accept(self) -> None:
+        _, problem = name_problem(self.name())
+        if problem is not None:
+            self.message_label.setText(problem)
+            self.name_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+            return
+        super().accept()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.name_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.name_edit.selectAll()
+
+
 class _SectionNavigator(GridNavigator):
     """A GridNavigator for cards whose (row, column) places are given by
     places() (the grid has a row the header has to itself): ↑ and ↓ go to
@@ -355,6 +475,7 @@ class PickFacesPage(QWidget):
     """The people found; emits continued(list[PickFolder]) or left()."""
 
     continued = Signal(object)  # list[PickFolder]
+    name_requested = Signal(int, str)  # (tile_id, name): save the tile's ticked faces
     left = Signal()
     keys_changed = Signal()  # a key was switched on or off: the strip redraws
 
@@ -365,7 +486,8 @@ class PickFacesPage(QWidget):
         self._next_id = 0  # the next tile's id
         self._dialogs = 0  # FacesDialogs opened, ever
         self._crop_tasks: dict[tuple[int, int], Task] = {}  # kept alive until they report
-        self._once_groups: list[PersonGroup] = []
+        self._once_groups: list[tuple[int, PersonGroup]] = []  # (their place in groups, ...)
+        self._known: dict[int, str] = {}  # the known names, by the group's place
         self._once_open = False
         self._columns = 0
         self._places: list[tuple[int, int]] = []
@@ -376,6 +498,7 @@ class PickFacesPage(QWidget):
         self.tiles: list[PersonTile] = []  # the people seen in more than one photo
         self.once_tiles: list[PersonTile] = []  # made when the section first opens
         self.faces_dialog: FacesDialog | None = None  # while one is open
+        self.name_dialog: NameDialog | None = None  # while one is open
         self.folder_rows: list[FolderRow] = []
 
         layout = QVBoxLayout(self)
@@ -453,6 +576,8 @@ class PickFacesPage(QWidget):
         shortcuts.describe(self.scroll, "Arrows", "move")
         shortcuts.bind(self.scroll, "Space", "Space", "pick", self._space, repeat=False)
         shortcuts.bind(self.scroll, "Return", "Enter", "open", self._open, repeat=False)
+        # R is the grid's: never while a text box has the focus.
+        shortcuts.bind(self.scroll, "R", "R", "name", self._name_current, repeat=False)
         shortcuts.describe(self.folder_box, "↑↓", "move")
         shortcuts.bind(self.folder_box, "Space", "Space", "remember", self._toggle_remember,
                        repeat=False)
@@ -468,16 +593,19 @@ class PickFacesPage(QWidget):
         shortcuts.pause_while_focused(self.name_edit, [name_key, self._remove_key, esc_key],
                                       resume=self._update_keys)
         shortcuts.describe_tab(self)
+        self.name_edit.installEventFilter(self)  # the box's help, as it takes the focus
         self._update_keys()
 
     def load(self, root: Path, groups: list[PersonGroup]) -> None:
         """Show the people found in root (most photos first), nothing picked."""
         self.stop_thumbnails()
         self._close_dialog()
+        self._close_name_dialog()
         self._generation += 1
         self._next_id = 0
         self._root = Path(root)
         self.groups = list(groups)
+        self._known = {}
         self._left_out = set()
         for folder in self._folders:
             folder.row.deleteLater()
@@ -487,15 +615,51 @@ class PickFacesPage(QWidget):
         self.message_label.clear()
         self._once_open = False
         self.once_tiles = []
-        self._once_groups = [g for g in groups if len(g.photos) == 1]
+        self._once_groups = [(n, g) for n, g in enumerate(groups) if len(g.photos) == 1]
         self._new_grid()  # the tiles shown before are deleted
-        self.tiles = [self._make_tile(g) for g in groups if len(g.photos) > 1]
+        self.tiles = [self._make_tile(g, n) for n, g in enumerate(groups) if len(g.photos) > 1]
         self.once_header.set_state(len(self._once_groups), False)
         self._lay_out(force=True)
         self.navigator.set_cards(self._cards(), 0)
         self._update_rows()
         if self.isVisible():
             self.navigator.focus()
+
+    @property
+    def generation(self) -> int:
+        """Bumped whenever the tiles are replaced (load)."""
+        return self._generation
+
+    def set_known_names(self, by_group_index: dict[int, str]) -> None:
+        """The names of the groups (by their place in groups) that are someone
+        remembered; a tile named meanwhile keeps its name."""
+        self._known = dict(by_group_index)
+        for tile in [*self.tiles, *self.once_tiles]:
+            name = self._known.get(tile.group_index)
+            if name is not None and tile.name is None and not tile.saving:
+                tile.set_name(name)
+
+    def ticked_faces(self, tile_id: int) -> list[tuple[str, int]]:
+        """The (rel, index) of the tile's faces still ticked (none for no such tile)."""
+        tile = self._tile(tile_id)
+        if tile is None:
+            return []
+        return [(f.rel, f.index) for f in tile.group.faces
+                if (f.rel, f.index) not in self._left_out]
+
+    def set_tile_name(self, tile_id: int, name: str) -> None:
+        """The tile's name, saved."""
+        if (tile := self._tile(tile_id)) is not None:
+            tile.set_name(name)
+
+    def name_failed(self, tile_id: int, message: str) -> None:
+        """The tile's name could not be saved: its old name stays; say message."""
+        if (tile := self._tile(tile_id)) is not None:
+            tile.set_name(tile.name)
+        self.message_label.setText(message)
+
+    def _tile(self, tile_id: int) -> PersonTile | None:
+        return next((t for t in [*self.tiles, *self.once_tiles] if t.tile_id == tile_id), None)
 
     def clear(self) -> None:
         """Let go of the people (the page was left)."""
@@ -527,10 +691,12 @@ class PickFacesPage(QWidget):
         self._places = []
         self.scroll.setWidget(self._holder)
 
-    def _make_tile(self, group: PersonGroup) -> PersonTile:
-        tile = PersonTile(self._next_id, group, self._holder)
+    def _make_tile(self, group: PersonGroup, index: int) -> PersonTile:
+        tile = PersonTile(self._next_id, group, self._holder, group_index=index)
         self._next_id += 1
+        tile.set_name(self._known.get(index))
         tile.clicked.connect(lambda: self._pick(tile))
+        tile.name_label.clicked.connect(lambda: self._open_name(tile))
         tile.double_clicked.connect(lambda clicked: self._double_clicked(tile, clicked))
         tile.set_count(self._photo_count([tile]))
         tile.refresh_status()
@@ -580,14 +746,17 @@ class PickFacesPage(QWidget):
                 and watched is self.scroll.viewport()):
             self._lay_out()
             self.navigator.reveal_soon()  # the focused tile, in the new view
+        elif (event.type() == QEvent.Type.FocusIn and isValid(self.name_edit)
+              and watched is self.name_edit):
+            self._prefill_name()
         return super().eventFilter(watched, event)
 
     def _toggle_once(self) -> None:
         """Open or close the section of the people seen once."""
         self._once_open = not self._once_open
         if self._once_open and not self.once_tiles:
-            for group in self._once_groups:
-                self.once_tiles.append(self._make_tile(group))
+            for index, group in self._once_groups:
+                self.once_tiles.append(self._make_tile(group, index))
         self.once_header.set_state(len(self._once_groups), self._once_open)
         self._lay_out(force=True)
         self.navigator.set_cards(self._cards(), len(self.tiles))  # on the header
@@ -622,10 +791,51 @@ class PickFacesPage(QWidget):
             self._pick(tile)  # the double-click's first click picked it: as it was
         self._open_tile(tile)
 
+    # ----- a person's name -------------------------------------------------
+
+    def _name_current(self) -> None:
+        if (tile := self._current_tile()) is not None:
+            self._open_name(tile)
+
+    def _open_name(self, tile: PersonTile) -> None:
+        """The "Who is this?" dialog for tile."""
+        self._close_dialog()
+        self._close_name_dialog()
+        dialog = NameDialog(tile.name or "", tile.crop_label.pixmap(), self)
+        generation, tile_id = self._generation, tile.tile_id
+        dialog.finished.connect(
+            lambda result: self._name_dialog_closed(dialog, generation, tile_id, result))
+        self.name_dialog = dialog
+        dialog.open()
+
+    def _name_dialog_closed(self, dialog: NameDialog, generation: int, tile_id: int,
+                            result: int) -> None:
+        name = dialog.name()
+        if self.name_dialog is dialog:
+            self.name_dialog = None
+        dialog.deleteLater()
+        if generation != self._generation:
+            return
+        if result == QDialog.DialogCode.Accepted and (tile := self._tile(tile_id)) is not None:
+            tile.set_saving()
+            self.message_label.clear()
+            self.name_requested.emit(tile_id, name)
+        self.navigator.focus()
+
+    def _close_name_dialog(self) -> None:
+        """Cancel the dialog open, if any (the tiles are about to go)."""
+        dialog, self.name_dialog = self.name_dialog, None
+        if dialog is not None:
+            dialog.finished.disconnect()
+            if dialog.isVisible():
+                dialog.reject()
+            dialog.deleteLater()
+
     # ----- a person's faces ------------------------------------------------
 
     def _open_tile(self, tile: PersonTile) -> None:
         self._close_dialog()
+        self._close_name_dialog()
         dialog = FacesDialog(tile.group.faces, self._left_out, self)
         dialog.toggled.connect(self._face_toggled)
         dialog.finished.connect(self._dialog_closed)
@@ -706,6 +916,23 @@ class PickFacesPage(QWidget):
             task.cancel_event.set()
 
     # ----- folders ---------------------------------------------------------
+
+    def _prefill_name(self) -> None:
+        """Into an empty box: the name every picked tile has, if they all
+        have the same one, selected."""
+        if self.name_edit.text():
+            return
+        picked = [t for t in [*self.tiles, *self.once_tiles] if t.picked]
+        names = {t.name for t in picked}
+        if len(names) == 1 and (name := names.pop()):
+            self.name_edit.setText(name)
+            self.name_edit.selectAll()
+            # A click's press, after the focus, would put the cursor in instead.
+            QTimer.singleShot(0, self._select_name)
+
+    def _select_name(self) -> None:
+        if isValid(self.name_edit) and self.name_edit.hasFocus():
+            self.name_edit.selectAll()
 
     def _focus_name(self) -> None:
         self.name_edit.setFocus(Qt.FocusReason.ShortcutFocusReason)

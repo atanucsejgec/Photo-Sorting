@@ -280,6 +280,8 @@ class MainWindow(QMainWindow):
     def _build_pick_faces(self) -> PickFacesPage:
         page = PickFacesPage()
         page.continued.connect(lambda folders: pick_faces.on_continued(self, folders))
+        page.name_requested.connect(
+            lambda tile_id, name: pick_faces.on_name_requested(self, tile_id, name))
         page.left.connect(self._leave_pick_faces)
         page.keys_changed.connect(self.strip.refresh)
         return page

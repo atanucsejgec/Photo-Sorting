@@ -15,6 +15,14 @@ only once the run has moved files and was not cancelled (see
 MainWindow._on_executed): a new person named after the folder (its mean
 face first, then every face chosen as a sample), or every face chosen as
 more samples for the person of that name. Undo leaves them remembered.
+
+Names: the scan's Task also looks up which groups are someone on the People
+page (modes.pick_faces.known_names; an unreadable People page means no
+names), and the page shows them. A tile named on the page
+(name_requested) is saved at once by save_name on a pool thread, without
+leaving the page; the answer goes back to the page (set_tile_name, or
+name_failed with "Couldn't save <name>: <error>"), unless the page has been
+loaded since.
 """
 
 import logging
@@ -25,13 +33,14 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from PIL import Image
+from PySide6.QtCore import QObject
 
 from photosort.cache import AnalysisCache
 from photosort.executor import ExecResult
 from photosort.faces import Face, face_crop
 from photosort.modes import ModeSpec
 from photosort.modes.pick_faces import (
-    PersonGroup, PickFolder, group_people, photo_folders, plan_pick, scan_faces,
+    PersonGroup, PickFolder, group_people, known_names, photo_folders, plan_pick, scan_faces,
 )
 from photosort.naming import fold
 from photosort.people import PeopleStore, Person, name_problem
@@ -54,8 +63,10 @@ GROUPING = "Grouping faces…"
 
 
 def _find_people(root: Path, include_subfolders: bool, engine_factory, use_gpu: bool,
-                 stage=None, progress=None, cancel=None) -> list[PersonGroup] | None:
-    """Every face under root, grouped into people; None if cancelled. The
+                 store: PeopleStore | None = None, stage=None, progress=None,
+                 cancel=None) -> tuple[list[PersonGroup], dict[int, str]] | None:
+    """Every face under root, grouped into people, and the known names of
+    the groups (by their place; see _known_names); None if cancelled. The
     face engine is made here, on the worker thread; the central analysis
     cache is used. stage(GROUPING) is called as the grouping starts (it has
     no count: the progress page shows a busy bar); Stop is still looked at
@@ -68,7 +79,24 @@ def _find_people(root: Path, include_subfolders: bool, engine_factory, use_gpu: 
         return None
     if stage is not None:
         stage(GROUPING)
-    return group_people(faces, cancel=cancel)
+    groups = group_people(faces, cancel=cancel)
+    if groups is None:
+        return None
+    return groups, _known_names(store, groups)
+
+
+def _known_names(store: PeopleStore | None, groups: list[PersonGroup]) -> dict[int, str]:
+    """known_names against the People page; none if it can't be read (the
+    page loads all the same). Slow with many samples: a worker's job."""
+    if store is None or not groups:
+        return {}
+    try:
+        people = store.people()
+    except Exception:
+        _log.warning("The People page could not be read for Pick faces' names",
+                     exc_info=True)
+        return {}
+    return known_names(groups, people)
 
 
 def start(window: "MainWindow", root: Path, include_subfolders: bool, spec: ModeSpec) -> None:
@@ -76,19 +104,23 @@ def start(window: "MainWindow", root: Path, include_subfolders: bool, spec: Mode
     window.begin_progress("Looking for faces…", joiner="of")
     window.run_task(
         Task(_find_people, root, include_subfolders, window.engine_factory,
-             window.settings.use_gpu, window.progress_page.stage_requested.emit),
+             window.settings.use_gpu, window.people_store,
+             window.progress_page.stage_requested.emit),
         partial(_on_found, window), partial(_on_scan_error, window))
 
 
-def _on_found(window: "MainWindow", groups: list[PersonGroup] | None) -> None:
-    if groups is None or window.cancel_pressed():
+def _on_found(window: "MainWindow",
+              found: tuple[list[PersonGroup], dict[int, str]] | None) -> None:
+    if found is None or window.cancel_pressed():
         window.end_flow()
         window.show_page(window.home)
         return
+    groups, names = found
     if not groups:
         window.show_summary([NO_FACES], can_go=False)
         return
     window.pick_faces_page.load(window.root, groups)
+    window.pick_faces_page.set_known_names(names)
     window.show_page(window.pick_faces_page)
 
 
@@ -96,6 +128,53 @@ def _on_scan_error(window: "MainWindow", message: str) -> None:
     window.end_flow()
     window.show_page(window.home)
     window.show_error(f"Could not look for faces: {message}")
+
+
+# ----- naming a tile ---------------------------------------------------------------------
+
+
+def _save_name(store: PeopleStore, root: Path, name: str, faces: list[tuple[str, Face]],
+               progress=None, cancel=None) -> str:
+    """save_name, as a Task runs it (it can't be stopped part-way)."""
+    return save_name(store, root, name, faces)
+
+
+class _Saving(QObject):
+    """A tile's name being saved: keeps its Task alive (as the page's child)
+    and gives the answer to the page, if the page was not loaded since."""
+
+    def __init__(self, page, tile_id: int, name: str, task: Task) -> None:
+        super().__init__(page)
+        self._page = page
+        self._generation = page.generation
+        self._tile_id = tile_id
+        self._name = name
+        self._task = task
+        task.signals.result.connect(self._saved)
+        task.signals.error.connect(self._failed)
+
+    def _saved(self, name: str) -> None:
+        if self._page.generation == self._generation:
+            self._page.set_tile_name(self._tile_id, name)
+        self.deleteLater()
+
+    def _failed(self, message: str) -> None:
+        if self._page.generation == self._generation:
+            self._page.name_failed(self._tile_id, f"Couldn't save {self._name.strip()}: "
+                                                  f"{message}")
+        self.deleteLater()
+
+
+def on_name_requested(window: "MainWindow", tile_id: int, name: str) -> None:
+    """Save the tile's ticked faces under name on the People page, on a pool
+    thread; the owner stays on the page meanwhile."""
+    page = window.pick_faces_page
+    found = _faces(window)
+    faces = [(rel, found[(rel, i)]) for rel, i in page.ticked_faces(tile_id)
+             if (rel, i) in found]
+    task = Task(_save_name, window.people_store, window.root, name, faces, cancellable=False)
+    _Saving(page, tile_id, name, task)
+    task.start()
 
 
 # ----- which folder ----------------------------------------------------------------------
