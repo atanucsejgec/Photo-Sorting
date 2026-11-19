@@ -273,3 +273,80 @@ def test_an_old_forgotten_entry_without_a_root_matches_any_root(tmp_path):
     assert load_all_runs() == []
     assert not (photos / ".photosort").exists()
     assert not (backup / ".photosort").exists()
+
+
+# ----- strict: an undo must see every old run --------------------------------
+
+_NOT_ROOT = pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
+                               reason="root ignores folder permissions")
+
+
+@_NOT_ROOT
+def test_bring_in_lists_the_folders_left_and_strict_refuses(tmp_path):
+    root = _photos(tmp_path / "pics", "a.jpg")
+    inner = _photos(root / "inner", "b.jpg")
+    old_layout_run(root, [("a.jpg", "x/a.jpg")])
+    old_layout_run(inner, [("b.jpg", "x/b.jpg")], run_id="r-inner")
+    runs = appdata.runs_dir()
+    runs.mkdir(parents=True)
+    os.chmod(runs, 0o555)  # the central store can't be written
+    try:
+        result = bring_in(root)
+        assert result.imported == 0
+        assert result.left == [root, inner]
+        with pytest.raises(migrate.MigrationIncomplete) as e:
+            bring_in(root, strict=True)
+    finally:
+        os.chmod(runs, 0o755)
+    assert e.value.folders == [root, inner]
+    assert str(e.value) == (f"Some older undo records in {root}, {inner} could not be "
+                            "read, so this undo could go in the wrong order. "
+                            "Nothing was changed.")
+    assert (root / ".photosort" / "runs" / "20250101-120000-date.json").is_file()
+    assert bring_in(root, strict=True).imported == 2  # writable again: all in
+    assert bring_in(root, strict=True).left == []
+
+
+def test_strict_bring_in_refuses_on_a_copy_that_does_not_match(tmp_path, monkeypatch):
+    root = _photos(tmp_path / "pics", "a.jpg")
+    old_layout_run(root, [("a.jpg", "x/a.jpg")])
+    real = journal._read_meta
+
+    def lies(path):
+        meta = real(path)
+        return dict(meta, moved=99) if path.parent == appdata.runs_dir() else meta
+
+    monkeypatch.setattr(journal, "_read_meta", lies)
+    with pytest.raises(migrate.MigrationIncomplete, match="could not be read"):
+        bring_in(root, strict=True)
+    monkeypatch.undo()
+    assert load_all_runs() == []
+    assert (root / ".photosort" / "runs" / "20250101-120000-date.json").is_file()
+
+
+def test_strict_bring_in_lists_at_most_three_folders(tmp_path):
+    root = _photos(tmp_path / "pics")
+    folders = [_photos(root / f"f{n}") for n in range(5)]
+    for folder in folders:
+        (folder / ".photosort" / "runs").mkdir(parents=True)
+        (folder / ".photosort" / "runs" / "broken.json").write_text("{not json")
+    with pytest.raises(migrate.MigrationIncomplete) as e:
+        bring_in(root, strict=True)
+    assert e.value.folders == folders
+    assert str(e.value) == (f"Some older undo records in {folders[0]}, {folders[1]}, "
+                            f"{folders[2]} and 2 more folders could not be read, so this "
+                            "undo could go in the wrong order. Nothing was changed.")
+
+
+@_NOT_ROOT
+def test_strict_bring_in_accepts_a_read_only_copy_already_in(tmp_path):
+    root = _photos(tmp_path / "pics", "a.jpg")
+    runs = old_layout_run(root, [("a.jpg", "x/a.jpg")])
+    os.chmod(runs, 0o555)
+    try:
+        assert bring_in(root, strict=True).imported == 1
+        assert bring_in(root, strict=True).left == []  # left there, but it is in
+        forget_runs([r.run_id for r in load_all_runs()])
+        assert bring_in(root, strict=True).left == []  # forgotten counts too
+    finally:
+        os.chmod(runs, 0o755)

@@ -32,7 +32,9 @@ Old undo records and analysis caches (kept in each folder's .photosort
 before) are brought in to the central store by migrate.bring_in: quietly,
 in a Task of its own beside any other, when Home's folder settles; and
 again inside the worker Task of every sort (before it plans) and of every
-undo (before it undoes), so a sort or an undo never misses an old run.
+undo (before it undoes), so a sort or an undo never misses an old run. An
+undo's is strict (history_page.bring_in_for_undo): while an old run it may
+not see is left, the undo is refused, nothing changed.
 
 Slow work runs in a worker.Task. Only one Task runs at a time (self.busy
 guards every way of starting one); the window keeps a reference to the last
@@ -73,7 +75,7 @@ from photosort.ui.flows import (
     bad, clip, date, events, face, files, groups, no_people, pick_faces, plain,
 )
 from photosort.ui.history_page import (
-    HistoryPage, finish_moved_folders, undo_summary, undo_with_message,
+    HistoryPage, bring_in_for_undo, finish_moved_folders, undo_summary, undo_with_message,
 )
 from photosort.ui.home_page import HomePage
 from photosort.ui.model_download import ensure_models
@@ -621,7 +623,7 @@ class MainWindow(QMainWindow):
         self.done_page.undo_started()
         task = Task(undo_with_message, self.root, self._run_id, cancellable=False)
         task.first(finish_moved_folders)  # else a run under an old path is unseen
-        task.first(migrate.bring_in, self.root)  # a newer old run may block it
+        task.first(bring_in_for_undo, self.root)  # a newer old run may block it
         self.run_task(task, self._on_undone, self._on_undo_error)
 
     def _on_undone(self, result: UndoResult) -> None:
@@ -649,9 +651,9 @@ class MainWindow(QMainWindow):
         signals = self.sender()
         self._quiet_tasks = [t for t in self._quiet_tasks if t.signals is not signals]
 
-    def _brought_in(self, imported: int) -> None:
+    def _brought_in(self, result: migrate.BroughtIn) -> None:
         self._quiet_task_ended()
-        if imported and self.current_page() is self.history_page \
+        if result.imported and self.current_page() is self.history_page \
                 and not self.history_page.undoing():
             self.history_page.refresh()  # the old runs are listed now
 

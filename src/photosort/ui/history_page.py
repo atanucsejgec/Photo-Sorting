@@ -9,8 +9,9 @@ Undo (the button, or Enter) asks first, with "Cancel" focused, then undoes
 the picked runs newest first in one worker.Task (undo_many). That first
 finishes any moved folder's re-pointing left pending (refusing to undo
 while it fails: finish_moved_folders, which Done's undo runs first too),
-then brings in old records (migrate.bring_in) of each of their folders, so
-a newer run that blocks one is seen. It stops at the first run that is blocked or
+then brings in old records (bring_in_for_undo, strict) of each of their
+folders, so a newer run that blocks one is seen; while one can't be, the
+undo is refused, nothing changed. It stops at the first run that is blocked or
 fails: the newer ones stay undone, the older ones are not tried, and the
 message says which. undo_running(True/False) says when it starts and ends,
 so the window can keep the sidebar locked meanwhile (an undo can't stop
@@ -130,6 +131,15 @@ def finish_moved_folders(cancel=None) -> None:
         raise RuntimeError(f"{PENDING}: {str(e) or type(e).__name__}") from e
 
 
+def bring_in_for_undo(root: Path, cancel=None) -> None:
+    """migrate.bring_in, strict, first thing in every undo (after
+    finish_moved_folders): raises migrate.MigrationIncomplete, in the
+    owner's words, while a folder related to root still holds an old run
+    neither imported nor forgotten, as it may be newer than the run undone.
+    Never stopped part-way (an undo can't be cancelled)."""
+    migrate.bring_in(root, strict=True)
+
+
 def undo_many(run_ids: list[str], progress=None) -> ManyUndone:
     """Undo the runs, newest first, one after another (on a worker thread),
     stopping at the first one blocked or failing.
@@ -137,11 +147,11 @@ def undo_many(run_ids: list[str], progress=None) -> ManyUndone:
     Moved folders' pending re-pointing is finished first (else it raises,
     undoing nothing), then each run's root is read from the store, and the
     old records of each of those folders are brought in (a newer old run may
-    block one)."""
+    block one): strict, so it raises, undoing nothing, while one is left."""
     finish_moved_folders()
     roots = {r.run_id: r.root for r in load_all_runs()}
     for root in dict.fromkeys(roots[i] for i in run_ids if i in roots):
-        migrate.bring_in(root)
+        bring_in_for_undo(root)
     outcome = ManyUndone()
     for run_id in run_ids:
         root = roots.get(run_id)
@@ -561,7 +571,7 @@ class HistoryPage(QWidget):
         if error is not None:
             self.show_error(error)
 
-    def _on_undo_error(self, message: str) -> None:  # bring_in raised (it shouldn't)
+    def _on_undo_error(self, message: str) -> None:  # e.g. old records left (refused)
         self._undoing = False
         self.result_label.setText("")
         self.refresh()

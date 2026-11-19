@@ -564,13 +564,14 @@ def test_undo_brings_in_each_folder_first(qtbot, make_history, tmp_path, monkeyp
     photos, inner, other, ids = _three_folders(tmp_path)
     brought = []
     monkeypatch.setattr(history_page.migrate, "bring_in",
-                        lambda root, progress=None, cancel=None: brought.append(root))
+                        lambda root, progress=None, cancel=None, strict=False:
+                        brought.append((root, strict)))
     d = make_history(photos)
     _select(d, 0, 2)  # other and photos
     d.undo_button.click()
     qtbot.waitUntil(lambda: _column(d, STATUS)[0] == "Undone")
     QThreadPool.globalInstance().waitForDone()
-    assert sorted(brought) == sorted([other, photos])
+    assert sorted(brought) == sorted([(other, True), (photos, True)])  # strict
 
 
 # ----- forget ------------------------------------------------------------------------------

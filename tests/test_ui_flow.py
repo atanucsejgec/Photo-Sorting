@@ -1,4 +1,5 @@
 import dataclasses
+import os
 import threading
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from PIL import Image
 from PySide6.QtCore import QMimeData, QPointF, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QDropEvent, QKeySequence
 
-from photosort import migrate
+from photosort import appdata, journal, migrate
 from photosort.faces import Face
 from photosort.journal import load_runs
 from photosort.modes import MODE_SPECS, MODES, date_mode
@@ -1039,6 +1040,85 @@ def test_history_undo_brings_old_records_in_first(qtbot, make_window, photos, ma
     assert (day / "elsewhere" / "a.jpg").is_file()
 
 
+def _refused_text(*folders):
+    return (f"Some older undo records in {', '.join(map(str, folders))} could not be "
+            "read, so this undo could go in the wrong order. Nothing was changed.")
+
+
+def _two_sorted_with_a_newer_old_run(qtbot, w, photos, make_jpeg):
+    """Two photos sorted to Done; then an old-layout run, newer, in their
+    month folder, that moved one of them. Return (month, its tree now)."""
+    make_jpeg(photos / "a.jpg", EXIF)
+    make_jpeg(photos / "b.jpg", EXIF)
+    _sort_to_done(qtbot, w, photos)
+    month = photos / "2025" / "02-February"
+    _newer_old_run_on(month, "a.jpg", "elsewhere/a.jpg")
+    return month, tree(photos)
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
+                    reason="root ignores folder permissions")
+def test_dones_undo_is_refused_when_old_records_cant_be_brought_in(
+        qtbot, make_window, photos, make_jpeg, errors, monkeypatch):
+    _quiet_off(monkeypatch)
+    w = make_window()
+    month, before = _two_sorted_with_a_newer_old_run(qtbot, w, photos, make_jpeg)
+    runs = appdata.runs_dir()
+    os.chmod(runs, 0o555)  # the central store can't be written
+    try:
+        w.undo_button.click()
+        qtbot.waitUntil(lambda: errors != [])
+    finally:
+        os.chmod(runs, 0o755)
+    assert errors == [_refused_text(month)]
+    assert tree(photos) == before  # nothing moved
+    assert not load_runs(photos)[0].undone
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
+                    reason="root ignores folder permissions")
+def test_history_undo_is_refused_when_old_records_cant_be_brought_in(
+        qtbot, make_window, photos, make_jpeg, monkeypatch):
+    _quiet_off(monkeypatch)
+    w = make_window()
+    month, before = _two_sorted_with_a_newer_old_run(qtbot, w, photos, make_jpeg)
+    warned = []
+    monkeypatch.setattr(history_page.dialogs, "ask", lambda *a, **k: True)
+    monkeypatch.setattr(history_page.dialogs, "warn", lambda parent, title, text:
+                        warned.append(text))
+    w.sidebar.items["history"].click()
+    page = w.history_page
+    runs = appdata.runs_dir()
+    os.chmod(runs, 0o555)
+    try:
+        page.undo_button.click()
+        qtbot.waitUntil(lambda: warned != [])
+    finally:
+        os.chmod(runs, 0o755)
+    assert warned == [_refused_text(month)]
+    assert tree(photos) == before
+    assert not load_runs(photos)[0].undone
+
+
+def test_dones_undo_is_refused_on_a_copy_that_does_not_match(
+        qtbot, make_window, photos, make_jpeg, errors, monkeypatch):
+    _quiet_off(monkeypatch)
+    w = make_window()
+    month, before = _two_sorted_with_a_newer_old_run(qtbot, w, photos, make_jpeg)
+    real = journal._read_meta
+
+    def lies(path):  # the copy read back is not what was written
+        meta = real(path)
+        return (dict(meta, moved=99) if path.parent == appdata.runs_dir()
+                and path.name.startswith("20990101") else meta)
+
+    monkeypatch.setattr(journal, "_read_meta", lies)
+    w.undo_button.click()
+    qtbot.waitUntil(lambda: errors != [])
+    assert errors == [_refused_text(month)]
+    assert tree(photos) == before
+
+
 def test_quiet_bring_in_never_holds_up_a_sort(qtbot, make_window, photos, make_jpeg,
                                               monkeypatch):
     make_jpeg(photos / "a.jpg", EXIF)
@@ -1117,10 +1197,10 @@ def test_closing_during_dones_undo_still_brings_old_records_in_in_full(
     real = migrate.bring_in
     entered, closed = threading.Event(), threading.Event()
 
-    def bring_in(root, progress=None, cancel=None):
+    def bring_in(root, progress=None, cancel=None, strict=False):
         entered.set()
         assert closed.wait(10)
-        return real(root, progress=progress, cancel=cancel)
+        return real(root, progress=progress, cancel=cancel, strict=strict)
 
     monkeypatch.setattr(migrate, "bring_in", bring_in)
     w.undo_button.click()

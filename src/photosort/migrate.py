@@ -14,6 +14,16 @@ tried again next time; a read-only folder keeps its old files, and its runs
 are not copied twice. ".photosort" and its "runs/" are removed once empty,
 never while they hold anything else.
 
+An old run is "already imported" when the central store holds a run with
+the same old run_id, started time and root: a folder copied with its old
+records is another root, so its runs are imported as runs of their own.
+
+An undo must not go ahead while an old run it can't see may be newer than
+the run undone: every undo calls bring_in strict, which raises
+MigrationIncomplete (the owner's words) when a related folder still holds an
+old run neither imported nor forgotten. A sort and the quiet bring-in on
+Home stay quiet.
+
 Two bring_in calls may run at once (a quiet one when a folder is picked on
 Home, and one before a sort or an undo): one folder is brought in at a time,
 under a lock, so a run is never imported twice.
@@ -61,9 +71,9 @@ def old_folders(root: Path, cancel=None) -> list[Path]:
         folder = stack.pop()
         try:
             with os.scandir(folder) as entries:
-                subdirs = [Path(e.path) for e in entries
-                           if e.is_dir(follow_symlinks=False)
-                           and e.name.casefold() != PHOTOSORT_DIR]
+                subdirs = sorted(Path(e.path) for e in entries
+                                 if e.is_dir(follow_symlinks=False)
+                                 and e.name.casefold() != PHOTOSORT_DIR)
         except OSError:
             continue
         for path in subdirs:
@@ -82,18 +92,41 @@ class BroughtIn:
     left: list[Path] = field(default_factory=list)
 
 
-def bring_in(root: Path, progress=None, cancel=None) -> BroughtIn:
-    """Bring in the old records of root's related folders (see old_folders);
-    return how many runs were imported.
+_SHOWN = 3  # folders named in MigrationIncomplete's message, at most
 
-    Never raises for trouble with a folder or file: it is logged and skipped.
-    progress(i, total) is called after each folder; cancel (an Event) stops
-    it between folders.
+
+class MigrationIncomplete(Exception):
+    """A strict bring_in left old runs that are neither imported nor
+    forgotten (folders: where they are): an undo now could go before a
+    newer run it doesn't see. str() is for the owner."""
+
+    def __init__(self, folders: list[Path]) -> None:
+        self.folders = list(folders)
+        shown = ", ".join(map(str, self.folders[:_SHOWN]))
+        if len(self.folders) > _SHOWN:
+            shown += f" and {len(self.folders) - _SHOWN} more folders"
+        super().__init__(f"Some older undo records in {shown} could not be read, so this "
+                         "undo could go in the wrong order. Nothing was changed.")
+
+
+def bring_in(root: Path, progress=None, cancel=None, strict: bool = False) -> BroughtIn:
+    """Bring in the old records of root's related folders (see old_folders);
+    return how many runs were imported, and the folders whose old runs are
+    still not all in (BroughtIn.left).
+
+    Never raises for trouble with a folder or file: it is logged and skipped,
+    and the folder is in left. With strict (every undo), it raises
+    MigrationIncomplete(left) instead when left is not empty, or when the
+    folders can't be found at all. A sort and Home's quiet bring-in are not
+    strict. progress(i, total) is called after each folder; cancel (an
+    Event) stops it between folders (the folders not done are left).
     """
     try:
         folders = old_folders(root, cancel)
     except Exception:
         _log.exception("Old records of %s not brought in", root)
+        if strict:
+            raise MigrationIncomplete([journal.norm_root(root)]) from None
         return BroughtIn()
     imported = 0
     for i, folder in enumerate(folders):
@@ -108,7 +141,36 @@ def bring_in(root: Path, progress=None, cancel=None) -> BroughtIn:
             progress(i + 1, len(folders))
     if imported:
         _log.info("Brought %d old undo records in, for %s", imported, root)
-    return BroughtIn(imported)
+    with _lock:  # never mid-import of another bring_in
+        left = [folder for folder in folders if _holds_runs_not_in(folder)]
+    if left:
+        _log.warning("Old undo records not all brought in, in: %s",
+                     ", ".join(map(str, left)))
+        if strict:
+            raise MigrationIncomplete(left)
+    return BroughtIn(imported, left)
+
+
+def _holds_runs_not_in(folder: Path) -> bool:
+    """Whether folder/.photosort/runs holds a run that is neither in the
+    central store nor forgotten (one that can't be read counts, as it may
+    be anything)."""
+    runs = folder / PHOTOSORT_DIR / _RUNS
+    if _is_central(folder / PHOTOSORT_DIR) or not os.path.isdir(runs):
+        return False
+    try:
+        with os.scandir(runs) as entries:
+            run_ids = [e.name[:-len(".json")] for e in entries
+                       if e.name.endswith(".json") and e.is_file(follow_symlinks=False)]
+    except OSError:
+        return True
+    for run_id in run_ids:
+        try:
+            if not journal.is_brought_in(runs, run_id, folder):
+                return True
+        except (OSError, ValueError):
+            return True
+    return False
 
 
 def _is_central(path: Path) -> bool:
