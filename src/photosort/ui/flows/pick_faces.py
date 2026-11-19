@@ -12,8 +12,9 @@ Remember on the People page: the plan's Task also gathers, for each folder
 ticked so, its faces' embeddings and a picture of its clearest face (read
 now, before the photo moves). The window's after_run then remembers them,
 only once the run has moved files and was not cancelled (see
-MainWindow._on_executed): a new person named after the folder, or more
-samples for the person of that name. Undo leaves them remembered.
+MainWindow._on_executed): a new person named after the folder (its mean
+face first, then every face chosen as a sample), or every face chosen as
+more samples for the person of that name. Undo leaves them remembered.
 """
 
 import logging
@@ -221,8 +222,9 @@ def _remember(store: PeopleStore, remember: list[_Remember], result: ExecResult)
                 raise ValueError(item.problem)
             else:
                 mean = item.embeddings.mean(axis=0)
-                store.add(item.name, (mean / np.linalg.norm(mean)).astype(np.float32),
-                          item.picture)
+                person = store.add(item.name, (mean / np.linalg.norm(mean)).astype(np.float32),
+                                   item.picture)
+                store.add_samples(person.id, item.embeddings)  # every face chosen
         except Exception as e:  # the store's or the disk's: said on Done
             _log.warning("Remembering %s failed", item.name, exc_info=True)
             lines.append(f"Couldn't remember {item.name}: {e}")

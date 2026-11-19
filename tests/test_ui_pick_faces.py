@@ -646,7 +646,11 @@ def test_remember_after_success_adds_person(qtbot, make_window, root, engine, er
     people = w.people_store.people()
     assert [p.name for p in people] == ["Friend"]
     mean = _ann().mean(axis=0)
-    np.testing.assert_allclose(people[0].embeddings, [mean / np.linalg.norm(mean)], atol=1e-5)
+    # The spec: the mean as its first sample, then every face chosen, so
+    # Face mode later knows each of them (3 faces: 1 + 3 samples).
+    assert len(people[0].embeddings) == 1 + 3
+    np.testing.assert_allclose(people[0].embeddings,
+                               np.vstack([mean / np.linalg.norm(mean), _ann()]), atol=1e-5)
     with Image.open(people[0].thumb) as thumb:
         assert thumb.size == (160, 160)
     assert w.after_run is None
