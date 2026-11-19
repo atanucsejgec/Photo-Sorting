@@ -19,6 +19,11 @@ name isn't a clean one, is refused or repeats an earlier one, its id is not ours
 neither offered nor dropped: it is written back unchanged on every save, and
 its name stays taken, so a passing fault (say, a file another program holds)
 never makes the app forget anyone.
+
+Each folder has one lock (an RLock, shared by every store on that folder in
+this process), held across each read and each read-modify-write, so two
+threads saving at once (Pick faces names its tiles on pool threads) never
+lose each other's change. lock() holds it across several calls.
 """
 
 import io
@@ -27,9 +32,12 @@ import logging
 import os
 import re
 import tempfile
+import threading
 import unicodedata
 import uuid
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 
 import numpy as np
@@ -69,6 +77,25 @@ def default_folder() -> Path:
     return appdata.data_dir() / "people"
 
 
+_LOCKS: dict[Path, threading.RLock] = {}  # by folder (resolved)
+_LOCKS_LOCK = threading.Lock()
+
+
+def _folder_lock(folder: Path) -> threading.RLock:
+    key = Path(os.path.abspath(folder)).resolve()
+    with _LOCKS_LOCK:
+        return _LOCKS.setdefault(key, threading.RLock())
+
+
+def _locked(method):
+    """method, run holding the store's folder lock."""
+    @wraps(method)
+    def run(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return run
+
+
 class PeopleStore:
     """The remembered people in folder (default: user_data_dir/people/).
 
@@ -79,11 +106,19 @@ class PeopleStore:
     def __init__(self, folder: Path | None = None) -> None:
         self.folder = default_folder() if folder is None else Path(folder)
         self._loaded: tuple[tuple[int, int, int], list[_Entry]] | None = None
+        self._lock = _folder_lock(self.folder)
 
+    def lock(self) -> AbstractContextManager:
+        """The folder's lock, to hold across several calls (a read, then a
+        write that depends on it). Re-entrant."""
+        return self._lock
+
+    @_locked
     def people(self) -> list[Person]:
         """Everyone remembered, sorted by name (case-insensitively)."""
         return sorted(_people(self._load()), key=lambda p: (p.name.casefold(), p.name, p.id))
 
+    @_locked
     def add(self, name: str, embedding: np.ndarray, thumb: Image.Image) -> Person:
         """Remember a new person with one sample embedding and a face picture."""
         name, problem = name_problem(name)
@@ -101,6 +136,7 @@ class PeopleStore:
         self._save([*entries, person])
         return person
 
+    @_locked
     def add_samples(self, person_id: str, embeddings: np.ndarray) -> None:
         """Add sample embeddings ((m, 512), or one (512,)) to a remembered person."""
         entries = self._load()
@@ -110,6 +146,7 @@ class PeopleStore:
         updated = Person(person.id, person.name, rows, person.thumb)
         self._save([updated if e is person else e for e in entries])
 
+    @_locked
     def delete(self, person_id: str) -> None:
         """Forget a person: take them off the list, then remove their files."""
         entries = self._load()
@@ -118,6 +155,7 @@ class PeopleStore:
         for path in (self._npy(person.id), self._jpg(person.id)):
             path.unlink(missing_ok=True)
 
+    @_locked
     def best_match(self, embedding: np.ndarray,
                    person_ids: list[str]) -> tuple[str, float] | None:
         """(id, score) of the person in person_ids most like embedding, or None.
@@ -145,6 +183,7 @@ class PeopleStore:
                 return p
         raise PeopleError("That person is no longer remembered.")
 
+    @_locked
     def _load(self) -> list[_Entry]:
         """people.json's entries; raises PeopleError if it exists but can't be
         read (so it is never overwritten)."""
@@ -211,6 +250,7 @@ class PeopleStore:
             return _unusable(raw, f"samples unreadable: {e}")
         return Person(person_id, name, embeddings, self._jpg(person_id))
 
+    @_locked
     def _save(self, entries: list[_Entry]) -> None:
         listing = {"people": [
             {"id": e.id, "name": e.name, "thumb": e.thumb.name, "samples": len(e.embeddings)}

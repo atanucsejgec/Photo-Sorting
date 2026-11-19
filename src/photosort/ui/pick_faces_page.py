@@ -3,42 +3,46 @@ for the owner to pick and make folders of.
 
 Each tile shows the person's clearest face (PersonGroup.best), cropped on a
 pool thread (faces.face_crop) and tagged with the page generation and the
-tile it was asked for; one for a page loaded since is ignored. Under the face
-is its name line, then "in N photos" and the tile's state: "✓ Picked", or "→ Friend" once it is
-in the folder Friend (it can't then be picked for another). The people seen
-in one photo only come last, under a "Seen once (N)" header on a row of its
-own, closed until it is opened; their tiles are made when it first opens.
+tile it was asked for; one for a page loaded since is ignored. Under the
+face is its name line, then "in N photos" and the tile's state: "✓ Picked",
+or "→ Friend" once it is in the folder Friend (it can't then be picked for
+another). The people seen in one photo only come last, under a "Seen once
+(N)" header on a row of its own, closed until it is opened; their tiles are
+made when it first opens.
 
 The name line shows the person's name on the People page, if the group is
 someone remembered (set_known_names, from the flow), else a muted "No name".
 R on a tile, or a click on its name line, opens the "Who is this?" dialog
 (NameDialog): the face and a name box, prefilled with the tile's name. Enter
-saves a name people.name_problem takes (a refusal is shown in the dialog,
-which stays), Esc cancels. The page then says "Saving…" on the name line
-and emits name_requested(tile_id, name); the flow saves the tile's ticked
-faces (ticked_faces) on a pool thread and answers with set_tile_name, or
-name_failed (the old name stays, the message line says why). R is the
-grid's key, so it types in a text box.
+saves a name people.name_problem takes, for a tile with a face still ticked
+(a refusal, or "No face is ticked.", is shown in the dialog, which stays),
+Esc cancels; a tile whose name is saving can't be named meanwhile. The page
+then says "Saving…" on the name line and emits name_requested(tile_id,
+name); the flow saves the tile's ticked faces (ticked_faces) on a pool
+thread and answers with set_tile_name, or name_failed (the old name stays,
+the message line says why). R is the grid's key ("R name person"), so it
+types in a text box; the "Seen once" header doesn't take it.
 
 A tile opened (Enter, or a double-click) shows every face of the person,
 each ticked, in a FacesDialog; unticking one leaves that face out of the
 person for the rest of the page's life, so its photo is not moved for them.
 
 Picked tiles become a folder with the name box and Add (N to type the name,
-Enter to add; into an empty box, N or a click fills in the name every
-picked tile has, if they all have the same one, selected). The name is checked with modes.pick_faces.check_folder_name,
-and a refusal is shown under the box. The folders are listed beside the grid,
-"Friend: 2 people, 57 photos", each with Remember on the People page (off)
-and Remove, which frees its tiles.
+Enter to add; into an empty box, N or a click (not Tab, nor the window
+coming back) fills in the name every picked tile has, if they all have the
+same one, selected). The name is checked with
+modes.pick_faces.check_folder_name, and a refusal is shown under the box.
+The folders are listed beside the grid, "Friend: 2 people, 57 photos", each
+with Remember on the People page (off) and Remove, which frees its tiles.
 
 Keys: the arrows move between the tiles and the header (by the rows shown),
-Space picks a tile (or opens and closes the header), Enter opens it, R
-names it. In the
-folder list ↑↓ move and Space ticks Remember. Anywhere, N types a name, Del
-removes the folder of the focused row or tile, Ctrl+Enter continues
-(continued(folders); with no folder, "Make a folder first") and Esc asks
-whether to leave (left()); Tab and Shift+Tab go between the areas. In the
-name box Enter adds and Esc goes back to the faces.
+Space picks a tile (or opens and closes the header), Enter opens it, R names
+it. In the folder list ↑↓ move and Space ticks Remember. Anywhere, N types a
+folder name ("N folder name"), Del removes the folder of the focused row or
+tile, Ctrl+Enter continues (continued(folders); with no folder, "Make a
+folder first") and Esc asks whether to leave (left()); Tab and Shift+Tab go
+between the areas. In the name box Enter adds and Esc goes back to the
+faces.
 """
 
 import logging
@@ -78,6 +82,7 @@ REMEMBER = "Remember on the People page"
 NO_NAME = "No name"
 SAVING = "Saving…"
 WHO = "Who is this?"
+NO_TICKED = "No face is ticked."
 
 TILE_CROP_PX = 112  # a tile's face crop
 DIALOG_CROP_PX = 96  # a face crop in the FacesDialog
@@ -387,11 +392,14 @@ class FacesDialog(QDialog):
 
 class NameDialog(QDialog):
     """"Who is this?": a tile's face and a name box, prefilled with name.
-    Enter (Save) takes a name people.name_problem doesn't refuse, else the
-    refusal is shown and the dialog stays; Esc (Cancel) cancels."""
+    Enter (Save) takes a name people.name_problem doesn't refuse, if the
+    tile has a face ticked (ticked), else the refusal is shown and the
+    dialog stays; Esc (Cancel) cancels."""
 
-    def __init__(self, name: str, crop: QPixmap | None, parent: QWidget | None = None) -> None:
+    def __init__(self, name: str, crop: QPixmap | None, parent: QWidget | None = None,
+                 ticked: bool = True) -> None:
         super().__init__(parent)
+        self._ticked = ticked  # the tile has a face ticked to save
         self.setWindowTitle(WHO)
         self.crop_label = QLabel()
         self.crop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -429,6 +437,8 @@ class NameDialog(QDialog):
 
     def accept(self) -> None:
         _, problem = name_problem(self.name())
+        if not self._ticked:
+            problem = NO_TICKED
         if problem is not None:
             self.message_label.setText(problem)
             self.name_edit.setFocus(Qt.FocusReason.OtherFocusReason)
@@ -577,14 +587,16 @@ class PickFacesPage(QWidget):
         shortcuts.bind(self.scroll, "Space", "Space", "pick", self._space, repeat=False)
         shortcuts.bind(self.scroll, "Return", "Enter", "open", self._open, repeat=False)
         # R is the grid's: never while a text box has the focus.
-        shortcuts.bind(self.scroll, "R", "R", "name", self._name_current, repeat=False)
+        name_person = shortcuts.bind(self.scroll, "R", "R", "name person", self._name_current,
+                                     repeat=False)
+        shortcuts.pause_while_focused(self.once_header, [name_person])  # not the header's
         shortcuts.describe(self.folder_box, "↑↓", "move")
         shortcuts.bind(self.folder_box, "Space", "Space", "remember", self._toggle_remember,
                        repeat=False)
         shortcuts.bind(self.name_edit, "Return", "Enter", "add", self._add, repeat=False)
         shortcuts.bind(self.name_edit, "Escape", "Esc", "back to faces", self._back_to_grid,
                        repeat=False)
-        name_key = shortcuts.bind(self, "N", "N", "name", self._focus_name, repeat=False)
+        name_key = shortcuts.bind(self, "N", "N", "folder name", self._focus_name, repeat=False)
         self._remove_key = shortcuts.bind(self, "Delete", "Del", "remove folder",
                                           self._remove_current, repeat=False)
         shortcuts.bind(self, "Ctrl+Return", "Ctrl+Enter", "continue", self._continue,
@@ -747,7 +759,9 @@ class PickFacesPage(QWidget):
             self._lay_out()
             self.navigator.reveal_soon()  # the focused tile, in the new view
         elif (event.type() == QEvent.Type.FocusIn and isValid(self.name_edit)
-              and watched is self.name_edit):
+              and watched is self.name_edit
+              and event.reason() in (Qt.FocusReason.ShortcutFocusReason,  # N
+                                     Qt.FocusReason.MouseFocusReason)):
             self._prefill_name()
         return super().eventFilter(watched, event)
 
@@ -798,10 +812,16 @@ class PickFacesPage(QWidget):
             self._open_name(tile)
 
     def _open_name(self, tile: PersonTile) -> None:
-        """The "Who is this?" dialog for tile."""
+        """The "Who is this?" dialog for tile (not while its name is saving)."""
+        if tile.saving:
+            return
         self._close_dialog()
         self._close_name_dialog()
-        dialog = NameDialog(tile.name or "", tile.crop_label.pixmap(), self)
+        cards = self._cards()
+        if tile in cards:  # a click: the focus comes back to this tile after
+            self.navigator.focus(cards.index(tile))
+        dialog = NameDialog(tile.name or "", tile.crop_label.pixmap(), self,
+                            ticked=bool(self.ticked_faces(tile.tile_id)))
         generation, tile_id = self._generation, tile.tile_id
         dialog.finished.connect(
             lambda result: self._name_dialog_closed(dialog, generation, tile_id, result))

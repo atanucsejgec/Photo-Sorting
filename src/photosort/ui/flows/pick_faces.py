@@ -302,17 +302,18 @@ def _save_person(store: PeopleStore, item: _Remember) -> Person:
     new person (the normalised mean face first, then every face chosen).
     Raises the store's or the disk's error, or ValueError if a new person
     has no picture."""
-    person = next((p for p in store.people() if fold(p.name) == fold(item.name)), None)
-    if person is not None:
-        store.add_samples(person.id, item.embeddings)
+    with store.lock():  # the look-up and the write as one: saves may run at once
+        person = next((p for p in store.people() if fold(p.name) == fold(item.name)), None)
+        if person is not None:
+            store.add_samples(person.id, item.embeddings)
+            return person
+        if item.picture is None:
+            raise ValueError(item.problem)
+        mean = item.embeddings.mean(axis=0)
+        person = store.add(item.name, (mean / np.linalg.norm(mean)).astype(np.float32),
+                           item.picture)
+        store.add_samples(person.id, item.embeddings)  # every face chosen
         return person
-    if item.picture is None:
-        raise ValueError(item.problem)
-    mean = item.embeddings.mean(axis=0)
-    person = store.add(item.name, (mean / np.linalg.norm(mean)).astype(np.float32),
-                       item.picture)
-    store.add_samples(person.id, item.embeddings)  # every face chosen
-    return person
 
 
 def save_name(store: PeopleStore, root: Path, name: str, faces: list[tuple[str, Face]]) -> str:

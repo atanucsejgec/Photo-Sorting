@@ -33,7 +33,7 @@ from photosort.ui.pick_faces_page import PersonTile
 CTRL = Qt.KeyboardModifier.ControlModifier
 WHICH_STRIP = ("↑↓ move · 1–9 folder · 0 leave here · Ctrl+Enter continue · Esc back · "
                "Tab/Shift+Tab area")
-STRIP = ("Arrows move · Space pick · Enter open · R name · N name · Del remove folder · "
+STRIP = ("Arrows move · Space pick · Enter open · R name person · N folder name · Del remove folder · "
          "Ctrl+Enter continue · Esc leave · Tab/Shift+Tab area")
 
 
@@ -972,7 +972,8 @@ def test_an_unreadable_people_page_means_no_names(qtbot, make_window, root, engi
 def test_r_names_a_tile_and_saves_to_people(qtbot, make_window, root, engine, errors):
     w = make_window()
     page = _on_grid(qtbot, w, root, engine)
-    assert w.strip.text().startswith("Arrows move · Space pick · Enter open · R name · N name")
+    assert w.strip.text().startswith(
+        "Arrows move · Space pick · Enter open · R name person · N folder name")
     tile = page.tiles[0]
     dialog = _name_dialog(qtbot, w, page)
     assert dialog.name_edit.text() == ""
@@ -1059,7 +1060,7 @@ def test_r_while_typing_folder_name_types_r(qtbot, make_window, root, engine):
     qtbot.keyClicks(page.name_edit, "ahul")
     assert page.name_edit.text() == "rahul"
     assert page.name_dialog is None
-    assert "R name" not in w.strip.text()
+    assert "R name person" not in w.strip.text()
 
 
 def test_esc_cancels_naming_nothing_saved(qtbot, make_window, root, engine, asked):
@@ -1201,3 +1202,114 @@ def test_seen_once_tile_can_be_named(qtbot, make_window, root, engine):
     people = w.people_store.people()
     assert [p.name for p in people] == ["Cat"]
     assert len(people[0].embeddings) == 1 + 1
+
+
+def test_two_saves_at_once_keep_both_people(qtbot, make_window, root, engine, monkeypatch):
+    import time
+    from photosort.people import PeopleStore
+    real = PeopleStore._save
+
+    def slow(self, entries):
+        time.sleep(0.15)  # long enough for the other save to start meanwhile
+        real(self, entries)
+
+    monkeypatch.setattr(PeopleStore, "_save", slow)
+    w = make_window()
+    page = _on_grid(qtbot, w, root, engine)
+    _name_tile(qtbot, w, page, "Asha")
+    _back_on_grid(qtbot, w, page.tiles[0])
+    page.navigator.focus(1)
+    _name_tile(qtbot, w, page, "Ben")
+    qtbot.waitUntil(lambda: _names(page.tiles) == ["Asha", "Ben"], timeout=10_000)
+    people = {p.name: p for p in w.people_store.people()}
+    assert sorted(people) == ["Asha", "Ben"]
+    assert len(people["Asha"].embeddings) == 1 + 3
+    assert len(people["Ben"].embeddings) == 1 + 2
+
+
+def test_r_or_a_click_while_saving_does_nothing(qtbot, make_window, root, engine,
+                                                monkeypatch):
+    import threading
+    release = threading.Event()
+    real = pick_flow.save_name
+
+    def slow(*args, **kwargs):
+        assert release.wait(10)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pick_flow, "save_name", slow)
+    w = make_window()
+    page = _on_grid(qtbot, w, root, engine)
+    tile = page.tiles[0]
+    try:
+        _name_tile(qtbot, w, page, "Asha")
+        _back_on_grid(qtbot, w, tile)
+        assert tile.name_label.text() == "Saving…"
+        _key(qtbot, Qt.Key.Key_R)
+        assert page.name_dialog is None
+        qtbot.mouseClick(tile.name_label, Qt.MouseButton.LeftButton)
+        assert page.name_dialog is None
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: tile.name_label.text() == "Asha")
+
+
+def test_folder_box_prefills_only_on_n_or_a_click(qtbot, make_window, root, engine):
+    from PySide6.QtGui import QFocusEvent
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication
+    w = make_window()
+    page = _on_grid(qtbot, w, root, engine)
+    page.set_tile_name(page.tiles[0].tile_id, "Asha")
+    _key(qtbot, Qt.Key.Key_Space)
+    for reason in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason,
+                   Qt.FocusReason.ActiveWindowFocusReason):
+        QApplication.sendEvent(page.name_edit, QFocusEvent(QEvent.Type.FocusIn, reason))
+        assert page.name_edit.text() == "", reason
+    qtbot.mouseClick(page.name_edit, Qt.MouseButton.LeftButton)
+    assert page.name_edit.text() == "Asha"
+    qtbot.waitUntil(lambda: page.name_edit.selectedText() == "Asha")
+
+
+def test_r_is_not_shown_on_the_seen_once_header(qtbot, make_window, root, engine):
+    w = make_window()
+    page = _on_grid(qtbot, w, root, engine)
+    assert "R name person" in w.strip.text()
+    page.navigator.focus(2)
+    assert _focused() is page.once_header
+    assert "R name person" not in w.strip.text()
+    _key(qtbot, Qt.Key.Key_R)
+    assert page.name_dialog is None
+    page.navigator.focus(0)
+    assert "R name person" in w.strip.text()
+
+
+def test_a_click_to_name_goes_back_to_that_tile(qtbot, make_window, root, engine):
+    w = make_window()
+    page = _on_grid(qtbot, w, root, engine)
+    assert _focused() is page.tiles[0]
+    qtbot.mouseClick(page.tiles[1].name_label, Qt.MouseButton.LeftButton)
+    dialog = page.name_dialog
+    assert page.navigator.current() is page.tiles[1]
+    _activate(qtbot, dialog)
+    qtbot.waitUntil(lambda: _focused() is dialog.name_edit)
+    _key(qtbot, Qt.Key.Key_Escape)
+    _back_on_grid(qtbot, w, page.tiles[1])
+
+
+def test_no_ticked_face_is_refused_in_the_dialog(qtbot, make_window, root, engine):
+    w = make_window()
+    page = _on_grid(qtbot, w, root, engine)
+    page.navigator.focus(1)
+    _key(qtbot, Qt.Key.Key_Return)  # Ben's faces
+    for check in page.faces_dialog.checks:
+        check.setChecked(False)
+    page.faces_dialog.reject()
+    _back_on_grid(qtbot, w, page.tiles[1])
+    dialog = _name_tile(qtbot, w, page, "Ben")
+    assert dialog.isVisible()
+    assert dialog.message_label.text() == "No face is ticked."
+    assert page.tiles[1].name_label.text() == "No name"
+    dialog.reject()
+    qtbot.wait(50)
+    assert w.people_store.people() == []

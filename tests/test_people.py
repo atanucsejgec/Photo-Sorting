@@ -347,3 +347,59 @@ def test_name_with_an_ampersand_on_disk_kept_raw(tmp_path):
     assert store.people() == []
     store.add("Bob", _unit(3), _thumb())
     assert _listed(tmp_path)[0] == raw[0]
+
+
+def test_two_writers_at_once_lose_nobody(tmp_path, monkeypatch):
+    """Two stores on one folder, on two threads: one's save is held up while
+    the other adds; both people, with their samples, are kept."""
+    import threading
+    entered, release = threading.Event(), threading.Event()
+    first, second = PeopleStore(tmp_path), PeopleStore(tmp_path)
+    ann = first.add("Ann", _unit(1), _thumb())
+    real = PeopleStore._save
+
+    def held(self, entries):
+        if self is first and not entered.is_set():
+            entered.set()
+            assert release.wait(10)
+        real(self, entries)
+
+    monkeypatch.setattr(PeopleStore, "_save", held)
+    errors = []
+
+    def run(fn):
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001 - reported below
+            errors.append(e)
+
+    a = threading.Thread(target=run, args=(lambda: first.add("Asha", _unit(2), _thumb()),))
+    b = threading.Thread(target=run, args=(
+        lambda: (second.add("Ben", _unit(3), _thumb()),
+                 second.add_samples(ann.id, np.stack([_unit(4), _unit(5)]))),))
+    a.start()
+    assert entered.wait(10)
+    b.start()
+    b.join(0.3)  # without a lock it would finish meanwhile, on the old list
+    release.set()
+    a.join(10)
+    b.join(10)
+    assert errors == []
+    people_now = {p.name: p for p in PeopleStore(tmp_path).people()}
+    assert sorted(people_now) == ["Ann", "Asha", "Ben"]
+    assert len(people_now["Ann"].embeddings) == 3
+
+
+def test_a_writer_waits_for_a_reader_s_lock(tmp_path):
+    """lock() is held across a read and a write (as Pick faces' save does)."""
+    import threading
+    store = PeopleStore(tmp_path)
+    other = PeopleStore(tmp_path)
+    done = threading.Event()
+    with store.lock():
+        t = threading.Thread(target=lambda: (other.add("Ben", _unit(3), _thumb()), done.set()))
+        t.start()
+        assert not done.wait(0.2)
+        assert store.people() == []
+    t.join(10)
+    assert done.is_set()
