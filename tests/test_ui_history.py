@@ -771,6 +771,28 @@ def test_dones_undo_on_an_empty_mount_point_refuses(qtbot, make_window, tmp_path
     assert [r.undone for r in load_all_runs()] == [False]
 
 
+def test_a_folder_picked_through_a_symlink_is_stored_resolved(
+        qtbot, make_history, tmp_path, asked, shown, picker):
+    old = tmp_path / "photos"
+    _write(old / "a.jpg", b"a")
+    _write(old / "b.jpg", b"b")
+    first = _run(old, [("a.jpg", "d/a.jpg"), ("b.jpg", "d/b.jpg")])
+    real = tmp_path / "real"
+    os.rename(old, real)
+    second = _run(real, [("d/a.jpg", "e/a.jpg")])  # newer, on the real path
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    d = make_history(None)
+    _select(d, _ids(d).index(first))
+    picker.picks = [link]
+    d.undo_button.click()
+    qtbot.waitUntil(lambda: not d.undoing())
+    assert {r.run_id: r.root for r in load_all_runs()}[first] == real.resolve()
+    assert shown == [f"Undo the newer run(s) first: {second}"]  # still blocks
+    assert (real / "e/a.jpg").read_bytes() == b"a"
+    assert (real / "d/b.jpg").read_bytes() == b"b"  # nothing moved
+
+
 def test_relocate_then_undo_restores(qtbot, make_history, tmp_path, asked, shown, picker):
     old = tmp_path / "photos"
     _write(old / "a.jpg", b"a")
