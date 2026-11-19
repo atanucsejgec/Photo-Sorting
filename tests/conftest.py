@@ -33,6 +33,23 @@ def _dark_theme(qapp):
 
 
 @pytest.fixture(autouse=True)
+def _app_data(tmp_path_factory):
+    """Point the app's data folder (people, undo records) at a fresh tmp
+    folder for every test, UI ones included: no test ever writes to the
+    owner's real user_data_dir.
+
+    It uses its own MonkeyPatch, not the test's monkeypatch fixture, so a
+    test that calls monkeypatch.undo() does not put the real folder back.
+    """
+    from photosort import appdata
+
+    folder = tmp_path_factory.mktemp("appdata")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(appdata, "data_dir", lambda: folder)
+        yield folder
+
+
+@pytest.fixture(autouse=True)
 def _no_waiting_dialog_answers():
     """A dialog a test waited for (keys._in_dialog) that never came: the
     wait ends with the test, and so never answers the next test's dialogs."""

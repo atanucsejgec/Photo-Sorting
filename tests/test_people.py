@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from photosort import people
+from photosort import appdata, people
 from photosort.people import PeopleError, PeopleStore
 
 
@@ -52,11 +52,10 @@ def test_empty_store(tmp_path):
     assert store.best_match(_unit(1), []) is None
 
 
-def test_default_folder_is_in_user_data_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(people.platformdirs, "user_data_dir", lambda app: str(tmp_path / app))
+def test_default_folder_is_in_the_app_data_dir():
     store = PeopleStore()
     store.add("Amy", _unit(1), _thumb())
-    assert (tmp_path / "photo-sorter" / "people" / "people.json").is_file()
+    assert (appdata.data_dir() / "people" / "people.json").is_file()
 
 
 def test_name_is_cleaned(tmp_path):

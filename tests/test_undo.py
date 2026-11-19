@@ -64,7 +64,7 @@ def test_undo_full_run(tmp_path, make_jpeg):
         assert (tmp_path / rel).read_bytes() == data
     assert sorted(os.listdir(tmp_path / "sub")) == ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]
     assert not (tmp_path / "2025").exists()
-    assert sorted(os.listdir(tmp_path)) == [".photosort", "sub"]
+    assert sorted(os.listdir(tmp_path)) == ["sub"]
     assert calls == [(1, 4), (2, 4), (3, 4), (4, 4)]
     assert _undone(tmp_path, journal.run_id)
 
@@ -155,7 +155,7 @@ def test_undo_recreates_removed_dirs_and_keeps_foreign_files(tmp_path):
     assert (tmp_path / "deep/er/a.jpg").read_bytes() == b"a"
     assert not (tmp_path / "x/y").exists()
     assert (tmp_path / "x/notes.txt").read_bytes() == b"mine"
-    assert (tmp_path / ".photosort").is_dir()
+    assert not (tmp_path / ".photosort").exists()  # records live centrally
 
 
 def test_undo_recreates_removed_empty_dir_without_files(tmp_path):
@@ -255,7 +255,7 @@ def test_undo_reuses_case_twin_folder_for_restored_file(tmp_path):
     result = undo_run(tmp_path, run_id)
     assert result == UndoResult(restored=1, missing=[], renamed=[("sub/a.jpg", "SUB/a.jpg")])
     assert (tmp_path / "SUB/a.jpg").read_bytes() == b"a"
-    assert sorted(os.listdir(tmp_path)) == [".photosort", "SUB"]
+    assert sorted(os.listdir(tmp_path)) == ["SUB"]
 
 
 @needs_case_sensitive_fs
@@ -266,7 +266,7 @@ def test_undo_does_not_recreate_removed_dir_beside_case_twin(tmp_path):
     (tmp_path / "DEEP/ER").mkdir(parents=True)
     result = undo_run(tmp_path, run_id)
     assert result.missing == ["deep/er/a.jpg"]
-    assert sorted(os.listdir(tmp_path)) == [".photosort", "DEEP"]
+    assert sorted(os.listdir(tmp_path)) == ["DEEP"]
     assert os.listdir(tmp_path / "DEEP") == ["ER"]
 
 
@@ -345,8 +345,8 @@ def test_undo_failing_folder_creation_is_recorded_not_raised(tmp_path, monkeypat
 
 
 # ----- runs in nested picked folders --------------------------------------
-# Each picked folder keeps its own .photosort, so a run in a folder inside
-# (or around) this one can move files this run placed.
+# Runs are recorded per picked folder (their root), so a run in a folder
+# inside (or around) this one can move files this run placed.
 
 
 def test_undo_blocked_by_newer_run_in_a_folder_inside(tmp_path, make_jpeg):

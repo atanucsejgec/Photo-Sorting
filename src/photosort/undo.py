@@ -18,7 +18,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from photosort.executor import PHOTOSORT_DIR, move_file
-from photosort.journal import RUNS_DIR, RunInfo, load_dirs, load_moves, load_runs, mark_undone
+from photosort.journal import (
+    RunInfo, load_all_runs, load_dirs, load_moves, load_runs, mark_undone,
+)
 from photosort.naming import TargetAllocator, resolve_existing_dir
 
 
@@ -64,31 +66,19 @@ def _run_index(root: Path, run_id: str) -> tuple[list, int]:
 
 
 def related_folders(root: Path) -> list[Path]:
-    """Return the folders around and inside root that keep their own undo history.
+    """Return the folders around and inside root that have undo records.
 
-    Each picked folder keeps its own .photosort, so a run on a folder around
-    root (with subfolders on) or inside it can have moved files that root's
-    runs placed. Folders around root are checked up to the filesystem root;
-    every folder inside root is walked, except .photosort folders themselves
-    and folders that can't be read. Paths are absolute.
+    A run on a folder around root (with subfolders on) or inside it can
+    have moved files that root's runs placed. The folders are the roots
+    recorded in the central store (no disk walk), compared by path parts:
+    those around root first, nearest first, then those inside it. Paths are
+    absolute.
     """
     root = Path(os.path.abspath(root))
-    found = [a for a in root.parents if os.path.isdir(a / RUNS_DIR)]
-    stack = [root]
-    while stack:
-        folder = stack.pop()
-        try:
-            with os.scandir(folder) as entries:
-                subdirs = [Path(e.path) for e in entries
-                           if e.is_dir(follow_symlinks=False)
-                           and e.name.casefold() != PHOTOSORT_DIR]
-        except OSError:
-            continue
-        for path in subdirs:
-            if os.path.isdir(path / RUNS_DIR):
-                found.append(path)
-            stack.append(path)
-    return found
+    roots = {run.root for run in load_all_runs()}
+    around = [a for a in root.parents if a in roots]
+    inside = sorted(r for r in roots if r != root and r.is_relative_to(root))
+    return around + inside
 
 
 def _in_root(prefix: tuple[str, ...], src: str) -> str | None:

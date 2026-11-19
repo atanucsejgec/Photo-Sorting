@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from photosort import executor
+from photosort import appdata, executor
 from photosort.executor import ExecResult, execute, move_file
 from photosort.journal import JournalMove, RunJournal, load_dirs, load_moves, load_runs
 from photosort.plan import Move, Plan
@@ -148,7 +148,7 @@ def test_execute_removes_empty_source_dirs(tmp_path):
     assert not (tmp_path / "deep").exists()
     assert (tmp_path / "keep/other.txt").exists()
     assert tmp_path.is_dir()
-    assert (tmp_path / ".photosort").is_dir()
+    assert not (tmp_path / ".photosort").exists()  # records live centrally
     _, removed = load_dirs(tmp_path, j.run_id)
     assert sorted(removed) == ["deep", "deep/er", "sub"]
     assert removed.index("deep/er") < removed.index("deep")
@@ -246,7 +246,7 @@ def test_execute_journals_rmdir_before_removing(tmp_path, monkeypatch):
     seen = []
 
     def spy_rmdir(path, *args, **kwargs):
-        runs = tmp_path / ".photosort" / "runs"
+        runs = appdata.runs_dir()
         (log,) = runs.glob("*.jsonl")
         seen.append(b'"rmdir"' in log.read_bytes())
         return real_rmdir(path, *args, **kwargs)
@@ -267,7 +267,7 @@ def test_execute_journals_mkdir_before_creating(tmp_path, monkeypatch):
     seen = []
 
     def spy_mkdir(path, *args, **kwargs):
-        runs = tmp_path / ".photosort" / "runs"
+        runs = appdata.runs_dir()
         (log,) = runs.glob("*.jsonl")
         rel = os.path.relpath(path, tmp_path)
         seen.append(f'"path": "{rel}"'.encode() in log.read_bytes())
@@ -299,7 +299,7 @@ def test_execute_reuses_case_twin_folder(tmp_path, make_jpeg):
     result = execute(tmp_path, plan, journal)
 
     assert result.moved == 4
-    assert sorted(os.listdir(tmp_path)) == [".photosort", "2025", "no date"]
+    assert sorted(os.listdir(tmp_path)) == ["2025", "no date"]
     assert sorted(os.listdir(tmp_path / "no date")) == ["old.jpg", "x.jpg"]
     assert os.listdir(tmp_path / "2025") == ["02-february"]
     day = tmp_path / "2025/02-february/20-02-2025"
