@@ -23,6 +23,7 @@ import errno
 import logging
 import os
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from photosort import appdata, journal
@@ -51,7 +52,7 @@ def old_folders(root: Path, cancel=None) -> list[Path]:
     first. Inside root, .photosort folders themselves are not walked into,
     nor are symlinks or folders that can't be read.
     """
-    root = Path(os.path.abspath(root))
+    root = journal.norm_root(root)
     found = [a for a in reversed(root.parents) if os.path.isdir(a / PHOTOSORT_DIR)]
     if os.path.isdir(root / PHOTOSORT_DIR):
         found.append(root)
@@ -72,7 +73,16 @@ def old_folders(root: Path, cancel=None) -> list[Path]:
     return found
 
 
-def bring_in(root: Path, progress=None, cancel=None) -> int:
+@dataclass
+class BroughtIn:
+    """What bring_in did: how many runs it imported, and the folders whose
+    old .photosort still holds runs neither imported nor forgotten."""
+
+    imported: int = 0
+    left: list[Path] = field(default_factory=list)
+
+
+def bring_in(root: Path, progress=None, cancel=None) -> BroughtIn:
     """Bring in the old records of root's related folders (see old_folders);
     return how many runs were imported.
 
@@ -84,7 +94,7 @@ def bring_in(root: Path, progress=None, cancel=None) -> int:
         folders = old_folders(root, cancel)
     except Exception:
         _log.exception("Old records of %s not brought in", root)
-        return 0
+        return BroughtIn()
     imported = 0
     for i, folder in enumerate(folders):
         if _cancelled(cancel):
@@ -98,7 +108,7 @@ def bring_in(root: Path, progress=None, cancel=None) -> int:
             progress(i + 1, len(folders))
     if imported:
         _log.info("Brought %d old undo records in, for %s", imported, root)
-    return imported
+    return BroughtIn(imported)
 
 
 def _is_central(path: Path) -> bool:

@@ -68,7 +68,9 @@ def test_records_live_in_the_central_folder(tmp_path):
     assert _meta(j.run_id)["root"] == str(tmp_path / "pics")
 
 
-def test_root_is_absolute_without_resolving_symlinks(tmp_path, monkeypatch):
+def test_root_is_stored_resolved(tmp_path, monkeypatch):
+    """Every root enters the store through norm_root: absolute, symlinks
+    resolved, as Home resolves the folder picked."""
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
@@ -76,9 +78,9 @@ def test_root_is_absolute_without_resolving_symlinks(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     j = RunJournal.create(Path("link"), "date", False, 0)
     j.finish("done")
-    assert _meta(j.run_id)["root"] == os.path.join(str(tmp_path), "link")
-    (run,) = load_runs(link)
-    assert run.root == link
+    assert _meta(j.run_id)["root"] == os.path.realpath(real)
+    (run,) = load_runs(real)
+    assert run.root == real.resolve()
 
 
 def test_load_runs_filters_by_root(tmp_path):
@@ -121,7 +123,7 @@ def test_forget_runs_removes_and_remembers(tmp_path):
     forget_runs([gone.run_id])
     assert not (appdata.runs_dir() / f"{gone.run_id}.json").exists()
     assert not (appdata.runs_dir() / f"{gone.run_id}.jsonl").exists()
-    assert (gone.run_id, started) in forgotten_keys()
+    assert (gone.run_id, started, str(tmp_path)) in forgotten_keys()
     assert [r.run_id for r in load_runs(tmp_path)] == [keep.run_id]
     # A second forget adds to the list, never replaces it.
     forget_runs([keep.run_id])
@@ -458,5 +460,5 @@ def test_forget_runs_sets_a_corrupt_list_aside(tmp_path, caplog):
         forget_runs([j.run_id])
     assert (runs / "forgotten.json.broken-1").read_bytes() == b"an earlier one"
     assert (runs / "forgotten.json.broken-2").read_bytes() == b"[{broken"
-    assert forgotten_keys() == {(j.run_id, started)}
+    assert forgotten_keys() == {(j.run_id, started, str(tmp_path))}
     assert "forgotten.json.broken-2" in caplog.text

@@ -593,7 +593,7 @@ def test_delete_asks_with_keep_focused_and_forgets(qtbot, make_history, tmp_path
     assert _ids(d) == [runs[1]]
     assert [r.run_id for r in load_all_runs()] == [runs[1]]
     assert {p: p.read_bytes() for p in root.rglob("*.jpg")} == before  # nothing moved
-    assert {k for k, _ in journal.forgotten_keys()} == {runs[0], runs[2]}
+    assert {k for k, _, _ in journal.forgotten_keys()} == {runs[0], runs[2]}
     assert d.result_label.text() == "Forgot 2 runs."
 
 

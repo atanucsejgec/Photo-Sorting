@@ -8,8 +8,9 @@ Each run has two files:
   marked ("done") after, so a crashed or cancelled run can still be undone.
 - "<run_id>.json": the run's metadata, rewritten atomically.
 
-The metadata's "root" is the sorted folder's absolute path (os.path.abspath,
-symlinks not resolved); a run belongs to the folder whose path equals it.
+The metadata's "root" is the sorted folder's absolute path, symlinks
+resolved: every root enters the store through norm_root. A run belongs to
+the folder whose path equals it.
 Move paths are POSIX strings relative to root, so a moved folder only needs
 its root re-pointed (relocate_root). JSON is written ASCII-escaped, so Linux
 names that are not valid UTF-8 (lone surrogates in Python) round-trip
@@ -22,7 +23,9 @@ write, the app closed) is finished by finish_relocations, which every undo
 calls first.
 
 Runs the owner forgets are listed in "forgotten.json" (rewritten atomically)
-by run_id and started time, so an old copy is never imported again. A list
+by run_id, started time and root, so an old copy in that folder is never
+imported again (a copied folder's records are a run of their own; an entry
+written before roots were kept matches any root). A list
 that can't be read is never written over: forgetting moves it aside first, as
 "forgotten.json.broken-<n>".
 """
@@ -57,6 +60,24 @@ def _runs_dir() -> Path:
 
 def _abs(root: Path) -> str:
     return os.path.abspath(root)
+
+
+def norm_root(path) -> Path:
+    """The one form a folder's path takes when it enters the store (a new
+    run, a moved folder picked, an old record brought in): absolute, with
+    symlinks resolved (Path.resolve, strict=False), as Home resolves the
+    folder picked. A path that can't be resolved (a symlink loop) is kept
+    absolute."""
+    try:
+        return Path(path).resolve()
+    except (OSError, RuntimeError):
+        return Path(os.path.abspath(path))
+
+
+def root_key(root) -> tuple[str, ...]:
+    """root as roots are compared (as undo.related_roots does): absolute,
+    part by part, casefolded."""
+    return tuple(part.casefold() for part in Path(os.path.abspath(root)).parts)
 
 
 def _now() -> str:
@@ -125,7 +146,7 @@ class RunJournal:
             run_id = f"{base}-{n}"
         meta = {
             "run_id": run_id,
-            "root": _abs(root),
+            "root": str(norm_root(root)),
             "mode": mode,
             "started": _now(),
             "finished": None,
@@ -284,23 +305,40 @@ def mark_undone(root: Path, run_id: str) -> None:
     _write_meta(path, meta)
 
 
-def forgotten_keys() -> set[tuple[str, str]]:
-    """The (run_id, started) of every run the owner forgot."""
+def forgotten_keys() -> set[tuple[str, str, str | None]]:
+    """The (run_id, started, root) of every run the owner forgot; root is
+    None for an entry written before roots were kept (it matches any root)."""
     try:
         entries = json.loads((_runs_dir() / _FORGOTTEN).read_bytes())
     except (OSError, ValueError):
         return set()
-    return {(str(e["run_id"]), str(e["started"])) for e in entries
+    if not isinstance(entries, list):
+        return set()
+    return {(str(e["run_id"]), str(e["started"]),
+             str(e["root"]) if isinstance(e.get("root"), str) else None)
+            for e in entries
             if isinstance(e, dict) and "run_id" in e and "started" in e}
+
+
+def _is_forgotten(key: tuple[str, str, tuple[str, ...]],
+                  forgotten: set[tuple[str, str, str | None]]) -> bool:
+    """Whether key (run_id, started, root_key) is in the forgotten list; an
+    entry with no root matches any root."""
+    run_id, started, root = key
+    return any(f[0] == run_id and f[1] == started
+               and (f[2] is None or root_key(f[2]) == root) for f in forgotten)
 
 
 def forget_runs(run_ids: list[str]) -> None:
     """Delete the records of these runs. Each is first added to the
-    forgotten list, so an old copy of it is never imported again."""
+    forgotten list (by its run_id, started time and root), so an old copy of
+    it in that folder is never imported again; a copy in another folder is
+    another run, and is."""
     runs = _runs_dir()
     path = runs / _FORGOTTEN
     entries = _forgotten_for_update(path)
-    known = {(e.get("run_id"), e.get("started")) for e in entries if isinstance(e, dict)}
+    known = {(e.get("run_id"), e.get("started"), e.get("root"))
+             for e in entries if isinstance(e, dict)}
     added = False
     for run_id in run_ids:
         try:
@@ -309,10 +347,14 @@ def forget_runs(run_ids: list[str]) -> None:
                 continue
         except (OSError, ValueError):
             continue  # no readable record: nothing to remember it by
-        key = _import_key(meta)  # an imported run by the id it had before
-        if key not in known:
-            entries.append({"run_id": key[0], "started": key[1]})
-            known.add(key)
+        old_id, started = _import_key(meta)[:2]  # an imported run by the id it had before
+        root = meta.get("root") if isinstance(meta.get("root"), str) else None
+        if (old_id, started, root) not in known:
+            entry = {"run_id": old_id, "started": started}
+            if root is not None:
+                entry["root"] = root
+            entries.append(entry)
+            known.add((old_id, started, root))
             added = True
     if added:
         _write_meta(path, entries)
@@ -357,7 +399,7 @@ def relocate_root(old: Path, new: Path) -> int:
     OSError) and the pair stays pending, for finish_relocations. Calling it
     again with the same pair finishes the job too.
     """
-    pair = {"old": _abs(old), "new": _abs(new)}
+    pair = {"old": _abs(old), "new": str(norm_root(new))}
     with _relocating:
         pending = _pending_for_update()
         if pair not in pending:
@@ -451,27 +493,56 @@ def _raise_any(errors: list[OSError]) -> None:
                       f"(and {len(errors) - 1} more)")
 
 
-def _import_key(meta: dict) -> tuple[str, str]:
-    return (str(meta.get("imported_run_id", meta.get("run_id"))), str(meta.get("started")))
+def _import_key(meta: dict) -> tuple[str, str, tuple[str, ...] | None]:
+    """A run as migration knows it: the id it had in its old folder, its
+    started time and its root (root_key; None when it has none)."""
+    root = meta.get("root")
+    return (str(meta.get("imported_run_id", meta.get("run_id"))), str(meta.get("started")),
+            root_key(root) if isinstance(root, str) else None)
+
+
+def _brought_in_already(key: tuple[str, str, tuple[str, ...]]) -> bool:
+    """Whether the run of key (old run_id, started, root_key) was forgotten
+    or is in the central store already."""
+    return (_is_forgotten(key, forgotten_keys())
+            or key in {_import_key(m) for _, m in _metas()})
+
+
+def _old_key(old_runs_dir: Path, run_id: str, root: Path) -> tuple[str, str, tuple[str, ...]]:
+    """(run_id, started, root_key) of an old run; ValueError or OSError
+    when its record can't be read."""
+    meta = _read_meta(Path(old_runs_dir) / f"{run_id}.json")
+    if not isinstance(meta, dict) or "started" not in meta:
+        raise ValueError(f"Unreadable run record: {run_id}")
+    return (run_id, str(meta["started"]), root_key(norm_root(root)))
+
+
+def is_brought_in(old_runs_dir: Path, run_id: str, root: Path) -> bool:
+    """Whether the old run (in <root>/.photosort/runs) is in the central
+    store already or was forgotten: matched by run_id, started and root.
+    Raises OSError or ValueError when its record can't be read."""
+    return _brought_in_already(_old_key(old_runs_dir, run_id, root))
 
 
 def import_run(old_runs_dir: Path, run_id: str, root: Path) -> str | None:
     """Copy a run from an old <root>/.photosort/runs folder into the central
-    one, recording root, and verify the copy. Return its central run id
-    (run_id, or run_id-imported-N when that is taken), or None when the run
-    was forgotten or is already imported (matched by run_id and started).
+    one, recording root (norm_root), and verify the copy. Return its central
+    run id (run_id, or run_id-imported-N when that is taken), or None when
+    the run was forgotten or is already imported: matched by run_id, started
+    and root, so a folder copied with its old records (the same run_id and
+    started) is imported as a run of its own.
 
     The old files are left in place; delete them only after this returns.
     Raises OSError or ValueError when the old run can't be read or the copy
     doesn't match; no partial copy is then left behind.
     """
     old_runs_dir = Path(old_runs_dir)
+    root = norm_root(root)
     meta = _read_meta(old_runs_dir / f"{run_id}.json")
     if not isinstance(meta, dict) or "started" not in meta:
         raise ValueError(f"Unreadable run record: {run_id}")
     log = (old_runs_dir / f"{run_id}.jsonl").read_bytes()
-    key = (run_id, str(meta["started"]))
-    if key in forgotten_keys() or key in {_import_key(m) for _, m in _metas()}:
+    if _brought_in_already((run_id, str(meta["started"]), root_key(root))):
         return None
 
     runs = _runs_dir()
@@ -486,7 +557,7 @@ def import_run(old_runs_dir: Path, run_id: str, root: Path) -> str | None:
                 pass
         n += 1
         new_id = f"{run_id}-imported-{n}"
-    new_meta = dict(meta, run_id=new_id, root=_abs(root), imported_run_id=run_id)
+    new_meta = dict(meta, run_id=new_id, root=str(root), imported_run_id=run_id)
     meta_path = runs / f"{new_id}.json"
     try:
         with f:
