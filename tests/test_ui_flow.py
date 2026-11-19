@@ -967,7 +967,7 @@ def test_undo_imports_first(qtbot, make_window, photos, errors, monkeypatch):
     page = w.history_page
     assert page.runs_table.rowCount() == 1
     page.undo_button.click()
-    qtbot.waitUntil(lambda: page.runs_table.item(0, 3).text() == "Undone")
+    qtbot.waitUntil(lambda: page.runs_table.item(0, 4).text() == "Undone")
     assert tree(photos) == before
     assert errors == []
 

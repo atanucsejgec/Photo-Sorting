@@ -664,12 +664,12 @@ def test_history_undo_by_keyboard(qtbot, make_window, photos, make_jpeg, errors)
     assert w.current_page() is page
     _key(qtbot, Qt.Key.Key_Tab)
     assert _focused() is page.runs_table
-    assert page.runs_table.item(0, 3).text() == "Done"
+    assert page.runs_table.item(0, 4).text() == "Done"
     seen = []
     _press_in_dialog(qtbot, seen, Qt.Key.Key_Right, Qt.Key.Key_Return)
     _key(qtbot, Qt.Key.Key_Return)
     assert [(title, focus) for title, focus, _ in seen] == [("Undo this sort?", "Cancel")]
-    qtbot.waitUntil(lambda: page.runs_table.item(0, 3).text() == "Undone")
+    qtbot.waitUntil(lambda: page.runs_table.item(0, 4).text() == "Undone")
     assert _files(photos) == ["a.jpg"]
     assert errors == []
 

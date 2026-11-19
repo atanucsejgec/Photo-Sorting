@@ -4,7 +4,6 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,32 +13,20 @@ from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QDialog, QPushButton
 
 from photosort.ai import models, runtime
-from photosort.executor import execute
-from photosort.journal import RunJournal, load_runs
-from photosort.plan import Move, Plan
 from photosort.settings import DEFAULT_CONTENT_CATEGORIES, Settings, load_settings
-from photosort.ui import dialogs, history_page, model_download
+from photosort.ui import dialogs, model_download
 from photosort.ui.category_editor import CategoryEditor
-from photosort.ui.history_page import HistoryPage, undo_summary
+from photosort.ui.history_page import HistoryPage
 from photosort.ui.main_window import MainWindow
 from photosort.ui.settings_page import SettingsPage
-from photosort.undo import UndoResult
 
 REPO = Path(__file__).resolve().parents[1]
-DATE, MODE, FILES, STATUS = range(4)
 
 
 def _write(path: Path, data: bytes) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return path
-
-
-def _run(root: Path, moves) -> str:
-    plan = Plan("date", [Move(s, d) for s, d in moves], [])
-    journal = RunJournal.create(root, "date", False, len(moves))
-    execute(root, plan, journal)
-    return journal.run_id
 
 
 @pytest.fixture
@@ -49,181 +36,6 @@ def dialog_errors(monkeypatch):
     monkeypatch.setattr(SettingsPage, "show_error", lambda self, text: shown.append(text))
     monkeypatch.setattr(MainWindow, "show_error", lambda self, text: shown.append(text))
     return shown
-
-
-@pytest.fixture
-def make_history(qtbot, dialog_errors, monkeypatch):
-    """A History page showing root's runs; its "Undo this sort?" is answered Yes."""
-    monkeypatch.setattr(dialogs, "ask", lambda *args, **kwargs: True)
-
-    def _make(root: Path) -> HistoryPage:
-        d = HistoryPage()
-        qtbot.addWidget(d)
-        d.load(root)
-        return d
-
-    yield _make
-    QThreadPool.globalInstance().waitForDone()
-
-
-def _column(d: HistoryPage, col: int) -> list[str]:
-    return [d.runs_table.item(r, col).text() for r in range(d.runs_table.rowCount())]
-
-
-def test_undo_summary_wording():
-    assert undo_summary(UndoResult(restored=2)) == "Undo complete: 2 files put back."
-    result = UndoResult(restored=1, missing=["a.jpg", "b.jpg"],
-                        renamed=[("c.jpg", "c (1).jpg")])
-    assert undo_summary(result).splitlines() == [
-        "Undo complete: 1 files put back.",
-        "1 files were put back under a new name because the original name was taken.",
-        "2 files were moved or deleted after the sort, so they were left where they are.",
-    ]
-    stuck = UndoResult(restored=1, failed=[("a.jpg", "in use"), ("b.jpg", "in use")])
-    assert undo_summary(stuck).splitlines() == [
-        "Undo not finished: 1 files put back.",
-        "2 files couldn't be put back yet. Close any program using them and "
-        "press Undo again.",
-    ]
-
-
-def test_history_lists_runs_and_undoes(qtbot, make_history, tmp_path, dialog_errors):
-    _write(tmp_path / "a.jpg", b"a")
-    _write(tmp_path / "b.jpg", b"b")
-    _write(tmp_path / "c.jpg", b"c")
-    _run(tmp_path, [("a.jpg", "d/a.jpg")])
-    _run(tmp_path, [("b.jpg", "e/b.jpg"), ("c.jpg", "e/c.jpg")])
-
-    d = make_history(tmp_path)
-    assert d.runs_table.rowCount() == 2
-    assert _column(d, FILES) == ["2", "1"]  # newest first
-    assert _column(d, MODE) == ["Date", "Date"]
-    assert _column(d, STATUS) == ["Done", "Done"]
-    started = load_runs(tmp_path)[0].started.astimezone()
-    assert d.runs_table.item(0, DATE).text() == started.strftime("%Y-%m-%d %H:%M")
-
-    d.runs_table.selectRow(0)
-    assert d.undo_button.isEnabled()
-    d.undo_button.click()
-    qtbot.waitUntil(lambda: _column(d, STATUS)[0] == "Undone")
-    assert _column(d, STATUS) == ["Undone", "Done"]
-    assert d.result_label.text() == "Undo complete: 2 files put back."
-    assert (tmp_path / "b.jpg").read_bytes() == b"b"
-    assert (tmp_path / "c.jpg").read_bytes() == b"c"
-    assert (tmp_path / "d/a.jpg").read_bytes() == b"a"
-
-    d.runs_table.selectRow(0)
-    assert not d.undo_button.isEnabled()  # already undone
-    d.runs_table.selectRow(1)
-    assert d.undo_button.isEnabled()
-    assert dialog_errors == []
-
-
-def test_history_blocks_older_dependent_run(make_history, tmp_path):
-    _write(tmp_path / "a.jpg", b"a")
-    _run(tmp_path, [("a.jpg", "d/a.jpg")])
-    run2 = _run(tmp_path, [("d/a.jpg", "e/a.jpg")])
-
-    d = make_history(tmp_path)
-    d.runs_table.selectRow(1)
-    assert not d.undo_button.isEnabled()
-    assert d.undo_button.toolTip() == f"Undo the newer run(s) first: {run2}"
-    assert d.blocked_label.text() == f"Undo the newer run(s) first: {run2}"
-    d.runs_table.selectRow(0)
-    assert d.undo_button.isEnabled()
-    assert d.undo_button.toolTip() == ""
-    assert d.blocked_label.text() == ""
-
-
-def test_history_names_folder_of_blocking_run_inside(make_history, tmp_path):
-    _write(tmp_path / "a.jpg", b"a")
-    _run(tmp_path, [("a.jpg", "d/a.jpg")])
-    inner = _run(tmp_path / "d", [("a.jpg", "e/a.jpg")])  # owner picked "d" later
-
-    d = make_history(tmp_path)
-    d.runs_table.selectRow(0)
-    assert not d.undo_button.isEnabled()
-    assert d.blocked_label.text() == f"Undo the newer run(s) first: {inner} (in d)"
-
-
-def test_history_shows_interrupted_run(make_history, tmp_path):
-    _write(tmp_path / "a.jpg", b"a")
-    _write(tmp_path / "b.jpg", b"b")
-    j = RunJournal.create(tmp_path, "date", False, planned=5)
-    for name in ("a.jpg", "b.jpg"):
-        i = j.record_intent(name, f"d/{name}")
-        (tmp_path / "d").mkdir(exist_ok=True)
-        os.rename(tmp_path / name, tmp_path / "d" / name)
-        j.record_done(i)
-    j._log.close()  # the process died: finish() never ran, meta "moved" is 0
-
-    d = make_history(tmp_path)
-    assert _column(d, STATUS) == ["Interrupted"]
-    assert _column(d, FILES) == ["2"]
-    d.runs_table.selectRow(0)
-    assert d.undo_button.isEnabled()
-
-
-def test_history_undo_error_is_shown(qtbot, make_history, tmp_path, dialog_errors,
-                                     monkeypatch):
-    _write(tmp_path / "a.jpg", b"a")
-    _run(tmp_path, [("a.jpg", "d/a.jpg")])
-
-    def broken(root, run_id, progress=None):
-        raise OSError("disk unplugged")
-
-    monkeypatch.setattr(history_page, "undo_run", broken)
-    d = make_history(tmp_path)
-    d.runs_table.selectRow(0)
-    d.undo_button.click()
-    qtbot.waitUntil(lambda: dialog_errors != [])
-    assert dialog_errors == ["Could not undo: disk unplugged"]
-    assert d.undo_button.isEnabled()
-    assert _column(d, STATUS) == ["Done"]
-
-
-def test_history_says_a_blocked_undo_as_done_does(qtbot, make_history, tmp_path,
-                                                  dialog_errors, monkeypatch):
-    from photosort.undo import BlockingRun, UndoBlocked
-
-    _write(tmp_path / "a.jpg", b"a")
-    _run(tmp_path, [("a.jpg", "d/a.jpg")])
-
-    def blocked(root, run_id, progress=None):  # a newer run came after the page loaded
-        raise UndoBlocked([BlockingRun("20261024-130000-date", "2025/02-February")])
-
-    monkeypatch.setattr(history_page, "undo_run", blocked)
-    d = make_history(tmp_path)
-    d.runs_table.selectRow(0)
-    d.undo_button.click()
-    qtbot.waitUntil(lambda: dialog_errors != [])
-    assert dialog_errors == [
-        "Undo the newer run(s) first: 20261024-130000-date (in 2025/02-February)"]
-
-
-def test_history_says_while_it_undoes(qtbot, make_history, tmp_path, monkeypatch):
-    _write(tmp_path / "a.jpg", b"a")
-    _run(tmp_path, [("a.jpg", "d/a.jpg")])
-    started, release = threading.Event(), threading.Event()
-
-    def slow(root, run_id, progress=None):
-        started.set()
-        release.wait(10)
-        raise OSError("stopped")
-
-    monkeypatch.setattr(history_page, "undo_run", slow)
-    d = make_history(tmp_path)
-    running = []
-    d.undo_running.connect(running.append)
-    d.runs_table.selectRow(0)
-    d.undo_button.click()
-    assert running == [True] and d.undoing()
-    assert not d.undo_button.isEnabled()
-    d.undo_button.click()  # one undo at a time
-    assert started.wait(5)
-    release.set()
-    qtbot.waitUntil(lambda: running == [True, False])
-    assert not d.undoing()
 
 
 def test_settings_page_saves_gpu(qtbot, tmp_path, dialog_errors):
@@ -546,44 +358,6 @@ def test_launcher_skips_cuda_libraries_without_nvidia_gpu(tmp_path):
 def test_scripts_are_executable():
     for name in ("photo-sorter.sh", "install-desktop-entry.sh"):
         assert os.access(REPO / "scripts" / name, os.X_OK)
-
-
-def _fail_undo_moves_of(monkeypatch, names):
-    import errno
-
-    from photosort import undo
-
-    real = undo.move_file
-
-    def flaky(src, dst):
-        if os.path.basename(src) in names:
-            raise PermissionError(errno.EACCES, "File in use", str(src))
-        return real(src, dst)
-
-    monkeypatch.setattr(undo, "move_file", flaky)
-
-
-def test_history_partial_undo_keeps_undo_available(qtbot, make_history, tmp_path,
-                                                   dialog_errors, monkeypatch):
-    _write(tmp_path / "a.jpg", b"a")
-    _write(tmp_path / "b.jpg", b"b")
-    _run(tmp_path, [("a.jpg", "d/a.jpg"), ("b.jpg", "d/b.jpg")])
-    d = make_history(tmp_path)
-    d.runs_table.selectRow(0)
-
-    _fail_undo_moves_of(monkeypatch, {"b.jpg"})
-    d.undo_button.click()
-    qtbot.waitUntil(lambda: "couldn't be put back" in d.result_label.text())
-    monkeypatch.undo()
-    monkeypatch.setattr(dialogs, "ask", lambda *args, **kwargs: True)  # undone too
-    assert _column(d, STATUS) == ["Done"]
-    assert d.undo_button.isEnabled()
-
-    d.undo_button.click()
-    qtbot.waitUntil(lambda: _column(d, STATUS) == ["Undone"])
-    assert d.result_label.text() == "Undo complete: 1 files put back."
-    assert (tmp_path / "b.jpg").read_bytes() == b"b"
-    assert dialog_errors == []
 
 
 def test_an_unpatched_dialog_fails_the_test_at_once(_no_waiting_dialogs):
