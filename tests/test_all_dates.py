@@ -314,7 +314,7 @@ def test_go_then_undo_restores_every_file(tmp_path, no_created):
     assert undone.failed == [] and undone.renamed == []
     assert _contents(tmp_path) == before
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
-        [".photosort", "a.pdf", "b.zip", "c.txt", "README", "sub",
+        ["a.pdf", "b.zip", "c.txt", "README", "sub",
          "IMG_20180402_101010.jpg"])
 
 

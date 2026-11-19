@@ -144,7 +144,7 @@ def test_extension_by_keyboard_with_the_warning_then_undo(qtbot, make_window, mi
     _undo_by_u(qtbot, w)
     assert _hashes(mixed) == before
     assert sorted(p.name for p in mixed.iterdir()) == [
-        ".photosort", "a.pdf", "app", "b.pdf", "c.apk"]
+        "a.pdf", "app", "b.pdf", "c.apk"]
     qtbot.waitUntil(lambda: _focused() is w.home_button)
     _key(qtbot, Qt.Key.Key_Return)  # Home
     assert w.current_page() is w.home

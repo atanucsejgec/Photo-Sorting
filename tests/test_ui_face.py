@@ -917,7 +917,9 @@ def test_face_sort_runs_and_plans(qtbot, make_window, photos, store, make_jpeg,
         "2 photos stay where they are",
     ]
     assert [(m.src, m.dst) for m in w._plan.moves] == [("b.jpg", "Atanu & Zoe/b.jpg")]
-    assert (photos / ".photosort" / "cache.db").is_file()  # the analysis cache was used
+    from photosort import appdata
+    assert (appdata.data_dir() / "cache.db").is_file()  # the analysis cache was used
+    assert not (photos / ".photosort").exists()  # nothing written in the folder
     assert errors == []
 
     w.back_button.click()

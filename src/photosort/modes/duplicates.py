@@ -43,7 +43,7 @@ def find_duplicate_groups(
     progress(i, total) is called after each file is looked at; cancel is
     checked before each one. Files that can't be read are skipped (an
     unreadable photo can still be an exact copy).
-    Photos measured on an earlier run are taken from root's analysis cache.
+    Photos measured on an earlier run are taken from the central analysis cache.
     """
     root = Path(root)
     files = scan(root, include_subfolders)
@@ -59,7 +59,7 @@ def find_duplicate_groups(
     digests: dict[str, str] = {}  # only for files whose byte size collides
     hashes: dict[str, int] = {}  # perceptual hashes of readable photos
     candidates: dict[str, Candidate] = {}  # files that may be in a group
-    with AnalysisCache(root) as cache:
+    with AnalysisCache() as cache:
         for i, rel in enumerate(files, start=1):
             if cancel is not None and cancel.is_set():
                 return None

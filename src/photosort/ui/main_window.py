@@ -22,12 +22,19 @@ back_to, if it set one, else goes Home. Esc on a review screen can leave it
 The window owns the one PeopleStore of the app: the Face setup page, the
 naming dialog and the People page all use it.
 
+Old undo records and analysis caches (kept in each folder's .photosort
+before) are brought in to the central store by migrate.bring_in: quietly,
+in a Task of its own beside any other, when Home's folder settles; and
+again inside the worker Task of every sort (before it plans) and of every
+undo (before it undoes), so a sort or an undo never misses an old run.
+
 Slow work runs in a worker.Task. Only one Task runs at a time (self.busy
 guards every way of starting one); the window keeps a reference to the last
 Task (self._task) so it is not garbage-collected while its thread may still be
 using it, and closing the window cancels it and waits for the pool to finish.
 """
 
+import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -39,6 +46,7 @@ from PySide6.QtWidgets import (
 )
 from shiboken6 import isValid
 
+from photosort import migrate
 from photosort.clip import ClipEngine
 from photosort.executor import ExecResult, execute
 from photosort.faces import FaceEngine
@@ -55,7 +63,9 @@ from photosort.ui.events_page import EventsPage
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
 from photosort.ui.flows import bad, clip, events, face, files, groups, no_people, plain
-from photosort.ui.history_page import HistoryPage, undo_summary, undo_with_message
+from photosort.ui.history_page import (
+    HistoryPage, finish_moved_folders, undo_summary, undo_with_message,
+)
 from photosort.ui.home_page import HomePage
 from photosort.ui.model_download import ensure_models
 from photosort.ui.people_page import PeoplePage
@@ -68,6 +78,8 @@ from photosort.ui.summary_page import SummaryPage
 from photosort.ui.theme import PAGE_MARGINS
 from photosort.ui.worker import Task
 from photosort.undo import UndoResult
+
+_log = logging.getLogger("photosort")
 
 TITLE = "Photo Sorter"
 # Small enough for 1024 × 600 at 125 % scaling (819 × 480); the tiles and cards reflow.
@@ -102,6 +114,10 @@ class MainWindow(QMainWindow):
         self.back_to: Callable[[], None] | None = None  # where Back on the summary goes
         self._plan: Plan | None = None
         self._run_id: str | None = None
+        # The folder of a sort just started: its first Task brings old records in.
+        self._bring_in_first: Path | None = None
+        # The quiet bring-ins of Home's folder still running (kept alive meanwhile).
+        self._quiet_tasks: list[Task] = []
 
         self.setWindowTitle(TITLE)
         self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
@@ -175,6 +191,7 @@ class MainWindow(QMainWindow):
         page.subfolders_switch.setChecked(self.settings.include_subfolders)
         page.subfolders_switch.toggled.connect(self._subfolders_toggled)
         page.start_requested.connect(self._start)
+        page.folder_settled.connect(self._bring_in_quietly)
         page.set_current(self.settings.last_mode)
         last = self.settings.last_folder
         if last and Path(last).is_dir():
@@ -278,6 +295,7 @@ class MainWindow(QMainWindow):
                                  "sort"))
         self._update_lock()
         if page is self.home:
+            self._bring_in_first = None  # the sort, if any, is over
             self.home.refresh_count()  # a sort may have moved files in or out
             if not in_sidebar:
                 self.home.focus_tiles()
@@ -350,6 +368,9 @@ class MainWindow(QMainWindow):
         self.busy = True
         self._update_lock()
         self._on_result, self._on_error = on_result, on_error
+        if self._bring_in_first is not None:  # a sort's first Task: before it plans
+            task.first(migrate.bring_in, self._bring_in_first)
+            self._bring_in_first = None
         task.signals.progress.connect(self._on_progress)
         task.signals.result.connect(self._task_result)
         task.signals.error.connect(self._task_error)
@@ -414,6 +435,7 @@ class MainWindow(QMainWindow):
         if self.busy:
             return
         self.begin_sort()
+        self._bring_in_first = None  # set once the folder is checked
         root = self._folder()
         if root is None:
             self.show_error("This folder doesn't exist."
@@ -437,6 +459,7 @@ class MainWindow(QMainWindow):
         self.settings.last_mode = mode
         self.settings.include_subfolders = self.include_subfolders
         self.save_settings()
+        self._bring_in_first = root
         flow.start(self, root, self.include_subfolders, spec)
 
     def _cancel(self) -> None:
@@ -451,8 +474,11 @@ class MainWindow(QMainWindow):
     # ----- summary ---------------------------------------------------------
 
     def begin_sort(self) -> None:
-        """Forget the last sort before a new one: a stale plan must never be executed."""
+        """Forget the last sort before a new one: a stale plan must never be
+        executed. The new sort's first Task brings root's old records in
+        before it plans (a Face scan started again from its setup page, too)."""
         self._plan = None
+        self._bring_in_first = self.root
         self.end_flow()
 
     def end_flow(self) -> None:
@@ -541,10 +567,10 @@ class MainWindow(QMainWindow):
         if self.busy or self.root is None or self._run_id is None:
             return
         self.done_page.undo_started()
-        self.run_task(
-            Task(undo_with_message, self.root, self._run_id, cancellable=False),
-            self._on_undone, self._on_undo_error,
-        )
+        task = Task(undo_with_message, self.root, self._run_id, cancellable=False)
+        task.first(finish_moved_folders)  # else a run under an old path is unseen
+        task.first(migrate.bring_in, self.root)  # a newer old run may block it
+        self.run_task(task, self._on_undone, self._on_undo_error)
 
     def _on_undone(self, result: UndoResult) -> None:
         self.done_page.undo_ended(undo_summary(result), bool(result.failed))  # left to retry
@@ -553,11 +579,41 @@ class MainWindow(QMainWindow):
         self.done_page.undo_ended("", True)
         self.show_error(message)
 
+    # ----- old records ---------------------------------------------------
+
+    def _bring_in_quietly(self, root: Path) -> None:
+        """Bring root's old records in, in a Task of its own: no progress page,
+        a log line only, and never in the way of a sort (busy is not set).
+        One for a folder picked before is stopped: it is stale now."""
+        for task in self._quiet_tasks:
+            task.cancel_event.set()
+        task = Task(migrate.bring_in, root)
+        task.signals.result.connect(self._brought_in)
+        task.signals.error.connect(self._bring_in_failed)
+        self._quiet_tasks.append(task)
+        task.start()
+
+    def _quiet_task_ended(self) -> None:
+        signals = self.sender()
+        self._quiet_tasks = [t for t in self._quiet_tasks if t.signals is not signals]
+
+    def _brought_in(self, imported: int) -> None:
+        self._quiet_task_ended()
+        if imported and self.current_page() is self.history_page \
+                and not self.history_page.undoing():
+            self.history_page.refresh()  # the old runs are listed now
+
+    def _bring_in_failed(self, message: str) -> None:
+        self._quiet_task_ended()
+        _log.warning("Old records not brought in: %s", message)
+
     # ----- closing ---------------------------------------------------------
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._task is not None:
             self._task.cancel_event.set()
+        for task in self._quiet_tasks:
+            task.cancel_event.set()
         self.home.stop_count()
         self.review_page.stop_thumbnails()
         self.bad_page.stop_thumbnails()

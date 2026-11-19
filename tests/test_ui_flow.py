@@ -1,20 +1,26 @@
+import dataclasses
 import threading
 from pathlib import Path
 
 import numpy as np
 import pytest
+from fstree import old_layout_run, tree
 from PIL import Image
 from PySide6.QtCore import QMimeData, QPointF, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QDropEvent, QKeySequence
 
+from photosort import migrate
 from photosort.faces import Face
+from photosort.journal import load_runs
 from photosort.modes import MODE_SPECS, MODES, date_mode
 from photosort.people import PeopleStore
 from photosort.settings import Settings, load_settings
 from photosort.ui import history_page, main_window
 from photosort.ui.flows import face as face_flow
+from photosort.ui.flows import files as files_flow
 from photosort.ui.flows import groups as groups_flow
 from photosort.ui.main_window import MainWindow
+from photosort.ui.worker import Task
 
 EXIF = "2025:02:20 10:00:00"
 
@@ -445,7 +451,7 @@ def test_duplicates_end_to_end(qtbot, make_window, photos, make_pattern_jpeg, er
     w.undo_button.click()
     qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
     assert not (photos / "Duplicates").exists()
-    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == before
+    assert sorted(p.name for p in photos.iterdir()) == before
     assert errors == []
 
 
@@ -576,7 +582,7 @@ def test_repeated_end_to_end(qtbot, make_window, photos, make_pattern_jpeg, erro
     w.undo_button.click()
     qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
     assert not (photos / "Repeated Shots").exists()
-    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == [
+    assert sorted(p.name for p in photos.iterdir()) == [
         "a.jpg", "b.jpg", "c.jpg",
     ]
     assert errors == []
@@ -603,8 +609,8 @@ def test_cancel_review_returns_home(qtbot, make_window, photos, make_pattern_jpe
     w.review_page.cancel_button.click()
     assert w.current_page() is w.home
     assert w.flow_state is None and w.back_to is None  # the groups are let go
-    # the analysis cache is in .photosort; no photo moved
-    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == ["a.jpg", "b.jpg"]
+    # no photo moved, and the analysis cache is central: nothing else in the folder
+    assert sorted(p.name for p in photos.iterdir()) == ["a.jpg", "b.jpg"]
 
 
 @pytest.mark.parametrize("page", ["review_page", "bad_page", "events_page",
@@ -644,8 +650,8 @@ def test_planning_error_goes_home(qtbot, make_window, photos, make_pattern_jpeg,
     w.review_page.keep_one_button.click()
     assert w.current_page() is w.home
     assert errors == ["Could not plan the moves: drive gone"]
-    # the analysis cache is in .photosort; no photo moved
-    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == ["a.jpg", "b.jpg"]
+    # no photo moved, and the analysis cache is central: nothing else in the folder
+    assert sorted(p.name for p in photos.iterdir()) == ["a.jpg", "b.jpg"]
 
 
 def test_back_to_cleared_on_start_and_go(qtbot, make_window, photos, make_pattern_jpeg,
@@ -875,7 +881,7 @@ def _go_and_undo(qtbot, w, photos, mode: str, moved: dict[str, str]):
     w.undo_button.click()
     qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
     assert f"Undo complete: {len(moved)} files put back." in w.undo_label.text()
-    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == before
+    assert sorted(p.name for p in photos.iterdir()) == before
 
 
 def test_camera_end_to_end(qtbot, make_window, photos, errors):
@@ -935,3 +941,194 @@ def test_type_end_to_end(qtbot, make_window, photos, errors):
         "Screenshot_2025.png": "Screenshots", "plain.jpg": "Other",
     })
     assert errors == []
+
+
+# ----- old undo records ------------------------------------------------------
+
+def _quiet_off(monkeypatch):
+    """No quiet bring-in when Home's folder settles: only a sort or an undo
+    brings old records in."""
+    monkeypatch.setattr(MainWindow, "_bring_in_quietly", lambda self, root: None)
+
+
+def test_undo_imports_first(qtbot, make_window, photos, errors, monkeypatch):
+    """An old-layout run on the Home folder is brought in when the folder
+    settles, and History's Undo puts its files back byte for byte."""
+    (photos / "a.jpg").write_bytes(b"a bytes")
+    before = tree(photos)
+    old_layout_run(photos, [("a.jpg", "2025/a.jpg")])
+    monkeypatch.setattr(history_page.dialogs, "ask", lambda *a, **k: True)
+    w = make_window()
+    w.folder_edit.setText(str(photos))
+    qtbot.waitUntil(lambda: load_runs(photos) != [])
+    qtbot.waitUntil(lambda: not (photos / ".photosort").exists())
+    qtbot.waitUntil(lambda: w._quiet_tasks == [])  # let go of once ended
+    w.sidebar.items["history"].click()
+    page = w.history_page
+    assert page.runs_table.rowCount() == 1
+    page.undo_button.click()
+    qtbot.waitUntil(lambda: page.runs_table.item(0, 4).text() == "Undone")
+    assert tree(photos) == before
+    assert errors == []
+
+
+def test_a_sort_brings_old_records_in_first(qtbot, make_window, photos, make_jpeg,
+                                            monkeypatch):
+    _quiet_off(monkeypatch)
+    make_jpeg(photos / "a.jpg", EXIF)
+    (photos / "old.txt").write_bytes(b"old")
+    old_layout_run(photos, [("old.txt", "kept/old.txt")])
+    seen = []
+    real = MODE_SPECS["date"].prepare
+
+    def prepare(*args, **kwargs):
+        seen.append([r.run_id for r in load_runs(photos)])  # before planning
+        return real(*args, **kwargs)
+
+    monkeypatch.setitem(MODE_SPECS, "date", dataclasses.replace(MODE_SPECS["date"],
+                                                                prepare=prepare))
+    w = make_window()
+    w.folder_edit.setText(str(photos))
+    w.mode_buttons["date"].click()
+    qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+    assert seen == [["20250101-120000-date"]]
+    assert not (photos / ".photosort").exists()
+
+
+def _newer_old_run_on(folder, src, dst):
+    """An old-layout run, newer than any sort a test makes, that moved src."""
+    return old_layout_run(folder, [(src, dst)], run_id="20990101-120000-date",
+                          started="2099-01-01T12:00:00+00:00")
+
+
+def test_dones_undo_brings_old_records_in_first(qtbot, make_window, photos, make_jpeg,
+                                                errors, monkeypatch):
+    _quiet_off(monkeypatch)
+    make_jpeg(photos / "a.jpg", EXIF)
+    w = make_window()
+    _sort_to_done(qtbot, w, photos)
+    day = photos / "2025" / "02-February"  # one photo: no day folder
+    _newer_old_run_on(day, "a.jpg", "elsewhere/a.jpg")  # moved what the sort placed
+    w.undo_button.click()
+    qtbot.waitUntil(lambda: errors != [])
+    assert errors == ["Undo the newer run(s) first: 20990101-120000-date "
+                      "(in 2025/02-February)"]
+    assert (day / "elsewhere" / "a.jpg").is_file()  # nothing moved back
+
+
+def test_history_undo_brings_old_records_in_first(qtbot, make_window, photos, make_jpeg,
+                                                  monkeypatch):
+    _quiet_off(monkeypatch)
+    make_jpeg(photos / "a.jpg", EXIF)
+    w = make_window()
+    _sort_to_done(qtbot, w, photos)
+    day = photos / "2025" / "02-February"
+    warned = []
+    monkeypatch.setattr(history_page.dialogs, "ask", lambda *a, **k: True)
+    monkeypatch.setattr(history_page.dialogs, "warn", lambda parent, title, text:
+                        warned.append(text))
+    w.sidebar.items["history"].click()
+    page = w.history_page
+    assert page.undo_button.isEnabled()
+    _newer_old_run_on(day, "a.jpg", "elsewhere/a.jpg")  # after History listed its runs
+    page.undo_button.click()
+    qtbot.waitUntil(lambda: warned != [])
+    assert warned == ["Undo the newer run(s) first: 20990101-120000-date "
+                      "(in 2025/02-February)"]
+    assert (day / "elsewhere" / "a.jpg").is_file()
+
+
+def test_quiet_bring_in_never_holds_up_a_sort(qtbot, make_window, photos, make_jpeg,
+                                              monkeypatch):
+    make_jpeg(photos / "a.jpg", EXIF)
+    release, started = threading.Event(), threading.Event()
+    calls = []
+    real = migrate.bring_in
+
+    def bring_in(root, progress=None, cancel=None):
+        calls.append(root)
+        if len(calls) == 1:  # the quiet one: held until the sort is planned
+            started.set()
+            assert release.wait(10)
+        return real(root, progress=progress, cancel=cancel)
+
+    monkeypatch.setattr(migrate, "bring_in", bring_in)
+    w = make_window()
+    try:
+        w.folder_edit.setText(str(photos))
+        qtbot.waitUntil(started.is_set)
+        w.mode_buttons["date"].click()
+        qtbot.waitUntil(lambda: w.current_page() is w.summary_page)
+        assert len(calls) == 2
+    finally:
+        release.set()
+
+
+def _brings_in(task, root) -> bool:
+    return (migrate.bring_in, (root,)) in task._first
+
+
+def test_every_mode_brings_old_records_in_before_its_first_task(
+        make_window, photos, store, monkeypatch):
+    """Whatever the mode, the first Task of a sort brings old records in,
+    and so does a Face scan started again from its setup page."""
+    tasks = []
+    monkeypatch.setattr(Task, "start", lambda task: tasks.append(task))  # never run
+    monkeypatch.setattr(main_window, "ensure_models", lambda parent, keys: True)
+    monkeypatch.setattr(files_flow.dialogs, "choose", lambda *a, **k: 0)
+    person = store.add("Zoe", _unit(1), Image.new("RGB", (40, 40), "blue"))
+    w = make_window()
+    w.folder_edit.setText(str(photos))
+    for mode in MODE_SPECS:
+        tasks.clear()
+        w.busy = False  # the Task before never ran, so never ended
+        w.show_page(w.home)
+        w.mode_buttons[mode].click()
+        if mode == "face":
+            assert tasks == []  # the setup page first
+            face_flow.start_sort(w, [person.id])
+            w.busy = False
+            face_flow.start_sort(w, [person.id])  # again, as from the setup page
+        assert tasks, mode
+        assert all(_brings_in(t, photos) for t in tasks), mode
+
+
+def test_home_without_a_task_drops_the_bring_in(make_window, photos, monkeypatch):
+    monkeypatch.setattr(main_window, "ensure_models", lambda parent, keys: True)
+    w = make_window()
+    w.folder_edit.setText(str(photos))
+    w.mode_buttons["face"].click()  # the setup page: no Task yet
+    assert w._bring_in_first == photos
+    w.show_page(w.home)
+    assert w._bring_in_first is None
+
+
+def test_closing_during_dones_undo_still_brings_old_records_in_in_full(
+        qtbot, make_window, photos, make_jpeg, errors, monkeypatch):
+    """Done's Undo can't be stopped, so its bring-in isn't either: a newer old
+    run still blocks it when the window is closed as it starts."""
+    _quiet_off(monkeypatch)
+    make_jpeg(photos / "a.jpg", EXIF)
+    w = make_window()
+    _sort_to_done(qtbot, w, photos)
+    month = photos / "2025" / "02-February"
+    _newer_old_run_on(month, "a.jpg", "elsewhere/a.jpg")
+    real = migrate.bring_in
+    entered, closed = threading.Event(), threading.Event()
+
+    def bring_in(root, progress=None, cancel=None):
+        entered.set()
+        assert closed.wait(10)
+        return real(root, progress=progress, cancel=cancel)
+
+    monkeypatch.setattr(migrate, "bring_in", bring_in)
+    w.undo_button.click()
+    try:
+        assert entered.wait(10)
+        w._task.cancel_event.set()  # what closing the window does
+    finally:
+        closed.set()
+    qtbot.waitUntil(lambda: errors != [])
+    assert errors == ["Undo the newer run(s) first: 20990101-120000-date "
+                      "(in 2025/02-February)"]
+    assert (month / "elsewhere" / "a.jpg").is_file()

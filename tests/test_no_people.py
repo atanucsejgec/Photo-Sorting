@@ -163,7 +163,7 @@ def test_the_summary_lines_are_exact(tmp_path, make_jpeg):
 def test_a_cached_faces_entry_is_used_without_looking_again(tmp_path, make_jpeg):
     make_jpeg(tmp_path / "me.jpg")
     make_jpeg(tmp_path / "sea.jpg")
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         cache.put(FACES_KIND, tmp_path / "me.jpg", pack_faces([_face()]))
         cache.put(FACES_KIND, tmp_path / "sea.jpg", pack_faces([]))
         engine = FakeEngine({"sea.jpg": [_face()]})  # would say otherwise if asked
@@ -176,10 +176,10 @@ def test_what_is_found_is_cached_for_face_mode(tmp_path, make_jpeg):
     make_jpeg(tmp_path / "me.jpg")
     make_jpeg(tmp_path / "sea.jpg")
     faces = {"me.jpg": [_face()]}
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         find_no_people(tmp_path, False, FakeEngine(faces), cache=cache)
     engine = FakeEngine(faces)
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         plan = find_no_people(tmp_path, False, engine, cache=cache)
         assert cache.get(FACES_KIND, tmp_path / "me.jpg") == pack_faces([_face()])
     assert engine.calls == []
@@ -189,10 +189,10 @@ def test_what_is_found_is_cached_for_face_mode(tmp_path, make_jpeg):
 def test_an_unreadable_photo_is_not_cached(tmp_path, make_jpeg):
     make_jpeg(tmp_path / "bad.jpg")
     faces = {"bad.jpg": UnreadableImage("bad")}
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         find_no_people(tmp_path, False, FakeEngine(faces), cache=cache)
     engine = FakeEngine(faces)
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         find_no_people(tmp_path, False, engine, cache=cache)
     assert engine.calls == ["bad.jpg"]
 

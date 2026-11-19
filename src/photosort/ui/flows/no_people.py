@@ -30,9 +30,9 @@ def _scan(root: Path, include_subfolders: bool,
           engine_factory: Callable[[bool], FaceEngine], use_gpu: bool,
           progress=None, cancel=None) -> Plan | None:
     """find_no_people with a face engine made here, on the worker thread,
-    and root's analysis cache."""
+    and the central analysis cache."""
     engine = engine_factory(use_gpu)
-    with AnalysisCache(root) as cache:
+    with AnalysisCache() as cache:
         return find_no_people(root, include_subfolders, engine.analyse,
                               progress=progress, cancel=cancel, cache=cache)
 

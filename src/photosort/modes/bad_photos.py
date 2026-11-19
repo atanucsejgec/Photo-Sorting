@@ -44,13 +44,13 @@ def find_bad_photos(
     after each photo; cancel is checked before each one and once more at
     the end. Photos that can't be read are skipped, and so are those that
     aren't camera photos (see _judged). Photos measured on an earlier run are
-    taken from root's analysis cache.
+    taken from the central analysis cache.
     """
     root = Path(root)
     photos = [rel for rel in scan(root, include_subfolders) if kind(rel) == "photo"]
     total = len(photos)
     bad: list[Candidate] = []
-    with AnalysisCache(root) as cache:
+    with AnalysisCache() as cache:
         for i, rel in enumerate(photos, start=1):
             if cancel is not None and cancel.is_set():
                 return None

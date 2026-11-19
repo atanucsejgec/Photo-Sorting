@@ -1,5 +1,6 @@
 import gc
 import logging
+import threading
 import weakref
 
 from PySide6.QtCore import QThreadPool
@@ -39,3 +40,34 @@ def test_task_lets_go_of_its_arguments_once_run(qtbot):
     gc.collect()
     assert blocker.args == [42]
     assert ref() is None  # the Task is still here, the argument is not
+
+
+def test_task_first_runs_before_its_function_on_its_thread(qtbot):
+    calls = []
+
+    def before(x, cancel=None):
+        calls.append(("first", x, threading.get_ident(), cancel))
+
+    def fn(progress=None, cancel=None):
+        calls.append(("fn", threading.get_ident()))
+        return 7
+
+    task = Task(fn)
+    task.first(before, "root")
+    with qtbot.waitSignal(task.signals.result) as blocker:
+        task.start()
+    assert blocker.args == [7]
+    (first, x, thread, cancel), (name, fn_thread) = calls
+    assert (first, x, name) == ("first", "root", "fn")
+    assert thread == fn_thread != threading.get_ident()
+    assert cancel is task.cancel_event
+
+
+def test_an_unstoppable_tasks_first_functions_are_never_cancelled(qtbot):
+    seen = []
+    task = Task(lambda progress=None: 1, cancellable=False)
+    task.first(lambda cancel=None: seen.append(cancel.is_set()))
+    task.cancel_event.set()  # as closing the window does
+    with qtbot.waitSignal(task.signals.result):
+        task.start()
+    assert seen == [False]

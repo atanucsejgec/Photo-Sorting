@@ -213,7 +213,7 @@ def test_undo_puts_a_file_back_where_its_folder_was_made(tmp_path, names):
     undone = undo_run(tmp_path, run_id)
     assert undone.renamed == [] and undone.failed == []
     assert _contents(tmp_path) == before
-    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([*names, ".photosort"])
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(names)
 
 
 def test_a_root_file_called_no_extension_stays(tmp_path):
@@ -254,7 +254,7 @@ def test_a_file_that_stays_in_the_way_of_a_folder_keeps_its_files_in_place(tmp_p
     assert undone.renamed == [] and undone.failed == []
     assert _contents(tmp_path) == before
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
-        [".photosort", "No extension", "PDF", "a.pdf", "b.zip"])
+        ["No extension", "PDF", "a.pdf", "b.zip"])
 
 
 def test_a_symlink_in_the_way_of_a_folder_keeps_its_files_in_place(tmp_path):

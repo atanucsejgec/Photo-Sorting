@@ -66,7 +66,7 @@ def test_quality_is_cached(tmp_path):
 
     _black(tmp_path / "a.jpg")
     find_bad_photos(tmp_path, False)
-    with AnalysisCache(tmp_path) as cache:
+    with AnalysisCache() as cache:
         assert cache.get(QUALITY_KIND, tmp_path / "a.jpg") is not None
 
 

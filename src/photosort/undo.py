@@ -18,7 +18,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from photosort.executor import PHOTOSORT_DIR, move_file
-from photosort.journal import RUNS_DIR, RunInfo, load_dirs, load_moves, load_runs, mark_undone
+from photosort.journal import (
+    RunInfo, load_all_runs, load_dirs, load_moves, load_runs, mark_undone,
+)
 from photosort.naming import TargetAllocator, resolve_existing_dir
 
 
@@ -27,7 +29,8 @@ class BlockingRun:
     """A run to undo first, and the folder whose undo history holds it.
 
     folder is "" for the folder being undone, a POSIX path relative to it
-    for a folder inside it, and an absolute path for a folder around it.
+    for a folder inside it, and an absolute path for a folder around it (or
+    for the same folder recorded in another case).
     """
 
     run_id: str
@@ -63,32 +66,36 @@ def _run_index(root: Path, run_id: str) -> tuple[list, int]:
     raise ValueError(f"No such run: {run_id}")
 
 
-def related_folders(root: Path) -> list[Path]:
-    """Return the folders around and inside root that keep their own undo history.
+def _folded(path: Path) -> tuple[str, ...]:
+    return tuple(part.casefold() for part in path.parts)
 
-    Each picked folder keeps its own .photosort, so a run on a folder around
-    root (with subfolders on) or inside it can have moved files that root's
-    runs placed. Folders around root are checked up to the filesystem root;
-    every folder inside root is walked, except .photosort folders themselves
-    and folders that can't be read. Paths are absolute.
+
+def related_roots(root: Path) -> list[Path]:
+    """Return the roots in the central store whose runs can touch root's files.
+
+    They are root itself, the folders around it (a run there with subfolders
+    on) and the folders inside it, compared by whole path parts and
+    case-insensitively: on a case-insensitive drive "A" and "a" are one
+    folder, and relating too much only adds runs to check, since
+    blocking_runs still compares the actual moves. "/x/ab" is never related
+    to "/x/a". No disk walk: the roots are those of the recorded runs, each
+    listed once, absolute. Order: root itself, then those around it (nearest
+    first), then those inside it.
     """
     root = Path(os.path.abspath(root))
-    found = [a for a in root.parents if os.path.isdir(a / RUNS_DIR)]
-    stack = [root]
-    while stack:
-        folder = stack.pop()
-        try:
-            with os.scandir(folder) as entries:
-                subdirs = [Path(e.path) for e in entries
-                           if e.is_dir(follow_symlinks=False)
-                           and e.name.casefold() != PHOTOSORT_DIR]
-        except OSError:
-            continue
-        for path in subdirs:
-            if os.path.isdir(path / RUNS_DIR):
-                found.append(path)
-            stack.append(path)
-    return found
+    mine = _folded(root)
+    n = len(mine)
+    same, around, inside = [], [], []
+    for r in sorted({run.root for run in load_all_runs()}):
+        parts = _folded(r)
+        if parts == mine:
+            same.append(r)
+        elif len(parts) < n and mine[:len(parts)] == parts:
+            around.append(r)
+        elif len(parts) > n and parts[:n] == mine:
+            inside.append(r)
+    around.sort(key=lambda r: len(r.parts), reverse=True)  # stable: ties by path
+    return same + around + inside
 
 
 def _in_root(prefix: tuple[str, ...], src: str) -> str | None:
@@ -108,8 +115,8 @@ def blocking_runs(
 ) -> list[BlockingRun]:
     """Return the newer, not undone runs that moved any file this run placed.
 
-    The runs of root and of its related_folders all count (pass related in
-    to reuse one walk of the tree). Newest first. Every recorded move
+    The runs of root and of its related_roots all count (pass related in to
+    reuse one lookup for several runs). Newest first. Every recorded move
     counts, done or not, and paths are compared case-insensitively.
     """
     root = Path(os.path.abspath(root))
@@ -117,21 +124,26 @@ def blocking_runs(
     this = runs[k]
     placed = {m.dst.casefold() for m in load_moves(root, run_id)}
     if related is None:
-        related = related_folders(root)
+        related = related_roots(root)
 
     # (folder, how it is shown, its src -> root-relative path or None)
     sources: list[tuple[Path, str, Callable[[str], str | None]]] = [
         (root, "", lambda src: src)
     ]
-    ancestors = set(root.parents)
-    for folder in related:
-        folder = Path(os.path.abspath(folder))
-        if folder in ancestors:
-            prefix = tuple(p.casefold() for p in root.relative_to(folder).parts)
+    mine = _folded(root)
+    n = len(mine)
+    for folder in dict.fromkeys(Path(os.path.abspath(f)) for f in related):
+        parts = _folded(folder)
+        if folder == root:
+            continue  # already the first source
+        if parts == mine:  # root itself, recorded in another case
+            sources.append((folder, str(folder), lambda src: src))
+        elif len(parts) < n and mine[:len(parts)] == parts:
+            prefix = mine[len(parts):]
             sources.append((folder, str(folder),
                             lambda src, prefix=prefix: _in_root(prefix, src)))
-        elif folder != root and folder.is_relative_to(root):
-            inner = folder.relative_to(root).as_posix()
+        elif len(parts) > n and parts[:n] == mine:
+            inner = "/".join(folder.parts[n:])
             sources.append((folder, inner, lambda src, inner=inner: f"{inner}/{src}"))
 
     found: list[tuple[RunInfo, BlockingRun]] = []
@@ -146,6 +158,33 @@ def blocking_runs(
                     break
     found.sort(key=lambda f: (f[0].started, f[0].run_id), reverse=True)
     return [blocking for _, blocking in found]
+
+
+def dependents(root: Path, run_id: str) -> list[RunInfo]:
+    """Return the older, not undone runs that this run blocks, newest first.
+
+    These are the runs, of root or any related root, that blocking_runs says
+    must wait for this one: this run moved files they placed. Forgetting
+    this run alone would leave them impossible to undo. Raises ValueError
+    if the run is unknown, and OSError or ValueError if a record can't be
+    read.
+    """
+    root = Path(os.path.abspath(root))
+    runs, k = _run_index(root, run_id)
+    this = runs[k]
+    roots = set(related_roots(root))
+    related: dict[Path, list[Path]] = {}  # each root's related_roots, found once
+    found = []
+    for run in load_all_runs():  # newest first
+        if (run.root not in roots or run.undone
+                or (run.started, run.run_id) >= (this.started, this.run_id)):
+            continue
+        if run.root not in related:
+            related[run.root] = related_roots(run.root)
+        if any(b.run_id == run_id
+               for b in blocking_runs(run.root, run.run_id, related[run.root])):
+            found.append(run)
+    return found
 
 
 def _is_ours(rel: str) -> bool:

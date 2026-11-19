@@ -33,9 +33,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import platformdirs
 from PIL import Image
 
+from photosort import appdata
 from photosort.faces import similarity
 from photosort.naming import fold, safe_name
 from photosort.scanner import skipped_folder
@@ -66,7 +66,7 @@ _Entry = object
 
 
 def default_folder() -> Path:
-    return Path(platformdirs.user_data_dir("photo-sorter")) / "people"
+    return appdata.data_dir() / "people"
 
 
 class PeopleStore:

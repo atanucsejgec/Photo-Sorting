@@ -433,7 +433,7 @@ def test_content_end_to_end(qtbot, make_window, photos, make_jpeg, errors, model
 
     w.undo_button.click()
     qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
-    assert sorted(p.name for p in photos.iterdir() if p.name != ".photosort") == [
+    assert sorted(p.name for p in photos.iterdir()) == [
         "food.jpg", "street.jpg", "wall.jpg"]
     assert errors == []
 

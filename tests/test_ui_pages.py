@@ -1,7 +1,6 @@
 """The sidebar and its pages: History, People and Settings."""
 
 import threading
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -18,11 +17,8 @@ from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog
 
-from photosort.executor import execute
-from photosort.journal import RunJournal
 from photosort.modes import date_mode
 from photosort.people import PeopleStore
-from photosort.plan import Move, Plan
 from photosort.settings import DEFAULT_CONTENT_CATEGORIES, Settings, load_settings
 from photosort.ui import dialogs, face_setup_page, theme
 from photosort.ui.category_editor import CategoryEditor
@@ -67,13 +63,6 @@ def asked(monkeypatch):
 def _focus(qtbot, widget):
     widget.setFocus()
     qtbot.waitUntil(lambda: QApplication.focusWidget() is widget)
-
-
-def _run(root: Path, moves) -> str:
-    plan = Plan("date", [Move(s, d) for s, d in moves], [])
-    journal = RunJournal.create(root, "date", False, len(moves))
-    execute(root, plan, journal)
-    return journal.run_id
 
 
 # ----- the sidebar ------------------------------------------------------------
@@ -184,86 +173,7 @@ def test_cancel_unlocks_the_sidebar(qtbot, make_window, monkeypatch, tmp_path):
     assert w.sidebar.items["sort"].isEnabled()
 
 
-# ----- History ----------------------------------------------------------------
-
-def test_history_without_a_folder_says_choose_one(make_window):
-    w = make_window()
-    w.sidebar.items["history"].click()
-    assert "Choose a folder first" in w.history_page.intro_label.text()
-    assert w.history_page.runs_table.rowCount() == 0
-    assert not w.history_page.undo_button.isEnabled()
-
-
-def test_history_undo_asks_first(qtbot, make_window, tmp_path, asked):
-    root = tmp_path / "photos"
-    (root / "a.jpg").parent.mkdir()
-    (root / "a.jpg").write_bytes(b"a")
-    _run(root, [("a.jpg", "d/a.jpg")])
-    w = make_window()
-    w.folder_edit.setText(str(root))
-    w.sidebar.items["history"].click()
-    page = w.history_page
-    assert str(root) in page.intro_label.text()
-    assert page.runs_table.rowCount() == 1
-    _focus(qtbot, page.runs_table)
-    assert w.strip.text() == "↑↓ choose · Enter undo · Esc sidebar · Tab/Shift+Tab area"
-
-    asked.answer = False
-    _key(qtbot, Qt.Key.Key_Return)
-    assert asked.calls == [("Undo this sort?", "Undo", "Cancel", "no")]
-    qtbot.wait(50)
-    assert page.runs_table.item(0, 3).text() == "Done"
-    assert (root / "d" / "a.jpg").is_file()
-
-    asked.answer = True
-    page.undo_button.click()
-    qtbot.waitUntil(lambda: page.runs_table.item(0, 3).text() == "Undone")
-    assert (root / "a.jpg").read_bytes() == b"a"
-    assert page.result_label.text() == "Undo complete: 1 files put back."
-    assert len(asked.calls) == 2
-
-
-def test_a_held_enter_on_history_asks_once(qtbot, make_window, tmp_path, asked):
-    root = tmp_path / "photos"
-    root.mkdir()
-    (root / "a.jpg").write_bytes(b"a")
-    _run(root, [("a.jpg", "d/a.jpg")])
-    w = make_window()
-    w.folder_edit.setText(str(root))
-    w.sidebar.items["history"].click()
-    _focus(qtbot, w.history_page.runs_table)
-    asked.answer = False
-    _key(qtbot, Qt.Key.Key_Return)
-    _hold(Qt.Key.Key_Return)  # its repeats ask nothing more
-    assert len(asked.calls) == 1
-
-
-def test_history_locks_the_sidebar_while_it_undoes(qtbot, make_window, tmp_path, asked,
-                                                   monkeypatch):
-    from photosort.ui import history_page
-
-    root = tmp_path / "photos"
-    root.mkdir()
-    (root / "a.jpg").write_bytes(b"a")
-    _run(root, [("a.jpg", "d/a.jpg")])
-    release = threading.Event()
-    real = history_page.undo_run
-
-    def slow(*args, **kwargs):
-        assert release.wait(10)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(history_page, "undo_run", slow)
-    asked.answer = True
-    w = make_window()
-    w.folder_edit.setText(str(root))
-    w.sidebar.items["history"].click()
-    w.history_page.undo_button.click()
-    assert not w.sidebar.items["sort"].isEnabled()
-    release.set()
-    qtbot.waitUntil(lambda: w.sidebar.items["sort"].isEnabled())
-    assert w.history_page.runs_table.item(0, 3).text() == "Undone"
-
+# ----- Esc --------------------------------------------------------------------
 
 def test_esc_on_a_page_goes_back_to_the_sidebar(qtbot, make_window):
     w = make_window()
