@@ -128,13 +128,13 @@ def test_the_sidebar_strip(qtbot, make_window):
 def test_the_sidebar_is_locked_during_a_sort(qtbot, make_window, monkeypatch, tmp_path,
                                             make_jpeg):
     release = threading.Event()
-    real = date_mode.prepare_date_plan
+    real = date_mode.prepare_date_scan
 
     def slow(root, include_subfolders, progress=None, cancel=None):
         assert release.wait(10)
         return real(root, include_subfolders, progress=progress, cancel=cancel)
 
-    monkeypatch.setattr(date_mode, "prepare_date_plan", slow)
+    monkeypatch.setattr(date_mode, "prepare_date_scan", slow)
     photos = tmp_path / "photos"
     make_jpeg(photos / "a.jpg", EXIF)
     w = make_window()
@@ -163,7 +163,7 @@ def test_cancel_unlocks_the_sidebar(qtbot, make_window, monkeypatch, tmp_path):
         cancel.wait(10)
         return None
 
-    monkeypatch.setattr(date_mode, "prepare_date_plan", slow)
+    monkeypatch.setattr(date_mode, "prepare_date_scan", slow)
     w = make_window()
     w.folder_edit.setText(str(tmp_path))
     w.mode_buttons["date"].click()

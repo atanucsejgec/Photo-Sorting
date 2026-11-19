@@ -1,6 +1,8 @@
 """The sorting modes: MODES lists them as (key, label, available); MODE_SPECS says how to run each.
 
-A mode of kind "plan" prepares a Plan straight away. A mode of kind
+A mode of kind "plan" prepares a Plan straight away. A mode of kind "date"
+scans (a date_mode.DateScan); the owner may then name its busy days before
+it plans (see modes.date_mode). A mode of kind
 "files" does too, but for every file, not only media; with warn_subfolders
 the owner is first warned when subfolders are included, and with
 asks_date_source the owner then chooses the date to sort by (see
@@ -22,8 +24,8 @@ never through prepare. Every prepare function is called as prepare(root,
 include_subfolders, progress=..., cancel=...) and returns None if
 cancelled; the events one also takes gap_hours and min_files keywords,
 from Settings, and the Date (all files) one a date_source keyword, the
-owner's choice. The modules of the "plan", "files", "groups", "bad" and
-"events" modes are imported when such a mode first runs; the main window
+owner's choice. The modules of the "plan", "date", "files", "groups", "bad"
+and "events" modes are imported when such a mode first runs; the main window
 imports the face, No people, content and notes modules (numpy only, no AI
 runtime) itself.
 """
@@ -57,9 +59,10 @@ Progress = Callable[[int, int], None] | None
 
 @dataclass(frozen=True)
 class ModeSpec:
-    kind: Literal["plan", "files", "groups", "face", "nopeople", "bad", "events", "content",
-                  "notes"]
-    # -> Plan (kinds "plan", "files"), list[Group], list[Candidate] (kind "bad") or
+    kind: Literal["plan", "date", "files", "groups", "face", "nopeople", "bad", "events",
+                  "content", "notes"]
+    # -> Plan (kinds "plan", "files"), DateScan (kind "date"), list[Group],
+    # list[Candidate] (kind "bad") or
     # (list[Event], files in none) (kind "events"); None if cancelled
     prepare: Callable[..., object]
     set_aside_folder: str | None = None  # kinds "groups", "bad": where files set aside go
@@ -73,11 +76,11 @@ class ModeSpec:
     asks_date_source: bool = False
 
 
-def _prepare_date(root: Path, include_subfolders: bool, progress: Progress = None,
-                  cancel: threading.Event | None = None):
+def _scan_date(root: Path, include_subfolders: bool, progress: Progress = None,
+               cancel: threading.Event | None = None):
     from photosort.modes import date_mode
 
-    return date_mode.prepare_date_plan(root, include_subfolders, progress=progress,
+    return date_mode.prepare_date_scan(root, include_subfolders, progress=progress,
                                        cancel=cancel)
 
 
@@ -175,7 +178,7 @@ def _run_by_window(root: Path, include_subfolders: bool, progress: Progress = No
 
 
 MODE_SPECS: dict[str, ModeSpec] = {
-    "date": ModeSpec("plan", _prepare_date),
+    "date": ModeSpec("date", _scan_date),
     "face": ModeSpec("face", _find_faces),
     "duplicates": ModeSpec("groups", _find_duplicates, "Duplicates", "No duplicates found."),
     "repeated": ModeSpec("groups", _find_repeated, "Repeated Shots",

@@ -42,7 +42,7 @@ from PySide6.QtWidgets import QDialog, QPushButton, QWidget
 from photosort.faces import Face
 from photosort.groups import Candidate, Group
 from photosort.journal import load_runs
-from photosort.modes import content
+from photosort.modes import content, date_mode
 from photosort.modes import events as events_mode
 from photosort.modes._clip_scan import ClipScan
 from photosort.modes.content import Verdict
@@ -55,6 +55,7 @@ from photosort.ui.category_editor import CategoryEditor, CategoryNameDialog
 from photosort.ui.face_naming_dialog import FaceNamingDialog
 from photosort.ui.flows import bad as bad_flow
 from photosort.ui.flows import clip as clip_flow
+from photosort.ui.flows import date as date_flow
 from photosort.ui.flows import events as events_flow
 from photosort.ui.flows import face as face_flow
 from photosort.ui.flows import groups as groups_flow
@@ -165,8 +166,6 @@ def test_the_summary_by_keyboard(qtbot, make_window, photos, make_jpeg):
 
 
 def test_esc_cancels_the_progress(qtbot, make_window, photos, monkeypatch):
-    from photosort.modes import date_mode
-
     started = threading.Event()
 
     def slow(root, include_subfolders, progress=None, cancel=None):
@@ -174,7 +173,7 @@ def test_esc_cancels_the_progress(qtbot, make_window, photos, monkeypatch):
         cancel.wait(10)
         return None
 
-    monkeypatch.setattr(date_mode, "prepare_date_plan", slow)
+    monkeypatch.setattr(date_mode, "prepare_date_scan", slow)
     w = make_window()
     _start_by_keyboard(qtbot, w, photos, "date")
     assert w.current_page() is w.progress_page
@@ -847,6 +846,11 @@ def _each_page(qtbot, w: MainWindow, root: Path):
     w.mode = "events"
     events_flow._on_found(w, (_events(root), 0))
     yield w.events_page
+    w.mode = "date"
+    _jpeg(root / "day.jpg")
+    date_flow._on_scanned(w, (date_mode.DateScan(root, ["day.jpg"], {"day.jpg": GOA.date()}),
+                              {GOA.date(): ["day.jpg"]}))
+    yield w.busy_days_page
     w.mode = "face"
     face_flow.start(w, root, False, None)
     yield w.face_setup_page

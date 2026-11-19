@@ -22,7 +22,7 @@ from typing import Literal
 
 from photosort.dates import find_date
 from photosort.media import kind
-from photosort.modes.date_mode import DAY_FOLDER_MIN, date_target, day_folder_rule
+from photosort.modes.date_mode import date_target, day_folder_rule, in_day_folder_of
 from photosort.naming import TargetAllocator, fold, real_dir, resolve_existing_dir
 from photosort.plan import Move, Plan
 from photosort.scanner import walk_all_files
@@ -167,12 +167,12 @@ def plan_all_dates(root: Path, files: list[str], dates: dict[str, date], *,
     files that could not be read (left out of files: they stay).
     """
     root = Path(root)
-    in_day_folder_on = day_folder_rule(root, files, dates)
+    day_folder_of = day_folder_rule(root, files, dates)
     targets: dict[str, tuple[str, bool]] = {}
     for rel in files:
-        in_day_folder = in_day_folder_on(dates[rel])
-        targets[rel] = (date_target(dates[rel], DAY_FOLDER_MIN if in_day_folder else 0),
-                        in_day_folder)
+        day = day_folder_of(dates[rel])
+        targets[rel] = (day if day is not None else date_target(dates[rel], 0),
+                        day is not None)
     made = {fold(folder) for target, _ in targets.values() for folder in _prefixes(target)}
 
     blocked: dict[str, bool] = {}
@@ -193,7 +193,7 @@ def plan_all_dates(root: Path, files: list[str], dates: dict[str, date], *,
     for rel in files:
         target, in_day_folder = targets[rel]
         parent, _, name = rel.rpartition("/")
-        if fold(parent) == fold(target):
+        if fold(parent) == fold(target) or in_day_folder_of(rel, dates[rel]):
             unchanged += 1
             continue
         if is_blocked(target):

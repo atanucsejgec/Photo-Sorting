@@ -2,8 +2,8 @@
 under them.
 
 The sidebar's pages are Sort (Home), History, People and Settings. A sort
-adds the Progress, Review, Bad photos, Events, Face setup, Face questions,
-Summary and Done pages. From the moment a sort starts until its Done page
+adds the Progress, Review, Bad photos, Events, Busy days, Face setup, Face
+questions, Summary and Done pages. From the moment a sort starts until its Done page
 the sidebar is locked (dimmed, and can't be focused or clicked): Esc and
 Back are the way out, as before. It is locked too while any Task runs (an
 undo on Done, say) and while History undoes a run.
@@ -57,12 +57,13 @@ from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
 from photosort.ui import dialogs, icons, shortcuts
 from photosort.ui.bad_photos_page import BadPhotosPage
+from photosort.ui.busy_days_page import BusyDaysPage
 from photosort.ui.category_review_page import CategoryReviewPage
 from photosort.ui.done_page import DonePage
 from photosort.ui.events_page import EventsPage
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
-from photosort.ui.flows import bad, clip, events, face, files, groups, no_people, plain
+from photosort.ui.flows import bad, clip, date, events, face, files, groups, no_people, plain
 from photosort.ui.history_page import (
     HistoryPage, finish_moved_folders, undo_summary, undo_with_message,
 )
@@ -86,8 +87,8 @@ TITLE = "Photo Sorter"
 MIN_WIDTH, MIN_HEIGHT = 800, 460
 
 # The flow that runs each kind of mode.
-_FLOWS = {"plan": plain, "files": files, "groups": groups, "bad": bad, "events": events,
-          "face": face, "nopeople": no_people, "content": clip, "notes": clip}
+_FLOWS = {"plan": plain, "date": date, "files": files, "groups": groups, "bad": bad,
+          "events": events, "face": face, "nopeople": no_people, "content": clip, "notes": clip}
 
 
 class MainWindow(QMainWindow):
@@ -163,6 +164,7 @@ class MainWindow(QMainWindow):
         self.review_page = self._build_review()
         self.bad_page = self._build_bad()
         self.events_page = self._build_events()
+        self.busy_days_page = self._build_busy_days()
         self.face_setup_page = self._build_face_setup()
         self.face_question_page = self._build_face_questions()
         self.category_review_page = self._build_category_review()
@@ -170,7 +172,8 @@ class MainWindow(QMainWindow):
         self.done_page = self._build_done()
         for page in (self.home, self.history_page, self.people_page, self.settings_page,
                      self.progress_page, self.review_page, self.bad_page,
-                     self.events_page, self.face_setup_page, self.face_question_page,
+                     self.events_page, self.busy_days_page, self.face_setup_page,
+                     self.face_question_page,
                      self.category_review_page, self.summary_page, self.done_page):
             self.stack.addWidget(page)
         # Pages the sidebar stays usable on (it is locked on the others).
@@ -228,6 +231,13 @@ class MainWindow(QMainWindow):
         page.finished.connect(
             lambda named, names, skipped: events.on_named(self, named, names, skipped))
         page.cancelled.connect(self.leave_review)
+        page.left.connect(self.leave_review)
+        page.keys_changed.connect(self.strip.refresh)
+        return page
+
+    def _build_busy_days(self) -> BusyDaysPage:
+        page = BusyDaysPage()
+        page.named.connect(lambda names: date.on_named(self, names))
         page.left.connect(self.leave_review)
         page.keys_changed.connect(self.strip.refresh)
         return page
@@ -530,6 +540,7 @@ class MainWindow(QMainWindow):
         self._plan = None  # the run has it now: nothing can run it again
         self.end_flow()
         self.events_page.stop_thumbnails()
+        self.busy_days_page.stop_thumbnails()
         self.begin_progress("Moving…", len(plan.moves))
         self.run_task(Task(execute, root, plan, journal), self._on_executed,
                       self._on_execute_error)
@@ -618,6 +629,7 @@ class MainWindow(QMainWindow):
         self.review_page.stop_thumbnails()
         self.bad_page.stop_thumbnails()
         self.events_page.stop_thumbnails()
+        self.busy_days_page.stop_thumbnails()
         self.category_review_page.stop_thumbnails()
         self.face_question_page.stop_loading()
         QThreadPool.globalInstance().waitForDone()
