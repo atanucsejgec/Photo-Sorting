@@ -293,6 +293,7 @@ class MainWindow(QMainWindow):
                                  "sort"))
         self._update_lock()
         if page is self.home:
+            self._bring_in_first = None  # the sort, if any, is over
             self.home.refresh_count()  # a sort may have moved files in or out
             if not in_sidebar:
                 self.home.focus_tiles()
@@ -432,6 +433,7 @@ class MainWindow(QMainWindow):
         if self.busy:
             return
         self.begin_sort()
+        self._bring_in_first = None  # set once the folder is checked
         root = self._folder()
         if root is None:
             self.show_error("This folder doesn't exist."
@@ -470,9 +472,11 @@ class MainWindow(QMainWindow):
     # ----- summary ---------------------------------------------------------
 
     def begin_sort(self) -> None:
-        """Forget the last sort before a new one: a stale plan must never be executed."""
+        """Forget the last sort before a new one: a stale plan must never be
+        executed. The new sort's first Task brings root's old records in
+        before it plans (a Face scan started again from its setup page, too)."""
         self._plan = None
-        self._bring_in_first = None
+        self._bring_in_first = self.root
         self.end_flow()
 
     def end_flow(self) -> None:

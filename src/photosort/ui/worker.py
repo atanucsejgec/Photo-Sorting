@@ -47,10 +47,13 @@ class Task(QRunnable):
         self.cancel_event = threading.Event()
 
     def first(self, fn: Callable[..., object], *args) -> None:
-        """Call fn(*args, cancel=self.cancel_event) on the pool thread before the
-        Task's own function (old records are brought in before a sort, say).
-        Its return value is dropped; an exception it raises ends the Task as
-        the function's would. Call before start."""
+        """Call fn(*args, cancel=...) on the pool thread before the Task's own
+        function (old records are brought in before a sort, say). cancel is
+        cancel_event, or, with cancellable=False, an Event never set: a Task
+        that can't be stopped part-way runs its first functions in full too
+        (an undo must see every run that may block it). The return value is
+        dropped; an exception ends the Task as the function's would. Call
+        before start."""
         self._first.append((fn, args))
 
     def start(self) -> None:
@@ -67,9 +70,10 @@ class Task(QRunnable):
         kwargs: dict[str, object] = {"progress": self.signals.progress.emit}
         if self._cancellable:
             kwargs["cancel"] = self.cancel_event
+        first_cancel = self.cancel_event if self._cancellable else threading.Event()
         try:
             for before, before_args in first:
-                before(*before_args, cancel=self.cancel_event)
+                before(*before_args, cancel=first_cancel)
             value = fn(*args, **kwargs)
         except Exception as e:
             name = getattr(fn, "__name__", repr(fn))

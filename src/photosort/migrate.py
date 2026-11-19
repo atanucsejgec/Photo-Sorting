@@ -153,7 +153,10 @@ def _bring_in_runs(runs: Path, folder: Path) -> int:
         except OSError as e:
             _log.info("Old undo record %s in %s is brought in but could not be "
                       "removed: %s", run_id, runs, e)
-    journal.fsync_dir(runs)
+    try:
+        journal.fsync_dir(runs)
+    except OSError as e:
+        _log.info("Old undo records folder %s not synced: %s", runs, e)
     return imported
 
 

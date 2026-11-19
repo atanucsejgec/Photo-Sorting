@@ -48,11 +48,11 @@ def test_task_first_runs_before_its_function_on_its_thread(qtbot):
     def before(x, cancel=None):
         calls.append(("first", x, threading.get_ident(), cancel))
 
-    def fn(progress=None):
+    def fn(progress=None, cancel=None):
         calls.append(("fn", threading.get_ident()))
         return 7
 
-    task = Task(fn, cancellable=False)
+    task = Task(fn)
     task.first(before, "root")
     with qtbot.waitSignal(task.signals.result) as blocker:
         task.start()
@@ -61,3 +61,13 @@ def test_task_first_runs_before_its_function_on_its_thread(qtbot):
     assert (first, x, name) == ("first", "root", "fn")
     assert thread == fn_thread != threading.get_ident()
     assert cancel is task.cancel_event
+
+
+def test_an_unstoppable_tasks_first_functions_are_never_cancelled(qtbot):
+    seen = []
+    task = Task(lambda progress=None: 1, cancellable=False)
+    task.first(lambda cancel=None: seen.append(cancel.is_set()))
+    task.cancel_event.set()  # as closing the window does
+    with qtbot.waitSignal(task.signals.result):
+        task.start()
+    assert seen == [False]

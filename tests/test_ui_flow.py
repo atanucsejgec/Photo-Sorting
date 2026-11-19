@@ -17,8 +17,10 @@ from photosort.people import PeopleStore
 from photosort.settings import Settings, load_settings
 from photosort.ui import history_page, main_window
 from photosort.ui.flows import face as face_flow
+from photosort.ui.flows import files as files_flow
 from photosort.ui.flows import groups as groups_flow
 from photosort.ui.main_window import MainWindow
+from photosort.ui.worker import Task
 
 EXIF = "2025:02:20 10:00:00"
 
@@ -1060,3 +1062,73 @@ def test_quiet_bring_in_never_holds_up_a_sort(qtbot, make_window, photos, make_j
         assert len(calls) == 2
     finally:
         release.set()
+
+
+def _brings_in(task, root) -> bool:
+    return (migrate.bring_in, (root,)) in task._first
+
+
+def test_every_mode_brings_old_records_in_before_its_first_task(
+        make_window, photos, store, monkeypatch):
+    """Whatever the mode, the first Task of a sort brings old records in,
+    and so does a Face scan started again from its setup page."""
+    tasks = []
+    monkeypatch.setattr(Task, "start", lambda task: tasks.append(task))  # never run
+    monkeypatch.setattr(main_window, "ensure_models", lambda parent, keys: True)
+    monkeypatch.setattr(files_flow.dialogs, "choose", lambda *a, **k: 0)
+    person = store.add("Zoe", _unit(1), Image.new("RGB", (40, 40), "blue"))
+    w = make_window()
+    w.folder_edit.setText(str(photos))
+    for mode in MODE_SPECS:
+        tasks.clear()
+        w.busy = False  # the Task before never ran, so never ended
+        w.show_page(w.home)
+        w.mode_buttons[mode].click()
+        if mode == "face":
+            assert tasks == []  # the setup page first
+            face_flow.start_sort(w, [person.id])
+            w.busy = False
+            face_flow.start_sort(w, [person.id])  # again, as from the setup page
+        assert tasks, mode
+        assert all(_brings_in(t, photos) for t in tasks), mode
+
+
+def test_home_without_a_task_drops_the_bring_in(make_window, photos, monkeypatch):
+    monkeypatch.setattr(main_window, "ensure_models", lambda parent, keys: True)
+    w = make_window()
+    w.folder_edit.setText(str(photos))
+    w.mode_buttons["face"].click()  # the setup page: no Task yet
+    assert w._bring_in_first == photos
+    w.show_page(w.home)
+    assert w._bring_in_first is None
+
+
+def test_closing_during_dones_undo_still_brings_old_records_in_in_full(
+        qtbot, make_window, photos, make_jpeg, errors, monkeypatch):
+    """Done's Undo can't be stopped, so its bring-in isn't either: a newer old
+    run still blocks it when the window is closed as it starts."""
+    _quiet_off(monkeypatch)
+    make_jpeg(photos / "a.jpg", EXIF)
+    w = make_window()
+    _sort_to_done(qtbot, w, photos)
+    month = photos / "2025" / "02-February"
+    _newer_old_run_on(month, "a.jpg", "elsewhere/a.jpg")
+    real = migrate.bring_in
+    entered, closed = threading.Event(), threading.Event()
+
+    def bring_in(root, progress=None, cancel=None):
+        entered.set()
+        assert closed.wait(10)
+        return real(root, progress=progress, cancel=cancel)
+
+    monkeypatch.setattr(migrate, "bring_in", bring_in)
+    w.undo_button.click()
+    try:
+        assert entered.wait(10)
+        w._task.cancel_event.set()  # what closing the window does
+    finally:
+        closed.set()
+    qtbot.waitUntil(lambda: errors != [])
+    assert errors == ["Undo the newer run(s) first: 20990101-120000-date "
+                      "(in 2025/02-February)"]
+    assert (month / "elsewhere" / "a.jpg").is_file()
