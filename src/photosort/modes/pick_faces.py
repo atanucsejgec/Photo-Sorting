@@ -45,10 +45,10 @@ from photosort.faces import Face
 from photosort.media import kind
 from photosort.modes.face_mode import Analyser, faces_of
 from photosort.naming import TargetAllocator, fold, resolve_existing_dir
-from photosort.people import clean_name, name_problem
+from photosort.people import Person, clean_name, name_problem, person_scores
 from photosort.plan import Move, Plan
 from photosort.scanner import scan
-from photosort.thresholds import PICK_FACES_JOIN
+from photosort.thresholds import FACE_SURE, PICK_FACES_JOIN
 
 MODE = "pick_faces"
 
@@ -237,6 +237,34 @@ def group_people(faces: list[FoundFace], join: float = PICK_FACES_JOIN,
     people = [PersonGroup(0, g) for g in groups]
     people.sort(key=lambda p: (-len(p.photos), p.best.rel, p.best.index))
     return [PersonGroup(n, p.faces) for n, p in enumerate(people)]
+
+
+def known_names(groups: list[PersonGroup], people: list[Person],
+                left_out: set[tuple[str, int]] = frozenset()) -> dict[int, str]:
+    """The name of each group (by its position in groups) that is someone
+    remembered on the People page.
+
+    A group's ticked faces (those not in left_out, as (rel, index)) are
+    averaged and normalised; the person it is most like, by
+    people.person_scores, names it if that score is at least FACE_SURE.
+    A group with every face left out, or no person sure enough, has no name.
+    """
+    names: dict[int, str] = {}
+    if not people:
+        return names
+    for position, group in enumerate(groups):
+        ticked = [f.face.embedding for f in group.faces if (f.rel, f.index) not in left_out]
+        if not ticked:
+            continue
+        mean = np.mean([np.asarray(e, np.float32).ravel() for e in ticked], axis=0)
+        norm = np.linalg.norm(mean)
+        if not norm > 0:
+            continue
+        scores = person_scores((mean / norm).astype(np.float32), people)
+        best = max(people, key=lambda p: scores[p.id])
+        if scores[best.id] >= FACE_SURE:
+            names[position] = best.name
+    return names
 
 
 def check_folder_name(root: Path, name: str, taken: list[str]) -> str | None:

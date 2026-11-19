@@ -1,6 +1,7 @@
 """Pick faces: the people grid, the folders made from it, and the flow round it."""
 
 import dataclasses
+import re
 from pathlib import Path
 
 import numpy as np
@@ -841,3 +842,70 @@ def test_the_pages_hold_no_people_after_done(qtbot, make_window, root, engine):
     assert page.folder_rows == []
     assert which.rows == []
     assert w.after_run is None
+
+
+# ----- naming a tile ----------------------------------------------------------------------
+
+def _ann_faces() -> list[tuple[str, Face]]:
+    return [("a1.jpg", _face(0, 1)), ("a2.jpg", _face(0, 2)), ("ab.jpg", _face(0, 3))]
+
+
+def test_save_name_new_person_saves_every_face(make_window, root):
+    w = make_window()
+    assert pick_flow.save_name(w.people_store, root, "  Rahul ", _ann_faces()) == "Rahul"
+    people = w.people_store.people()
+    assert [p.name for p in people] == ["Rahul"]
+    mean = _ann().mean(axis=0)
+    # The mean first (as add stores it), then every face: 1 + 3 samples.
+    assert len(people[0].embeddings) == 1 + 3
+    np.testing.assert_allclose(people[0].embeddings,
+                               np.vstack([mean / np.linalg.norm(mean), _ann()]), atol=1e-5)
+    with Image.open(people[0].thumb) as thumb:
+        assert thumb.size == (160, 160)
+
+
+def test_save_name_existing_name_adds_samples_no_duplicate(make_window, root):
+    w = make_window()
+    other = _face(5, 99).embedding
+    rahul = w.people_store.add("Rahul", other, Image.new("RGB", (40, 40), "blue"))
+    assert pick_flow.save_name(w.people_store, root, "rahul", _ann_faces()) == "Rahul"
+    # The same tile named again: more samples, still one person.
+    assert pick_flow.save_name(w.people_store, root, "RAHUL", _ann_faces()) == "Rahul"
+    people = w.people_store.people()
+    assert [(p.id, p.name) for p in people] == [(rahul.id, "Rahul")]
+    np.testing.assert_allclose(people[0].embeddings, np.vstack([other, _ann(), _ann()]),
+                               atol=1e-6)
+
+
+@pytest.mark.parametrize("name, problem", [
+    ("", "Type a name."),
+    ("  ", "Type a name."),
+    ("Ann & Ben/", 'A name can\'t contain " & "'),
+])
+def test_save_name_refuses_bad_name(make_window, root, monkeypatch, name, problem):
+    w = make_window()
+    w.people_store.add("Rahul", _face(5, 99).embedding, Image.new("RGB", (40, 40), "blue"))
+    before = [(p.id, p.name, p.embeddings.copy()) for p in w.people_store.people()]
+
+    def touched(*args, **kwargs):
+        raise AssertionError("the store was touched")
+
+    monkeypatch.setattr(w.people_store, "add", touched)
+    monkeypatch.setattr(w.people_store, "add_samples", touched)
+    with pytest.raises(ValueError, match=re.escape(problem)):
+        pick_flow.save_name(w.people_store, root, name, _ann_faces())
+    after = w.people_store.people()
+    assert [(p.id, p.name) for p in after] == [(i, n) for i, n, _ in before]
+    np.testing.assert_array_equal(after[0].embeddings, before[0][2])
+
+
+def test_save_name_store_error_is_raised(make_window, root, monkeypatch):
+    w = make_window()
+
+    def full(*args, **kwargs):
+        raise PeopleError("No room left")
+
+    monkeypatch.setattr(w.people_store, "add", full)
+    with pytest.raises(PeopleError, match="No room left"):
+        pick_flow.save_name(w.people_store, root, "Rahul", _ann_faces())
+    assert w.people_store.people() == []

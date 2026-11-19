@@ -34,7 +34,7 @@ from photosort.modes.pick_faces import (
     PersonGroup, PickFolder, group_people, photo_folders, plan_pick, scan_faces,
 )
 from photosort.naming import fold
-from photosort.people import PeopleStore
+from photosort.people import PeopleStore, Person, name_problem
 from photosort.plan import Plan
 from photosort.thresholds import PERSON_THUMB_PX
 from photosort.ui.flows.face import MODELS as FACE_MODELS
@@ -217,22 +217,50 @@ def _on_plan_error(window: "MainWindow", message: str) -> None:
 # ----- remember --------------------------------------------------------------------------
 
 
+def _save_person(store: PeopleStore, item: _Remember) -> Person:
+    """Save item's faces as the person of its name (compared folded, as the
+    People page does): more samples for that person if there is one, else a
+    new person (the normalised mean face first, then every face chosen).
+    Raises the store's or the disk's error, or ValueError if a new person
+    has no picture."""
+    person = next((p for p in store.people() if fold(p.name) == fold(item.name)), None)
+    if person is not None:
+        store.add_samples(person.id, item.embeddings)
+        return person
+    if item.picture is None:
+        raise ValueError(item.problem)
+    mean = item.embeddings.mean(axis=0)
+    person = store.add(item.name, (mean / np.linalg.norm(mean)).astype(np.float32),
+                       item.picture)
+    store.add_samples(person.id, item.embeddings)  # every face chosen
+    return person
+
+
+def save_name(store: PeopleStore, root: Path, name: str, faces: list[tuple[str, Face]]) -> str:
+    """Name a Pick faces tile: save its faces ((rel, Face), the ticked ones)
+    on the People page under name, as Remember does (_save_person). Returns
+    the name saved: the person's name as the People page has it.
+
+    The name is cleaned and checked first (people.name_problem); a refused
+    name raises ValueError with the reason, and the store is not touched.
+    The store's or the disk's errors are raised too. It reads a photo for
+    the picture, so it runs on a worker thread.
+    """
+    name, problem = name_problem(name)
+    if problem is not None:
+        raise ValueError(problem)
+    if not faces:
+        raise ValueError("No face is ticked.")
+    return _save_person(store, _remember_data(root, name, faces)).name
+
+
 def _remember(store: PeopleStore, remember: list[_Remember], result: ExecResult) -> list[str]:
     """Remember each folder as a person (after a run that moved files); the
     Done page's lines. A problem is a line too: it never fails the run."""
     lines = []
     for item in remember:
         try:
-            person = next((p for p in store.people() if fold(p.name) == fold(item.name)), None)
-            if person is not None:
-                store.add_samples(person.id, item.embeddings)
-            elif item.picture is None:
-                raise ValueError(item.problem)
-            else:
-                mean = item.embeddings.mean(axis=0)
-                person = store.add(item.name, (mean / np.linalg.norm(mean)).astype(np.float32),
-                                   item.picture)
-                store.add_samples(person.id, item.embeddings)  # every face chosen
+            _save_person(store, item)
         except Exception as e:  # the store's or the disk's: said on Done
             _log.warning("Remembering %s failed", item.name, exc_info=True)
             lines.append(f"Couldn't remember {item.name}: {e}")

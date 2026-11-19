@@ -18,10 +18,12 @@ from photosort.modes.pick_faces import (
     PickFolder,
     check_folder_name,
     group_people,
+    known_names,
     photo_folders,
     plan_pick,
     scan_faces,
 )
+from photosort.people import Person
 from photosort.plan import Move
 from photosort.thresholds import FACE_ENGINE_FAILS, PICK_FACES_JOIN
 from photosort.undo import undo_run
@@ -284,6 +286,56 @@ def test_scan_faces_cancel_and_engine_failure(tmp_path):
                          for n in range(FACE_ENGINE_FAILS + 1)})
     with pytest.raises(RuntimeError, match="model broken"):
         scan_faces(tmp_path, False, broken, None)
+
+
+# --- known names ------------------------------------------------------------
+
+
+def _axis_face(*weights: tuple[int, float]) -> Face:
+    """A face whose embedding is the unit vector of the given (axis, weight)s."""
+    v = np.zeros(512)
+    for axis, weight in weights:
+        v[axis] = weight
+    return Face((10.0, 20.0, 50.0, 70.0), np.zeros((5, 2), np.float32), 0.9, _unit(v),
+                (800, 600))
+
+
+def _person(name: str, score_to_axis0: float) -> Person:
+    """A person whose one sample is score_to_axis0 alike to the axis-0 unit vector."""
+    v = np.zeros(512)
+    v[0] = score_to_axis0
+    v[1] = np.sqrt(1.0 - score_to_axis0 ** 2)
+    return Person(name.lower(), name, _unit(v)[None, :], Path(f"{name}.jpg"))
+
+
+def test_known_names_shows_a_remembered_person():
+    groups = [PersonGroup(0, (_found("a.jpg", 0, _axis_face((0, 1.0))),
+                              _found("b.jpg", 0, _axis_face((0, 1.0))))),
+              PersonGroup(1, (_found("c.jpg", 0, _axis_face((7, 1.0))),))]
+    people = [_person("Rahul", 0.5), _person("Other", 0.2)]
+    assert known_names(groups, people) == {0: "Rahul"}
+
+
+def test_known_names_below_sure_is_no_name():
+    groups = [PersonGroup(0, (_found("a.jpg", 0, _axis_face((0, 1.0))),))]
+    assert known_names(groups, [_person("Rahul", 0.40)]) == {}
+
+
+def test_known_names_ignores_left_out_faces():
+    # Ticked, the faces' mean is ~0.7 alike to Rahul; the axis-0 face left
+    # out, only the axis-2 face is left, about 0 alike.
+    groups = [PersonGroup(0, (_found("a.jpg", 0, _axis_face((0, 1.0))),
+                              _found("b.jpg", 0, _axis_face((2, 1.0)))))]
+    people = [_person("Rahul", 1.0)]
+    assert known_names(groups, people) == {0: "Rahul"}
+    assert known_names(groups, people, {("a.jpg", 0)}) == {}
+    # Every face left out: no name either.
+    assert known_names(groups, people, {("a.jpg", 0), ("b.jpg", 0)}) == {}
+
+
+def test_known_names_no_people():
+    groups = [PersonGroup(0, (_found("a.jpg", 0, _axis_face((0, 1.0))),))]
+    assert known_names(groups, []) == {}
 
 
 # --- folder names -----------------------------------------------------------
