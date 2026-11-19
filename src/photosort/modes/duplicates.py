@@ -43,7 +43,7 @@ def find_duplicate_groups(
     progress(i, total) is called after each file is looked at; cancel is
     checked before each one. Files that can't be read are skipped (an
     unreadable photo can still be an exact copy).
-    Photos measured on an earlier run are taken from root's analysis cache.
+    Photos measured on an earlier run are taken from the central analysis cache.
     """
     root = Path(root)
     files = scan(root, include_subfolders)

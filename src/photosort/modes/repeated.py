@@ -34,7 +34,7 @@ def find_repeated_groups(
     progress(i, total) is called after each photo is looked at; cancel is
     checked before each one. Videos, unreadable photos and photos with no
     taken time are skipped.
-    Photos measured on an earlier run are taken from root's analysis cache.
+    Photos measured on an earlier run are taken from the central analysis cache.
     """
     root = Path(root)
     photos = [rel for rel in scan(root, include_subfolders) if kind(rel) == "photo"]

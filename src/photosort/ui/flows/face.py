@@ -32,7 +32,7 @@ def _scan_faces(root: Path, include_subfolders: bool, people: list[Person],
                 engine_factory: Callable[[bool], FaceEngine], use_gpu: bool,
                 progress=None, cancel=None) -> FaceScan | None:
     """find_face_matches with a face engine made here, on the worker thread,
-    and root's analysis cache."""
+    and the central analysis cache."""
     engine = engine_factory(use_gpu)
     with AnalysisCache() as cache:
         return find_face_matches(root, include_subfolders, people, engine.analyse,

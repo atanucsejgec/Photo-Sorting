@@ -37,7 +37,7 @@ def _sort_by_clip(root: Path, include_subfolders: bool, mode: str, choices: list
                   engine_factory: Callable[[bool], ClipEngine], use_gpu: bool,
                   progress=None, cancel=None) -> _ClipSort | None:
     """Describe every photo with a CLIP engine made here, on the worker
-    thread, through root's analysis cache; then judge them for mode
+    thread, through the central analysis cache; then judge them for mode
     ("content", choices being the categories, or "notes")."""
     engine = engine_factory(use_gpu)
     with AnalysisCache() as cache:

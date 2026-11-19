@@ -18,6 +18,8 @@ time, a short while after the folder or the switch last changed; a count
 for a folder or switch that has changed since is dropped. Counting again
 the folder and switch last counted (on coming back Home) keeps showing the
 last count until the new one arrives. A path that is not a folder says so.
+When a count starts for a folder other than the last one,
+folder_settled(folder) says so (the window brings its old records in).
 """
 
 import threading
@@ -165,6 +167,7 @@ class HomePage(QWidget):
     """The folder, the switch and the tiles; start_requested(mode key)."""
 
     start_requested = Signal(str)
+    folder_settled = Signal(Path)  # the folder counted, when it changes
     COUNT_DELAY_MS = 300  # after the last change, before counting
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -248,6 +251,7 @@ class HomePage(QWidget):
         self._count_again = False  # count once the running one is done
         self._count_what: tuple[Path, bool] | None = None  # what the running count is of
         self._last_count: tuple[tuple[Path, bool], str] | None = None  # (what, text)
+        self._settled: Path | None = None  # the folder last said by folder_settled
         self._count_timer = QTimer(self)
         self._count_timer.setSingleShot(True)
         self._count_timer.setInterval(self.COUNT_DELAY_MS)
@@ -409,6 +413,9 @@ class HomePage(QWidget):
         self._counting = True
         self._count_generation = self._generation
         self._count_what = what
+        if what[0] != self._settled:
+            self._settled = what[0]
+            self.folder_settled.emit(what[0])
         task = Task(count_media, *what)
         task.signals.result.connect(self._counted)
         task.signals.error.connect(self._count_failed)

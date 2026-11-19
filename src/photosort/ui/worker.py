@@ -42,8 +42,16 @@ class Task(QRunnable):
         self._fn = fn
         self._args = args
         self._cancellable = cancellable
+        self._first: list[tuple[Callable[..., object], tuple]] = []
         self.signals = TaskSignals()
         self.cancel_event = threading.Event()
+
+    def first(self, fn: Callable[..., object], *args) -> None:
+        """Call fn(*args, cancel=self.cancel_event) on the pool thread before the
+        Task's own function (old records are brought in before a sort, say).
+        Its return value is dropped; an exception it raises ends the Task as
+        the function's would. Call before start."""
+        self._first.append((fn, args))
 
     def start(self) -> None:
         """Run on the pool. Connect to the signals first: the garbage check,
@@ -54,12 +62,14 @@ class Task(QRunnable):
     def run(self) -> None:
         # A Task runs once, but may be kept alive long after: it lets go of
         # the function and its arguments (a face engine, say) now.
-        fn, args = self._fn, self._args
-        self._fn, self._args = None, ()
+        fn, args, first = self._fn, self._args, self._first
+        self._fn, self._args, self._first = None, (), []
         kwargs: dict[str, object] = {"progress": self.signals.progress.emit}
         if self._cancellable:
             kwargs["cancel"] = self.cancel_event
         try:
+            for before, before_args in first:
+                before(*before_args, cancel=self.cancel_event)
             value = fn(*args, **kwargs)
         except Exception as e:
             name = getattr(fn, "__name__", repr(fn))

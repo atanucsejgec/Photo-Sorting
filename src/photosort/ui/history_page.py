@@ -2,9 +2,11 @@
 first, each one undoable.
 
 Undo (the button, or Enter) asks first, with "Cancel" focused. It runs in a
-worker.Task, one at a time; undo_running(True/False) says when one starts and
-ends, so the window can keep the sidebar locked meanwhile (an undo can't stop
-part-way, and the window waits for it before closing).
+worker.Task, one at a time, which first brings in old records
+(migrate.bring_in), so a newer old run that blocks it is seen;
+undo_running(True/False) says when one starts and ends, so the window can
+keep the sidebar locked meanwhile (an undo can't stop part-way, and the
+window waits for it before closing).
 """
 
 from dataclasses import dataclass
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from photosort import migrate
 from photosort.journal import RunInfo, load_moves, load_runs
 from photosort.modes import MODE_LABELS
 from photosort.ui import dialogs, shortcuts
@@ -238,6 +241,7 @@ class HistoryPage(QWidget):
         self._update_undo_button()
         self.result_label.setText("Putting files back…")
         task = Task(undo_with_message, self.root, row.run_id, cancellable=False)
+        task.first(migrate.bring_in, self.root)  # a newer old run may block it
         task.signals.result.connect(self._on_undone)
         task.signals.error.connect(self._on_undo_error)
         self._task = task  # keep it alive while it runs

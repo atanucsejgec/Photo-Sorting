@@ -11,8 +11,8 @@ from photosort.faces import Face, pack_faces, unpack_faces
 from photosort.modes import _analysis
 
 
-def _cache_db(root=None):
-    """The central cache's database (root, an old argument, is ignored)."""
+def _cache_db():
+    """The central cache's database."""
     return appdata.data_dir() / "cache.db"
 
 
@@ -26,7 +26,7 @@ def test_round_trip(tmp_path):
         assert cache.get("faces-v1", photo) is None  # kinds are kept apart
     with AnalysisCache() as cache:  # committed on exit
         assert cache.get("photo-v1", photo) == b"\x00data\xff"
-    assert _cache_db(tmp_path).is_file()
+    assert _cache_db().is_file()
 
 
 def test_cache_is_central(tmp_path):
@@ -238,14 +238,14 @@ def test_commits_every_200_puts(tmp_path):
         for photo in photos:
             cache.put("photo-v1", photo, b"data")
         # Read through a second connection: only committed rows are seen.
-        with sqlite3.connect(_cache_db(tmp_path)) as other:
+        with sqlite3.connect(_cache_db()) as other:
             (count,) = other.execute("SELECT count(*) FROM entries").fetchone()
         other.close()
         assert count == 200
 
 
 def test_corrupt_database_set_aside(tmp_path, caplog):
-    db = _cache_db(tmp_path)
+    db = _cache_db()
     db.parent.mkdir(parents=True, exist_ok=True)
     db.write_bytes(b"this is not a database" * 100)
     (db.parent / "cache.db.broken-1").write_bytes(b"an earlier one")
@@ -262,7 +262,7 @@ def test_corrupt_database_set_aside(tmp_path, caplog):
 
 
 def test_side_files_set_aside_with_the_database(tmp_path):
-    folder = _cache_db(tmp_path).parent
+    folder = _cache_db().parent
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "cache.db").write_bytes(b"this is not a database" * 100)
     (folder / "cache.db-journal").write_bytes(b"stale journal")
@@ -348,7 +348,7 @@ def test_database_error_mid_run_degrades(tmp_path, caplog):
         cache.put("photo-v1", photo, b"data")
         assert cache.get("photo-v1", photo) is None
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
-    assert sorted(p.name for p in _cache_db(tmp_path).parent.iterdir()) == ["cache.db"]
+    assert sorted(p.name for p in _cache_db().parent.iterdir()) == ["cache.db"]
 
 
 def test_locked_database_is_not_set_aside(tmp_path, monkeypatch, caplog):
@@ -367,7 +367,7 @@ def test_locked_database_is_not_set_aside(tmp_path, monkeypatch, caplog):
         assert cache.get("photo-v1", photo) is None
         cache.put("photo-v1", photo, b"other")
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
-    assert sorted(p.name for p in _cache_db(tmp_path).parent.iterdir()) == ["cache.db"]
+    assert sorted(p.name for p in _cache_db().parent.iterdir()) == ["cache.db"]
     monkeypatch.setattr(sqlite3, "connect", real_connect)
     with AnalysisCache() as cache:
         assert cache.get("photo-v1", photo) == b"data"
@@ -400,8 +400,8 @@ def test_corruption_found_mid_run_sets_it_aside(tmp_path, caplog):
         cache.put("photo-v1", photo, b"data")  # off for the rest of the run
         assert cache.get("photo-v1", photo) is None
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
-    assert (_cache_db(tmp_path).parent / "cache.db.broken-1").is_file()
-    assert not _cache_db(tmp_path).exists()
+    assert (_cache_db().parent / "cache.db.broken-1").is_file()
+    assert not _cache_db().exists()
     with AnalysisCache() as cache:  # the next run starts afresh
         cache.put("photo-v1", photo, b"new")
         assert cache.get("photo-v1", photo) == b"new"

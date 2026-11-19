@@ -16,10 +16,13 @@ names that are not valid UTF-8 (lone surrogates in Python) round-trip
 unchanged.
 
 Runs the owner forgets are listed in "forgotten.json" (rewritten atomically)
-by run_id and started time, so an old copy is never imported again.
+by run_id and started time, so an old copy is never imported again. A list
+that can't be read is never written over: forgetting moves it aside first, as
+"forgotten.json.broken-<n>".
 """
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -32,6 +35,8 @@ from photosort import appdata
 RUNS_DIR = Path(".photosort") / "runs"
 
 _FORGOTTEN = "forgotten.json"
+
+_log = logging.getLogger("photosort")
 
 
 def _runs_dir() -> Path:
@@ -282,12 +287,7 @@ def forget_runs(run_ids: list[str]) -> None:
     forgotten list, so an old copy of it is never imported again."""
     runs = _runs_dir()
     path = runs / _FORGOTTEN
-    try:
-        entries = json.loads(path.read_bytes())
-        if not isinstance(entries, list):
-            entries = []
-    except (OSError, ValueError):
-        entries = []
+    entries = _forgotten_for_update(path)
     known = {(e.get("run_id"), e.get("started")) for e in entries if isinstance(e, dict)}
     added = False
     for run_id in run_ids:
@@ -309,6 +309,30 @@ def forget_runs(run_ids: list[str]) -> None:
         (runs / f"{run_id}.jsonl").unlink(missing_ok=True)
     if run_ids and runs.is_dir():
         fsync_dir(runs)
+
+
+def _forgotten_for_update(path: Path) -> list:
+    """The forgotten list at path, to add to. One that can't be parsed is
+    renamed to forgotten.json.broken-<n> (logged) and an empty list returned;
+    one that can't be read at all raises OSError, so nothing is written over it."""
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return []
+    try:
+        entries = json.loads(data)
+    except ValueError:
+        entries = None
+    if isinstance(entries, list):
+        return entries
+    n = 1
+    while os.path.lexists(aside := path.with_name(f"{path.name}.broken-{n}")):
+        n += 1
+    os.rename(path, aside)
+    fsync_dir(path.parent)
+    _log.warning("The forgotten-runs list %s could not be read; moved it to %s",
+                 path, aside.name)
+    return []
 
 
 def relocate_root(old: Path, new: Path) -> int:

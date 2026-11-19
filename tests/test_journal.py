@@ -360,3 +360,21 @@ def test_forgetting_a_suffixed_import_keeps_it_out(tmp_path):
     assert import_run(b, "r", tmp_path / "b") == "r-imported-1"
     forget_runs(["r-imported-1"])
     assert import_run(b, "r", tmp_path / "b") is None
+
+
+def test_forget_runs_sets_a_corrupt_list_aside(tmp_path, caplog):
+    """A forgotten list that can't be read is moved aside, never written over:
+    the keys in it may still be recovered by hand."""
+    runs = appdata.runs_dir()
+    runs.mkdir(parents=True)
+    (runs / "forgotten.json").write_bytes(b"[{broken")
+    (runs / "forgotten.json.broken-1").write_bytes(b"an earlier one")
+    j = RunJournal.create(tmp_path, "date", False, 0)
+    j.finish("done")
+    started = _meta(j.run_id)["started"]
+    with caplog.at_level("WARNING", logger="photosort"):
+        forget_runs([j.run_id])
+    assert (runs / "forgotten.json.broken-1").read_bytes() == b"an earlier one"
+    assert (runs / "forgotten.json.broken-2").read_bytes() == b"[{broken"
+    assert forgotten_keys() == {(j.run_id, started)}
+    assert "forgotten.json.broken-2" in caplog.text
