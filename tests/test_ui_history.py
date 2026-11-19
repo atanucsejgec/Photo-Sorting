@@ -136,6 +136,21 @@ def _ids(d: HistoryPage) -> list[str]:
             for r in range(d.runs_table.rowCount())]
 
 
+def _named(d: HistoryPage, *run_ids: str) -> str:
+    """How a question names these runs: "<Mode> on <folder name>, <date>",
+    one per line, at most 3, then "…and N more"."""
+    ids = _ids(d)
+    lines = []
+    for run_id in run_ids[:3]:
+        n = ids.index(run_id)
+        lines.append(f"{d.runs_table.item(n, MODE).text()} on "
+                     f"{Path(d.runs_table.item(n, FOLDER).text()).name}, "
+                     f"{d.runs_table.item(n, WHEN).text()}")
+    if len(run_ids) > 3:
+        lines.append(f"…and {len(run_ids) - 3} more")
+    return "\n".join(lines)
+
+
 def _selected_ids(d: HistoryPage) -> list[str]:
     ids = _ids(d)
     return [ids[i.row()] for i in d.runs_table.selectionModel().selectedRows()]
@@ -497,8 +512,8 @@ def test_multi_undo_newest_first_restores_all(qtbot, make_history, tmp_path, ask
     d.runs_table.selectAll()
     asked.answer = False
     d.undo_button.click()
-    assert asked.calls == [("Undo 3 runs?", "Put back the files of these 3 runs, newest first?",
-                            "Undo", "Cancel", "no")]
+    assert asked.calls == [("Undo 3 runs?", "Put back the files of these 3 runs, newest "
+                            f"first?\n\n{_named(d, *runs[::-1])}", "Undo", "Cancel", "no")]
     assert order == []
 
     asked.answer = True
@@ -584,7 +599,8 @@ def test_delete_asks_with_keep_focused_and_forgets(qtbot, make_history, tmp_path
 
     asked.answer = False
     d.forget_button.click()
-    assert asked.calls == [("Forget 2 runs?", FORGET, "Forget", "Keep", "no")]
+    assert asked.calls == [("Forget 2 runs?", f"{_named(d, runs[2], runs[0])}\n\n{FORGET}",
+                            "Forget", "Keep", "no")]
     assert d.runs_table.rowCount() == 3
 
     asked.answer = True
@@ -606,12 +622,65 @@ def test_delete_of_undone_runs_asks_shorter(qtbot, make_history, tmp_path, asked
     qtbot.waitUntil(lambda: _column(d, STATUS)[0] == "Undone")
     _select(d, 0)
     asked.calls.clear()
+    named = _named(d, runs[2])
     d.forget_button.click()
-    assert asked.calls == [("Forget 1 run?", "", "Forget", "Keep", "no")]
+    assert asked.calls == [("Forget 1 run?", named, "Forget", "Keep", "no")]
     assert _ids(d) == runs[1::-1]
 
 
-def test_delete_with_dependents_offers_forget_all(qtbot, make_history, tmp_path, asked):
+def test_undo_of_one_run_names_it(qtbot, make_history, tmp_path, asked):
+    root, runs = _chain(tmp_path)
+    d = make_history(root)
+    _select(d, 1)
+    asked.answer = False
+    d.undo_button.click()
+    assert asked.calls == [("Undo this sort?", "Put back the 1 files of this sort?\n\n"
+                            f"{_named(d, runs[1])}", "Undo", "Cancel", "no")]
+    assert _named(d, runs[1]).startswith("Date on photos, ")
+
+
+def test_a_question_names_three_runs_then_how_many_more(qtbot, make_history, tmp_path,
+                                                        asked):
+    root = tmp_path / "photos"
+    for name in "abcde":
+        _write(root / f"{name}.jpg", name.encode())
+    runs = [_run(root, [(f"{n}.jpg", f"{n}/{n}.jpg")]) for n in "abcde"]
+    d = make_history(root)
+    d.runs_table.selectAll()
+    asked.answer = False
+    d.forget_button.click()
+    assert asked.calls[0][1] == f"{_named(d, *runs[::-1])}\n\n{FORGET}"
+    assert asked.calls[0][1].split("\n")[3] == "…and 2 more"
+
+
+def test_history_selects_the_newest_run_each_time_it_is_shown(
+        qtbot, make_window, tmp_path, asked, shown):
+    """Shown again after a sort, History never keeps an older pick: Enter
+    and Delete act on the newest run (the real screen forgot the wrong one)."""
+    root, runs = _chain(tmp_path)
+    w = make_window()
+    w.folder_edit.setText(str(root))
+    w.sidebar.items["history"].click()
+    page = w.history_page
+    assert _selected_ids(page) == [runs[2]]
+    _select(page, 2)  # the oldest
+    page.runs_table.setCurrentCell(2, 0)
+    w.sidebar.items["sort"].click()
+    _write(root / "d.jpg", b"d")
+    newest = _run(root, [("d.jpg", "d/d.jpg")])  # a sort meanwhile
+    w.sidebar.items["history"].click()
+    assert _selected_ids(page) == [newest]
+    assert page.runs_table.currentRow() == 0
+    w.sidebar.items["sort"].click()
+    w.sidebar.items["history"].click()
+    assert _selected_ids(page) == [newest]  # shown again: the newest again
+    asked.answer = False
+    page.forget_button.click()
+    assert asked.calls[-1][1].startswith(_named(page, newest))
+
+
+def test_delete_with_dependents_offers_forget_all(qtbot, make_history, tmp_path, asked,
+                                                  monkeypatch):
     root = tmp_path / "photos"
     _write(root / "a.jpg", b"a")
     _write(root / "b.jpg", b"b")
@@ -623,12 +692,21 @@ def test_delete_with_dependents_offers_forget_all(qtbot, make_history, tmp_path,
     _select(d, _ids(d).index(third))
 
     asked.answer = False
+    seen = []
+    real_ask = history_page.dialogs.ask
+
+    def ask(*args, **kwargs):
+        seen.append(set(_selected_ids(d)))  # while asked: shown as they go
+        return real_ask(*args, **kwargs)
+
+    monkeypatch.setattr(history_page.dialogs, "ask", ask)
     d.forget_button.click()
-    assert asked.calls == [("Older runs depend on it", f"{DEPEND}\n\n{second}, {first}",
+    assert asked.calls == [("Older runs depend on it",
+                            f"{DEPEND}\n\n{_named(d, third, second, first)}",
                             "Forget all 3", "Cancel", "no")]
     assert d.runs_table.rowCount() == 4
-
-    assert set(_selected_ids(d)) == {third, second, first}  # shown as they go
+    assert seen == [{third, second, first}]
+    assert _selected_ids(d) == [third]  # Cancel: the owner's own pick again
     asked.answer = True
     d.forget_button.click()
     assert len(asked.calls) == 2  # Forget all is the one question
@@ -995,7 +1073,8 @@ def test_keyboard_only_history(qtbot, make_window, tmp_path, asked, shown):
     assert page.runs_table.currentIndex().row() == 1
     _key(qtbot, Qt.Key.Key_Up)  # to the first row, alone
     _key(qtbot, Qt.Key.Key_Delete)
-    assert asked.calls[-1][:2] == ("Forget 1 run?", FORGET)
+    assert asked.calls[-1][0] == "Forget 1 run?"
+    assert asked.calls[-1][1].endswith(f"\n\n{FORGET}")
     assert _ids(page) == runs[1::-1]
     _key(qtbot, Qt.Key.Key_F)
     assert _ids(page) == [other, *runs[1::-1]]

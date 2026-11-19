@@ -3,7 +3,11 @@ the central store; several can be undone or forgotten at once.
 
 "This folder only" (the switch, or F) shows just the runs of the folder
 chosen on Home and the folders inside it. Rows are picked with the arrows,
-Shift/Ctrl, Space (the focused row on or off) and Ctrl+A.
+Shift/Ctrl, Space (the focused row on or off) and Ctrl+A. Each time the
+page is shown (load), only the newest run is selected, and is the current
+row: an older pick is never kept, so Enter or Delete right after a sort
+acts on that sort. The Undo and Forget questions name the runs they act on
+("Date on Photos, 2025-02-20 10:00", up to three, then "…and N more").
 
 Undo (the button, or Enter) asks first, with "Cancel" focused, then undoes
 the picked runs newest first in one worker.Task (undo_many). That first
@@ -19,7 +23,8 @@ part-way, and the window waits for it before closing).
 
 Forget (the button, or Delete) deletes the picked records, never a file. A
 run that older, not undone runs depend on (journal records they placed
-files that it moved: undo.dependents) is only forgotten together with them.
+files that it moved: undo.dependents) is only forgotten together with them;
+they are selected while asked, and Cancel puts the owner's pick back.
 
 A run whose folder is gone shows "Folder not found": the folder is not
 there, or holds none of its runs' files (undo.root_present: an unplugged
@@ -200,6 +205,23 @@ def many_summary(outcome: ManyUndone, total: int) -> str:
     if k + 1 < total:
         lines.append("The older runs were not tried.")
     return "\n".join(lines)
+
+
+_NAMED = 3  # runs a question names, at most
+
+
+def run_line(mode: str, root: Path, date: str) -> str:
+    """How a question names a run: "<Mode> on <folder name>, <date time>"."""
+    return f"{mode} on {root.name or root}, {date}"
+
+
+def named_runs(lines: list[str]) -> str:
+    """The runs a question acts on, one per line: up to three, then
+    "…and N more"."""
+    shown = lines[:_NAMED]
+    if len(lines) > _NAMED:
+        shown.append(f"…and {len(lines) - _NAMED} more")
+    return "\n".join(shown)
 
 
 def choose_folder(parent: QWidget | None, title: str, start: str) -> Path | None:
@@ -390,6 +412,11 @@ class HistoryPage(QWidget):
     def show_error(self, text: str) -> None:
         dialogs.warn(self, "History", text)
 
+    def focus_first(self) -> None:
+        """Shown other than from the sidebar: the focus on the table, on the
+        newest run (load made it the current one)."""
+        self.runs_table.setFocus(Qt.FocusReason.OtherFocusReason)
+
     # ----- the list --------------------------------------------------------
 
     def load(self, root: Path | None) -> None:
@@ -409,13 +436,14 @@ class HistoryPage(QWidget):
         if self._filter_key.isEnabled() != has_root:
             self._filter_key.setEnabled(has_root)
             self.keys_changed.emit()
-        self.refresh()
+        self.refresh(newest=True)
 
-    def refresh(self) -> None:
+    def refresh(self, newest: bool = False) -> None:
         """Reload the runs from the central store, keeping the selected runs
-        selected (or else selecting the first)."""
-        keep = [r.run_id for r in self._selected_rows()]
-        current = self._current_row()
+        selected (or else selecting the first); with newest (the page is
+        shown: load), selecting the newest run only, the current one."""
+        keep = [] if newest else [r.run_id for r in self._selected_rows()]
+        current = None if newest else self._current_row()
         try:
             journal.finish_relocations()  # so each Status is right
         except (OSError, ValueError) as e:
@@ -518,13 +546,14 @@ class HistoryPage(QWidget):
         todo = [r for r in todo if r.run_id in roots]
         if not todo:
             return
+        names = named_runs([run_line(r.mode, roots[r.run_id], r.date) for r in todo])
         if len(todo) == 1:
-            row = todo[0]
-            question = ("Undo this sort?", f"Put back the {row.files} files this {row.mode} "
-                                           f"sort of {row.date} moved?")
+            question = ("Undo this sort?",
+                        f"Put back the {todo[0].files} files of this sort?\n\n{names}")
         else:
             question = (f"Undo {len(todo)} runs?",
-                        f"Put back the files of these {len(todo)} runs, newest first?")
+                        f"Put back the files of these {len(todo)} runs, newest first?"
+                        f"\n\n{names}")
         if not dialogs.ask(self, *question, yes="Undo", no="Cancel", default="no"):
             return
         self._undoing = True
@@ -615,13 +644,17 @@ class HistoryPage(QWidget):
             return
         if extra:
             total = len(chosen) + len(extra)
+            before = self._selected_ids()
             self._select_ids(chosen + extra)  # the owner sees what goes
             if not dialogs.ask(self, "Older runs depend on it",
-                               f"{DEPEND}\n\n{', '.join(extra)}", yes=f"Forget all {total}",
-                               no="Cancel", default="no"):
+                               f"{DEPEND}\n\n{self._named(chosen + extra)}",
+                               yes=f"Forget all {total}", no="Cancel", default="no"):
+                self._reselect(before)
                 return
         else:
-            text = "" if all(r.undone for r in rows) else FORGET
+            text = self._named(chosen)
+            if not all(r.undone for r in rows):
+                text += f"\n\n{FORGET}"
             if not dialogs.ask(self, f"Forget {_runs_word(len(chosen))}?", text,
                                yes="Forget", no="Keep", default="no"):
                 return
@@ -634,6 +667,31 @@ class HistoryPage(QWidget):
             return
         self.refresh()
         self.result_label.setText(f"Forgot {_runs_word(len(ids))}.")
+
+    def _named(self, run_ids: list[str]) -> str:
+        """named_runs of these runs, newest first (those no longer listed
+        are read from the store)."""
+        rows = {r.run_id: r for r in self._rows}
+        runs = {r.run_id: r for r in load_all_runs()}
+        lines = []
+        known = [i for i in run_ids if i in runs]
+        known.sort(key=lambda i: (runs[i].started, i), reverse=True)
+        for run_id in known:
+            run, row = runs[run_id], rows.get(run_id)
+            if row is not None:
+                lines.append(run_line(row.mode, run.root, row.date))
+            else:
+                lines.append(run_line(MODE_LABELS.get(run.mode, run.mode), run.root,
+                                      run.started.astimezone().strftime("%Y-%m-%d %H:%M")))
+        return named_runs(lines)
+
+    def _selected_ids(self) -> list[str]:
+        return [r.run_id for r in self._selected_rows()]
+
+    def _reselect(self, run_ids: list[str]) -> None:
+        """Select exactly the rows of run_ids (those listed)."""
+        self.runs_table.clearSelection()
+        self._select_ids(run_ids)
 
     def _select_ids(self, run_ids: list[str]) -> None:
         """Select the rows of run_ids (those listed) as well."""
