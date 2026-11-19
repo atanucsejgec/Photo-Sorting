@@ -948,20 +948,21 @@ def test_type_end_to_end(qtbot, make_window, photos, errors):
 # ----- old undo records ------------------------------------------------------
 
 def _quiet_off(monkeypatch):
-    """No quiet bring-in when Home's folder settles: only a sort or an undo
+    """No quiet bring-in when a folder is picked on Home: only a sort or an undo
     brings old records in."""
     monkeypatch.setattr(MainWindow, "_bring_in_quietly", lambda self, root: None)
 
 
 def test_undo_imports_first(qtbot, make_window, photos, errors, monkeypatch):
     """An old-layout run on the Home folder is brought in when the folder
-    settles, and History's Undo puts its files back byte for byte."""
+    is picked, and History's Undo puts its files back byte for byte."""
     (photos / "a.jpg").write_bytes(b"a bytes")
     before = tree(photos)
     old_layout_run(photos, [("a.jpg", "2025/a.jpg")])
     monkeypatch.setattr(history_page.dialogs, "ask", lambda *a, **k: True)
     w = make_window()
     w.folder_edit.setText(str(photos))
+    w.home.picked()  # as Browse, Enter or a drop do
     qtbot.waitUntil(lambda: load_runs(photos) != [])
     qtbot.waitUntil(lambda: not (photos / ".photosort").exists())
     qtbot.waitUntil(lambda: w._quiet_tasks == [])  # let go of once ended
@@ -1140,6 +1141,7 @@ def test_quiet_bring_in_never_holds_up_a_sort(qtbot, make_window, photos, make_j
     w = make_window()
     try:
         w.folder_edit.setText(str(photos))
+        w.home.picked()  # as Browse, Enter or a drop do
         qtbot.waitUntil(started.is_set)
         w.mode_buttons["date"].click()
         qtbot.waitUntil(lambda: w.current_page() is w.summary_page)

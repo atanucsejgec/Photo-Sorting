@@ -518,3 +518,37 @@ def test_a_small_window_keeps_the_grid_and_strip_in_view(qtbot, make_window):
     assert bottom < w.strip.mapTo(w, w.strip.rect().topLeft()).y()
     assert w.strip.mapTo(w, w.strip.rect().bottomLeft()).y() <= w.height()
     assert w.strip.text() == HOME_KEYS
+
+
+def test_quiet_bring_in_only_when_a_folder_is_picked(qtbot, make_window, photos, tmp_path,
+                                                    monkeypatch):
+    """Browse, Enter in the folder box or a drop: never while the owner is
+    still typing (a half-typed path's folders would be walked)."""
+    from PySide6.QtCore import QMimeData, QPointF, QUrl
+    from PySide6.QtGui import QDropEvent
+    picked = []
+    monkeypatch.setattr(MainWindow, "_bring_in_quietly", lambda self, root: picked.append(root))
+    w = _show(qtbot, make_window())
+    _focus(qtbot, w.folder_edit)
+    qtbot.keyClicks(w.folder_edit, str(photos))
+    qtbot.waitUntil(lambda: w.home.count_label.text() == "0 photos and videos")  # counted
+    assert picked == []  # but not picked
+    qtbot.keyClick(w.folder_edit, Qt.Key.Key_Return)
+    assert picked == [photos]
+
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.setattr(home_page.QFileDialog, "getExistingDirectory", lambda *a: str(other))
+    w.browse_button.click()
+    assert picked == [photos, other]
+
+    dropped = tmp_path / "dropped"
+    dropped.mkdir()
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(dropped))])
+    w.dropEvent(QDropEvent(QPointF(5, 5), Qt.DropAction.CopyAction, mime,
+                           Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert picked == [photos, other, dropped]
+    w.folder_edit.setText(str(photos))  # set, not picked (as the last folder is restored)
+    qtbot.wait(HomePage.COUNT_DELAY_MS + 200)
+    assert picked == [photos, other, dropped]

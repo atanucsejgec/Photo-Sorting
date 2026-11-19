@@ -30,7 +30,8 @@ naming dialog and the People page all use it.
 
 Old undo records and analysis caches (kept in each folder's .photosort
 before) are brought in to the central store by migrate.bring_in: quietly,
-in a Task of its own beside any other, when Home's folder settles; and
+in a Task of its own beside any other, when a folder is picked on Home
+(Browse, Enter in the folder field, a drop; never while typing); and
 again inside the worker Task of every sort (before it plans) and of every
 undo (before it undoes), so a sort or an undo never misses an old run. An
 undo's is strict (history_page.bring_in_for_undo): while an old run it may
@@ -470,6 +471,7 @@ class MainWindow(QMainWindow):
         folder = self._dropped_folder(event)
         if self.current_page() is self.home and folder:
             self.folder_edit.setText(folder)
+            self.home.picked()
             event.acceptProposedAction()
 
     def _subfolders_toggled(self, checked: bool) -> None:
