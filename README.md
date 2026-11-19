@@ -3,15 +3,18 @@
 A desktop app that sorts the photos, videos and other files in any folder you pick. It
 moves the original files into tidy folders and keeps an Undo for every run.
 
-It has 14 ways of sorting:
+It has 15 ways of sorting:
 - **Date** mode: `2025/02-February/20-02-2025/`. A day with 3 or more files gets its
   own day folder; a day with 1–2 files goes loose into the month folder. Files with no
-  date go to `No Date/`.
+  date go to `No Date/`. A busy day (11 photos or more) can be given a name first, such
+  as `20-02-2025 Puri trip/`.
 - **Face** mode: give it one photo and type the names of the people in it. It remembers
   them, finds them in every photo, and moves each photo into a folder named after the
   person (`Atanu/`). Tick two or more people and only the photos with two or more of
   them are sorted, into `Atanu & Zoe/`. When it isn't sure, it asks ("Is this Atanu?
   72% sure"). Strangers are ignored. Face data stays on this computer.
+- **Pick faces** mode: no setup. It finds every face in the folder, groups them by
+  person, and you pick the people for a folder you name (`Friend/`, `Family/`).
 - **Duplicates** mode: finds exact copies and re-saved or resized copies (for example
   `IMG…~2.jpg` edits, WhatsApp copies), shows them side by side, and moves the ones you
   don't keep into `Duplicates/`.
@@ -48,6 +51,30 @@ It has 14 ways of sorting:
 In the other modes, files the mode can't place stay where they are. You always see what
 will move before anything does. Nothing is ever deleted: the files you set aside go to a
 folder (`Duplicates/`, `Repeated Shots/`, `Bad Photos/`), and Undo puts everything back.
+
+## Busy days, Pick faces and one place for Undo
+
+- **Busy days (Date mode).** A day with more than 10 photos is usually an event. Before
+  the summary, Date mode shows each busy day's photos and lets you type a name: its
+  folder becomes `2025/02-February/20-02-2025 Puri trip/`. Leave the box empty to keep
+  `20-02-2025`. A day that already has a folder from an earlier run is not asked: its
+  files join that folder, named or not.
+- **Pick faces.** The faces are shown grouped by person, the people in the most photos
+  first; people seen in only one photo wait under **Seen once** at the end.
+  - Pick one or more people (Space or a click), press **N**, type a folder name and
+    Enter. Pick two tiles if one person was split in two.
+  - Enter on a person shows all their faces; untick one that isn't them.
+  - A photo with people of two of your folders is asked about on **Which folder?**:
+    press 1–9 for a folder or 0 to leave it where it is, or use **All to Friend** /
+    **Leave all here** at the top. A photo you don't answer stays where it is.
+  - Tick **Remember on the People page** on a folder to remember its faces as a person
+    for Face mode, once the move has worked. Undo does not forget them; use **Forget**
+    on the People page for that.
+- **One place for Undo.** Every run's Undo record is kept in one place on this computer
+  (`~/.local/share/photo-sorter/runs`), not in the folders you sort. **History** lists
+  the runs of every folder. Select several to undo them (newest first) or to forget
+  them. If a sorted folder has moved, History asks where it is now. Old records in
+  `.photosort` folders are brought in when you pick a folder on Home.
 
 ## Keyboard
 
@@ -112,14 +139,15 @@ uv sync
 
 ## Good to know
 
-- The first time you use Face mode or No people it downloads the face models (about
-  190 MB) into `~/.local/share/photo-sorter/models`, after asking. The first time you
-  use Content or Notes & Pages it downloads the picture model they share (OpenCLIP,
+- The first time you use Face mode, Pick faces or No people it downloads the face
+  models (about 190 MB) into `~/.local/share/photo-sorter/models`, after asking. The
+  first time you use Content or Notes & Pages it downloads the picture model they share (OpenCLIP,
   about 609 MB) into the same folder, once, after you say Yes. The people you name are
   kept in `~/.local/share/photo-sorter/people`. None of this is part of this repository.
 - Settings → **Use GPU** switches Face mode between the graphics card and the CPU.
-- Undo records live in a hidden `.photosort` folder inside each folder you sort.
-  Keep it if you want Undo to work later.
+- Undo records and the scan cache live in `~/.local/share/photo-sorter` (see
+  **One place for Undo** above). Nothing of the app's is written into the folders you
+  sort.
 - Settings and the log file are kept per computer, in `~/.config/photo-sorter`
   and `~/.local/state/photo-sorter`. They are not part of this repository.
 - Windows is planned. The code avoids Windows-invalid names already.

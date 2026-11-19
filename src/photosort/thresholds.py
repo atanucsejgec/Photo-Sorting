@@ -38,6 +38,12 @@ BAD_BLUR = 25.0  # sharpness (Laplacian variance) below this: "blurry"
 # Faces: matching a face to a remembered person by embedding similarity.
 FACE_SURE = 0.45  # at or above: surely that person
 FACE_UNSURE = 0.30  # from here up to FACE_SURE: ask the owner; below: a stranger
+# Pick faces: two groups of faces are one person when their faces are, on
+# average, at least this alike (average linkage, modes/pick_faces.py).
+# Tuned on a test copy (1290 faces, 626 photos): 0.50 split clear people
+# (one man's 18 photos into 12 + 6); 0.40 joined only 6 more faces than
+# 0.45, none wrongly, so 0.45 keeps the margin against joining two people.
+PICK_FACES_JOIN = 0.45
 # Folder names made from data (people, cameras, places, events): at most this
 # many characters and UTF-8 bytes (Linux file systems allow 255 bytes;
 # Bengali takes 3 per character).

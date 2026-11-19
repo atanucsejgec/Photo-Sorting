@@ -41,6 +41,7 @@ from PySide6.QtWidgets import QDialog, QPushButton, QWidget
 
 from photosort.faces import Face
 from photosort.groups import Candidate, Group
+from photosort.hashing import sha256_file
 from photosort.journal import load_runs
 from photosort.modes import content, date_mode
 from photosort.modes import events as events_mode
@@ -48,6 +49,7 @@ from photosort.modes._clip_scan import ClipScan
 from photosort.modes.content import Verdict
 from photosort.modes.events import Event
 from photosort.modes.face_mode import FaceScan, Question
+from photosort.modes.pick_faces import FoundFace, group_people
 from photosort.people import PeopleStore
 from photosort.settings import DEFAULT_CONTENT_CATEGORIES, Settings, load_settings
 from photosort.ui import dialogs, main_window, model_download, shortcuts
@@ -59,10 +61,12 @@ from photosort.ui.flows import date as date_flow
 from photosort.ui.flows import events as events_flow
 from photosort.ui.flows import face as face_flow
 from photosort.ui.flows import groups as groups_flow
+from photosort.ui.flows import pick_faces as pick_flow
 from photosort.ui.fullscreen_viewer import FullscreenViewer
 from photosort.ui.home_page import ModeTile
 from photosort.ui.main_window import MainWindow
 from photosort.ui.photo_preview import PhotoPreview
+from photosort.ui.pick_faces_page import FacesDialog
 from photosort.ui.shortcuts import ShortcutStrip
 
 CTRL = Qt.KeyboardModifier.ControlModifier
@@ -472,6 +476,49 @@ def test_face_by_keyboard(qtbot, make_window, photos, make_jpeg, errors):
 
 
 @pytest.mark.real_dialogs
+def test_keyboard_only_pick_faces(qtbot, make_window, photos, make_jpeg, errors):
+    ann, ben = _unit(1), _unit(2)
+    for name in ("a.jpg", "ab.jpg", "b.jpg"):
+        make_jpeg(photos / name, size=(200, 200))
+    before = {p.name: sha256_file(p) for p in photos.iterdir()}
+    w = make_window()
+    w.engine_factory = lambda use_gpu: FakeEngine({
+        "a.jpg": [_face(ann)], "ab.jpg": [_face(ann), _face(ben, 110)], "b.jpg": [_face(ben)]})
+    _start_by_keyboard(qtbot, w, photos, "pick_faces")
+    page = w.pick_faces_page
+    qtbot.waitUntil(lambda: w.current_page() is page)
+    qtbot.waitUntil(lambda: _focused() is page.tiles[0])
+    for name in ("Friend", "Family"):  # Ann, then Ben
+        _key(qtbot, Qt.Key.Key_Space)
+        _key(qtbot, Qt.Key.Key_N)
+        qtbot.keyClicks(page.name_edit, name)
+        _key(qtbot, Qt.Key.Key_Return)
+        _key(qtbot, Qt.Key.Key_Right)
+    assert [r.label.text() for r in page.folder_rows] == [
+        "Friend: 1 person, 2 photos", "Family: 1 person, 2 photos"]
+    _key(qtbot, Qt.Key.Key_Return, CTRL)
+    which = w.which_folder_page
+    qtbot.waitUntil(lambda: w.current_page() is which)
+    qtbot.waitUntil(lambda: _focused() is which.rows[0])
+    assert w.strip.text() == ("↑↓ move · 1–9 folder · 0 leave here · Ctrl+Enter continue · "
+                              f"Esc back · {TAB}")
+    _key(qtbot, Qt.Key.Key_2)  # ab.jpg to Family
+    _key(qtbot, Qt.Key.Key_Return, CTRL)
+    _on_summary(qtbot, w)
+    assert w.summary_label.text().splitlines() == ["1 photos → Friend", "2 photos → Family"]
+    _go(qtbot, w)
+    assert _files(photos) == ["Family/ab.jpg", "Family/b.jpg", "Friend/a.jpg"]
+    seen = []
+    _press_in_dialog(qtbot, seen, Qt.Key.Key_Right, Qt.Key.Key_Return)  # Undo, not Cancel
+    _key(qtbot, Qt.Key.Key_U)
+    qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text())
+    assert seen and seen[0][0] == "Undo this sort?"
+    assert {p.name: sha256_file(p) for p in photos.iterdir() if p.is_file()} == before
+    assert _files(photos) == sorted(before)
+    assert errors == []
+
+
+@pytest.mark.real_dialogs
 def test_face_naming_by_keyboard(qtbot, make_window, photos, tmp_path, make_jpeg,
                                  monkeypatch, errors):
     """Nobody is remembered: A, the photo picked (the system picker, faked),
@@ -814,6 +861,15 @@ def _face_scan(w: MainWindow, root: Path):
     return [atanu], FaceScan({}, [question], photos=1, unreadable=0)
 
 
+def _people(root: Path):
+    """Two people, one in two photos and one in one."""
+    faces = []
+    for rel, seed in (("p0.jpg", 1), ("p1.jpg", 1), ("p2.jpg", 2)):
+        _jpeg(root / rel, (200, 200))
+        faces.append(FoundFace(rel, 0, _face(_unit(seed))))
+    return group_people(faces)
+
+
 def _clip_sort(root: Path) -> clip_flow._ClipSort:
     _jpeg(root / "c.jpg")
     unsure = [Verdict("c.jpg", "Food", 0.6, (("Food", 0.6), ("Pets", 0.2)))]
@@ -857,6 +913,13 @@ def _each_page(qtbot, w: MainWindow, root: Path):
     people, scan = _face_scan(w, root)
     face_flow._on_scan(w, people, scan)
     yield w.face_question_page
+    w.mode = "pick_faces"
+    pick_flow._on_found(w, _people(root))
+    yield w.pick_faces_page
+    face = w.pick_faces_page.groups[0].faces[0]
+    w.which_folder_page.load(root, {face.rel: ["Friend", "Family"]}, {face.rel: [face.face]})
+    w.show_page(w.which_folder_page)
+    yield w.which_folder_page
     w.mode = "content"
     w.flow_state = _clip_sort(root)
     clip_flow._ask(w, {})
@@ -903,6 +966,9 @@ def _dialogs(qtbot, tmp_path: Path):
     viewer = FullscreenViewer(tmp_path, group, {"face.jpg"})
     yield viewer, ("←→ flip · S side by side · +− zoom · 0 fit · Space keep · Enter done · "
                    "Esc close"), lambda: None
+    faces = tuple(FoundFace(f"p{n}.jpg", 0, _face(_unit(1))) for n in range(9))
+    picked = FacesDialog(faces, set())
+    yield picked, "Arrows move · Space tick · Esc close", lambda: picked.checks[0]
     download = model_download.DownloadDialog("Face models", "Downloading the face models…", 9)
     yield download, "Esc cancel", lambda: download.cancel_button
     ask = dialogs.MessageDialog(None, "Undo this sort?", "Put back the files?",

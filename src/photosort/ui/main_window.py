@@ -3,8 +3,9 @@ under them.
 
 The sidebar's pages are Sort (Home), History, People and Settings. A sort
 adds the Progress, Review, Bad photos, Events, Busy days, Face setup, Face
-questions, Summary and Done pages. From the moment a sort starts until its Done page
-the sidebar is locked (dimmed, and can't be focused or clicked): Esc and
+questions, Pick faces, Which folder?, Summary and Done pages. From the moment
+a sort starts until its Done page the sidebar is locked (dimmed, and can't be
+focused or clicked): Esc and
 Back are the way out, as before. It is locked too while any Task runs (an
 undo on Done, say) and while History undoes a run.
 
@@ -18,6 +19,11 @@ the folder and the mode, then hands over to the flow, which plans the moves
 moves them, and Undo puts them back. Back on the Summary calls the flow's
 back_to, if it set one, else goes Home. Esc on a review screen can leave it
 (after asking): Home, with nothing planned.
+
+A flow may also set after_run, called once its run has moved files and
+was not cancelled; the lines it returns are added to Done (Pick faces
+remembers people so). Go keeps it; it is let go once the run ends, however
+it ends, and when a new sort starts.
 
 The window owns the one PeopleStore of the app: the Face setup page, the
 naming dialog and the People page all use it.
@@ -63,13 +69,16 @@ from photosort.ui.done_page import DonePage
 from photosort.ui.events_page import EventsPage
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
-from photosort.ui.flows import bad, clip, date, events, face, files, groups, no_people, plain
+from photosort.ui.flows import (
+    bad, clip, date, events, face, files, groups, no_people, pick_faces, plain,
+)
 from photosort.ui.history_page import (
     HistoryPage, finish_moved_folders, undo_summary, undo_with_message,
 )
 from photosort.ui.home_page import HomePage
 from photosort.ui.model_download import ensure_models
 from photosort.ui.people_page import PeoplePage
+from photosort.ui.pick_faces_page import PickFacesPage
 from photosort.ui.progress_page import ProgressPage
 from photosort.ui.review_page import ReviewPage
 from photosort.ui.settings_page import SettingsPage
@@ -77,6 +86,7 @@ from photosort.ui.shortcuts import ShortcutStrip
 from photosort.ui.sidebar import Sidebar
 from photosort.ui.summary_page import SummaryPage
 from photosort.ui.theme import PAGE_MARGINS
+from photosort.ui.which_folder_page import WhichFolderPage
 from photosort.ui.worker import Task
 from photosort.undo import UndoResult
 
@@ -88,7 +98,8 @@ MIN_WIDTH, MIN_HEIGHT = 800, 460
 
 # The flow that runs each kind of mode.
 _FLOWS = {"plan": plain, "date": date, "files": files, "groups": groups, "bad": bad,
-          "events": events, "face": face, "nopeople": no_people, "content": clip, "notes": clip}
+          "events": events, "face": face, "pickfaces": pick_faces, "nopeople": no_people,
+          "content": clip, "notes": clip}
 
 
 class MainWindow(QMainWindow):
@@ -113,6 +124,8 @@ class MainWindow(QMainWindow):
         self.mode: str | None = None
         self.flow_state: object = None  # the flow's working data (see photosort.ui.flows)
         self.back_to: Callable[[], None] | None = None  # where Back on the summary goes
+        # Called after a run that moved files and was not cancelled; its lines go on Done.
+        self.after_run: Callable[[ExecResult], list[str]] | None = None
         self._plan: Plan | None = None
         self._run_id: str | None = None
         # The folder of a sort just started: its first Task brings old records in.
@@ -167,13 +180,15 @@ class MainWindow(QMainWindow):
         self.busy_days_page = self._build_busy_days()
         self.face_setup_page = self._build_face_setup()
         self.face_question_page = self._build_face_questions()
+        self.pick_faces_page = self._build_pick_faces()
+        self.which_folder_page = self._build_which_folder()
         self.category_review_page = self._build_category_review()
         self.summary_page = self._build_summary()
         self.done_page = self._build_done()
         for page in (self.home, self.history_page, self.people_page, self.settings_page,
                      self.progress_page, self.review_page, self.bad_page,
                      self.events_page, self.busy_days_page, self.face_setup_page,
-                     self.face_question_page,
+                     self.face_question_page, self.pick_faces_page, self.which_folder_page,
                      self.category_review_page, self.summary_page, self.done_page):
             self.stack.addWidget(page)
         # Pages the sidebar stays usable on (it is locked on the others).
@@ -257,6 +272,25 @@ class MainWindow(QMainWindow):
         page.finished.connect(lambda answers: face.plan_moves(self, answers))
         page.cancelled.connect(lambda: face.back_to_setup(self))
         page.left.connect(self.leave_review)
+        return page
+
+    def _build_pick_faces(self) -> PickFacesPage:
+        page = PickFacesPage()
+        page.continued.connect(lambda folders: pick_faces.on_continued(self, folders))
+        page.left.connect(self._leave_pick_faces)
+        page.keys_changed.connect(self.strip.refresh)
+        return page
+
+    def _leave_pick_faces(self) -> None:
+        self.pick_faces_page.clear()  # the people found are let go
+        self.which_folder_page.clear()
+        self.after_run = None
+        self.leave_review()
+
+    def _build_which_folder(self) -> WhichFolderPage:
+        page = WhichFolderPage()
+        page.chosen.connect(lambda choices: pick_faces.on_chosen(self, choices))
+        page.left.connect(lambda: pick_faces.back_to_people(self))
         return page
 
     def _build_category_review(self) -> CategoryReviewPage:
@@ -489,6 +523,7 @@ class MainWindow(QMainWindow):
         before it plans (a Face scan started again from its setup page, too)."""
         self._plan = None
         self._bring_in_first = self.root
+        self.after_run = None
         self.end_flow()
 
     def end_flow(self) -> None:
@@ -541,6 +576,8 @@ class MainWindow(QMainWindow):
         self.end_flow()
         self.events_page.stop_thumbnails()
         self.busy_days_page.stop_thumbnails()
+        self.pick_faces_page.clear()  # what after_run needs, it has
+        self.which_folder_page.clear()
         self.begin_progress("Moving…", len(plan.moves))
         self.run_task(Task(execute, root, plan, journal), self._on_executed,
                       self._on_execute_error)
@@ -561,9 +598,13 @@ class MainWindow(QMainWindow):
             lines.append(f"Skipped {len(result.skipped)} files that were no longer there.")
         if result.cancelled:
             lines.append("Cancelled — the files moved so far can be undone.")
+        after, self.after_run = self.after_run, None
+        if after is not None and result.moved > 0 and not result.cancelled:
+            lines += after(result)
         self._show_done(lines, can_undo=result.moved > 0)
 
     def _on_execute_error(self, message: str) -> None:
+        self.after_run = None
         # Some files may have moved before the error; the journal has them.
         self._show_done(
             ["The sort stopped because of a problem.",
@@ -631,6 +672,8 @@ class MainWindow(QMainWindow):
         self.events_page.stop_thumbnails()
         self.busy_days_page.stop_thumbnails()
         self.category_review_page.stop_thumbnails()
+        self.pick_faces_page.stop_thumbnails()
+        self.which_folder_page.stop_thumbnails()
         self.face_question_page.stop_loading()
         QThreadPool.globalInstance().waitForDone()
         super().closeEvent(event)
