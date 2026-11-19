@@ -521,12 +521,16 @@ def test_conflict_rows_and_all_to_buttons(qtbot, make_window, root, engine):
     which.all_buttons[2].click()  # Leave all here
     assert which.choices() == {"ab.jpg": None}
     assert [b.isChecked() for b in row.buttons] == [False, False, True]
-    row.buttons[0].click()  # a row's own button
+    which.all_buttons[0].click()  # an All button's answer, another All button changes
     assert which.choices() == {"ab.jpg": "Friend"}
-    which.all_buttons[2].click()
+    row.buttons[1].click()  # a row's own button: answered by hand
+    assert which.choices() == {"ab.jpg": "Family"}
+    which.all_buttons[2].click()  # Leave all here leaves a row answered by hand alone
+    which.all_buttons[0].click()
+    assert which.choices() == {"ab.jpg": "Family"}
+    assert [b.isChecked() for b in row.buttons] == [False, True, False]
     _key(qtbot, Qt.Key.Key_Return, CTRL)
-    assert _summary(qtbot, w) == ["2 photos → Friend", "1 photos → Family",
-                                  "1 left where they are"]
+    assert _summary(qtbot, w) == ["2 photos → Friend", "2 photos → Family"]
 
 
 def test_digit_keys_choose_and_zero_leaves(qtbot, make_window, pairs):

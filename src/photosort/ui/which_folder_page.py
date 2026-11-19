@@ -3,8 +3,10 @@ folders, for the owner to say where each one goes.
 
 One row per photo: the photo, its faces of those folders boxed, and a
 button per folder ("1 Friend", "2 Family", …) and "0 Leave it here". Along
-the top, "All to Friend", "All to Family"… and "Leave all here" answer every
-row at once. A row not answered stays where it is (plan_pick leaves it, and
+the top, "All to Friend", "All to Family"… and "Leave all here" answer
+every row at once, but a row answered by hand (its own button or key) keeps
+its answer; a row an All button answered can be answered again by another.
+A row not answered stays where it is (plan_pick leaves it, and
 the summary counts it).
 
 Photos are decoded on pool threads, tagged with the page generation and the
@@ -149,6 +151,7 @@ class ConflictRow(QFrame):
         self.folders = folders
         self.answer: str | None = None
         self.is_answered = False
+        self.by_hand = False  # answered by its own button or key, not an All button
         styled(self, "card")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.photo_view = BoxedPhoto(faces)
@@ -178,12 +181,14 @@ class ConflictRow(QFrame):
         button.setCheckable(True)
         button.setObjectName("answerButton")  # the one chosen stands out (see theme)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # the row's keys do these
-        button.clicked.connect(lambda: self.set_answer(folder))
+        button.clicked.connect(lambda: self.set_answer(folder, by_hand=True))
         return button
 
-    def set_answer(self, folder: str | None) -> None:
-        """Send the photo to folder (one of the row's), or leave it here (None)."""
+    def set_answer(self, folder: str | None, by_hand: bool = False) -> None:
+        """Send the photo to folder (one of the row's), or leave it here
+        (None); by_hand: the owner answered this row itself."""
         self.answer, self.is_answered = folder, True
+        self.by_hand = self.by_hand or by_hand
         self._show()
         self.answered.emit(self)
 
@@ -206,9 +211,9 @@ class ConflictRow(QFrame):
         if event.isAutoRepeat():
             return  # a held key answers once
         if n == 0:
-            self.set_answer(None)
+            self.set_answer(None, by_hand=True)
         elif n <= min(len(self.folders), MAX_KEYS):
-            self.set_answer(self.folders[n - 1])
+            self.set_answer(self.folders[n - 1], by_hand=True)
 
 
 class WhichFolderPage(QWidget):
@@ -224,6 +229,7 @@ class WhichFolderPage(QWidget):
         self._generation = 0
         self._tasks: dict[tuple[int, int], Task] = {}  # kept alive until they report
         self._answers: dict[str, str | None] = {}  # kept over a reload of the same folder
+        self._hand: set[str] = set()  # the photos of those answered by hand
         self.rows: list[ConflictRow] = []
         self.all_buttons: list[QPushButton] = []
 
@@ -275,7 +281,7 @@ class WhichFolderPage(QWidget):
         self._generation += 1
         root = Path(root)
         if root != self._root:
-            self._answers = {}
+            self._answers, self._hand = {}, set()
         self._root = root
         self._answers = {rel: answer for rel, answer in self._answers.items()
                          if rel in conflicts and (answer is None or answer in conflicts[rel])}
@@ -284,7 +290,7 @@ class WhichFolderPage(QWidget):
         for n, (rel, folders) in enumerate(sorted(conflicts.items())):
             row = ConflictRow(rel, list(folders), list(faces.get(rel, [])), self._holder)
             if rel in self._answers:
-                row.set_answer(self._answers[rel])
+                row.set_answer(self._answers[rel], by_hand=rel in self._hand)
             row.answered.connect(self._row_answered)
             self._rows_layout.insertWidget(n, row)
             self.rows.append(row)
@@ -301,7 +307,7 @@ class WhichFolderPage(QWidget):
         """Let go of the photos and the answers (the sort ended or was left)."""
         self.load(Path(), {}, {})
         self._root = None
-        self._answers = {}
+        self._answers, self._hand = {}, set()
 
     def choices(self) -> dict[str, str | None]:
         """The rows answered: photo -> its folder, or None to leave it here."""
@@ -356,13 +362,18 @@ class WhichFolderPage(QWidget):
         self._all_holder.addWidget(self._all_bar)
 
     def _answer_all(self, folder: str | None) -> None:
-        """Every row to folder (those it is a folder of), or every row left here."""
+        """Every row to folder (those it is a folder of), or every row left
+        here; a row answered by hand keeps its answer."""
         for row in self.rows:
+            if row.by_hand:
+                continue
             if folder is None or folder in row.folders:
                 row.set_answer(folder)
 
     def _row_answered(self, row: ConflictRow) -> None:
         self._answers[row.rel] = row.answer
+        if row.by_hand:
+            self._hand.add(row.rel)
 
     def _photo_ready(self, result: tuple[int, int, QImage | str | None]) -> None:
         generation, n, value = result
