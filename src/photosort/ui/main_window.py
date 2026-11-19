@@ -63,7 +63,9 @@ from photosort.ui.events_page import EventsPage
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
 from photosort.ui.flows import bad, clip, events, face, files, groups, no_people, plain
-from photosort.ui.history_page import HistoryPage, undo_summary, undo_with_message
+from photosort.ui.history_page import (
+    HistoryPage, finish_moved_folders, undo_summary, undo_with_message,
+)
 from photosort.ui.home_page import HomePage
 from photosort.ui.model_download import ensure_models
 from photosort.ui.people_page import PeoplePage
@@ -566,6 +568,7 @@ class MainWindow(QMainWindow):
             return
         self.done_page.undo_started()
         task = Task(undo_with_message, self.root, self._run_id, cancellable=False)
+        task.first(finish_moved_folders)  # else a run under an old path is unseen
         task.first(migrate.bring_in, self.root)  # a newer old run may block it
         self.run_task(task, self._on_undone, self._on_undo_error)
 

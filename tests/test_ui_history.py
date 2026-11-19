@@ -31,6 +31,8 @@ from photosort.ui.history_page import HistoryPage, undo_summary
 from photosort.ui.main_window import MainWindow
 from photosort.undo import UndoResult
 
+_real_write_meta = journal._write_meta
+
 WHEN, MODE, FOLDER, FILES, STATUS = range(5)
 DEPEND = "Forget the older runs that depend on it too, or undo it first."
 FORGET = "Your files stay where they are, but these runs can no longer be undone."
@@ -132,6 +134,11 @@ def _select(d: HistoryPage, *rows: int) -> None:
 def _ids(d: HistoryPage) -> list[str]:
     return [d.runs_table.item(r, WHEN).data(Qt.ItemDataRole.UserRole)
             for r in range(d.runs_table.rowCount())]
+
+
+def _selected_ids(d: HistoryPage) -> list[str]:
+    ids = _ids(d)
+    return [ids[i.row()] for i in d.runs_table.selectionModel().selectedRows()]
 
 
 def _focus(qtbot, widget):
@@ -522,7 +529,7 @@ def test_multi_undo_stops_at_blocked(qtbot, make_history, tmp_path, asked, shown
     assert (root / "f/a.jpg").read_bytes() == b"a"  # first could not
     status = dict(zip(_ids(d), _column(d, STATUS)))
     assert status[middle] == "Undone" and status[first] == "Done"
-    text = (f"Undo stopped: 1 of 2 runs undone ({middle}), 1 files put back.\n"
+    text = (f"Undo stopped: 1 of 2 runs undone ({middle}), 1 file put back.\n"
             f"Stopped at {first}: Undo the newer run(s) first: {newest}")
     assert d.result_label.text() == text
     assert shown == [text]
@@ -547,7 +554,7 @@ def test_multi_undo_stops_at_failed_and_does_not_try_the_rest(qtbot, make_histor
     qtbot.waitUntil(lambda: shown != [])
     assert tried == [runs[2], runs[1]]  # the oldest is not tried
     assert shown == [
-        f"Undo stopped: 1 of 3 runs undone ({runs[2]}), 1 files put back.\n"
+        f"Undo stopped: 1 of 3 runs undone ({runs[2]}), 1 file put back.\n"
         f"Stopped at {runs[1]}: Could not undo: disk unplugged\n"
         "The older runs were not tried."]
     assert (root / "a/a.jpg").is_file()
@@ -620,6 +627,7 @@ def test_delete_with_dependents_offers_forget_all(qtbot, make_history, tmp_path,
                             "Forget all 3", "Cancel", "no")]
     assert d.runs_table.rowCount() == 4
 
+    assert set(_selected_ids(d)) == {third, second, first}  # shown as they go
     asked.answer = True
     d.forget_button.click()
     assert len(asked.calls) == 2  # Forget all is the one question
@@ -747,45 +755,129 @@ def test_relocated_out_of_this_folder_is_still_undone(qtbot, make_history, tmp_p
     assert shown == []
 
 
-def test_relocate_failing_part_way_is_finished_by_a_retry(qtbot, make_history, tmp_path,
-                                                          asked, shown, picker, monkeypatch):
+def _blocking_pair(tmp_path) -> tuple[Path, Path, str, str]:
+    """first (older) placed d/a.jpg; second (newer) moved it on, so it must
+    be undone first. Then the folder is moved: both are not found."""
     old = tmp_path / "photos"
-    for name in "ab":
-        _write(old / f"{name}.jpg", name.encode())
-    first = _run(old, [("a.jpg", "d/a.jpg")])
-    second = _run(old, [("b.jpg", "e/b.jpg")])
+    _write(old / "a.jpg", b"a")
+    _write(old / "b.jpg", b"b")  # stays at d/b.jpg: the folder is recognised by it
+    first = _run(old, [("a.jpg", "d/a.jpg"), ("b.jpg", "d/b.jpg")])
+    second = _run(old, [("d/a.jpg", "e/a.jpg")])
     new = tmp_path / "renamed"
     os.rename(old, new)
+    return old, new, first, second
 
+
+def _failing_record_writes(monkeypatch, fails):
+    """journal._write_meta fails for a run record when fails(n, path) is
+    true, n counting the run records written (the pending list is not one)."""
     real = journal._write_meta
-    writes = []
+    seen = []
 
     def flaky(path, meta):
-        writes.append(path)
-        if len(writes) == 2:
-            raise OSError("disk full")
+        if path.name != "relocating.json":
+            seen.append(path)
+            if fails(len(seen), path):
+                raise OSError("disk full")
         return real(path, meta)
 
     monkeypatch.setattr(journal, "_write_meta", flaky)
-    d = make_history(None)
-    _select(d, _ids(d).index(second))
-    picker.picks = [new]
-    d.undo_button.click()
-    assert shown == ["Couldn't point the runs to the new folder: disk full\n"
-                     "Undo again and pick the same folder to finish."]
-    assert asked.calls == []
-    roots = {r.root for r in load_all_runs()}
-    assert roots == {old, new}  # one moved over, one not
 
-    # Whichever is still not found: undo it, pick the same folder, all done.
-    missing = next(r.run_id for r in load_all_runs() if r.root == old)
-    _select(d, _ids(d).index(missing))
+
+FAILED_RELOCATE = ("Couldn't point every run to the new folder: disk full\n"
+                   "It is tried again before every undo, and nothing is undone until it works.")
+
+
+@pytest.mark.parametrize("fail_at", [1, 2])
+def test_retry_on_the_selected_run_after_a_part_way_relocate(
+        qtbot, make_history, tmp_path, asked, shown, picker, monkeypatch, fail_at):
+    old, new, first, second = _blocking_pair(tmp_path)
+    _failing_record_writes(monkeypatch, lambda n, path: n == fail_at)  # once
+    d = make_history(None)
+    _select(d, _ids(d).index(first))
     picker.picks = [new]
-    asked.answer = False  # then decline the undo itself
     d.undo_button.click()
+    assert shown == [FAILED_RELOCATE]
+    assert asked.calls == []
+
+    # The retry, on the run first selected: the pending pair was finished
+    # (the page's refresh), so the newer run is seen to block it.
     assert {r.root for r in load_all_runs()} == {new}
-    assert set(_column(d, STATUS)) == {"Done"}
-    assert len(shown) == 1 and {first, second} == set(_ids(d))
+    assert not (journal.appdata.runs_dir() / "relocating.json").exists()
+    _select(d, _ids(d).index(first))
+    assert not d.undo_button.isEnabled()
+    assert d.blocked_label.text() == f"Undo the newer run(s) first: {second}"
+    d.undo_button.click()
+    assert asked.calls == [] and len(picker.calls) == 1
+    assert (new / "e/a.jpg").read_bytes() == b"a"
+
+    _select(d, _ids(d).index(second), _ids(d).index(first))  # in order: fine
+    d.undo_button.click()
+    qtbot.waitUntil(lambda: not d.undoing())
+    assert (new / "a.jpg").read_bytes() == b"a"
+    assert shown == [FAILED_RELOCATE]
+
+
+@pytest.mark.parametrize("stuck", ["first", "second"])
+def test_a_relocate_still_failing_refuses_every_undo(qtbot, make_history, tmp_path, asked,
+                                                     shown, picker, monkeypatch, stuck):
+    old, new, first, second = _blocking_pair(tmp_path)
+    bad = {"first": first, "second": second}[stuck]
+    _failing_record_writes(monkeypatch, lambda n, path: path.stem == bad)  # always
+    d = make_history(None)
+    _select(d, _ids(d).index(first))
+    picker.picks = [new]
+    d.undo_button.click()
+    assert shown == [FAILED_RELOCATE]
+
+    # Undo the run first selected again: it may point at the new folder now
+    # (no picker then) while the newer run is still under the old path.
+    picker.picks = [new]
+    _select(d, _ids(d).index(first))
+    d.undo_button.click()
+    qtbot.waitUntil(lambda: len(shown) == 2)
+    QThreadPool.globalInstance().waitForDone()
+    assert shown[1].startswith(history_page.PENDING) or shown[1] == FAILED_RELOCATE
+    assert (new / "e/a.jpg").read_bytes() == b"a"  # nothing undone out of order
+    assert not any(r.undone for r in load_all_runs())
+    assert not (new / "a.jpg").exists()
+
+
+def test_a_pending_relocate_is_finished_after_a_restart(qtbot, make_history, tmp_path,
+                                                        asked, shown, picker, monkeypatch):
+    old, new, first, second = _blocking_pair(tmp_path)
+    _failing_record_writes(monkeypatch, lambda n, path: path.stem == second)
+    d = make_history(None)
+    _select(d, _ids(d).index(first))
+    picker.picks = [new]
+    d.undo_button.click()
+    assert shown == [FAILED_RELOCATE]
+    d.close()  # the app is closed
+    monkeypatch.setattr(journal, "_write_meta", _real_write_meta)  # the disk is fine again
+    assert (journal.appdata.runs_dir() / "relocating.json").exists()  # on disk
+
+    again = make_history(None)  # the app, opened again
+    assert {r.root for r in load_all_runs()} == {new}
+    assert not (journal.appdata.runs_dir() / "relocating.json").exists()
+    assert _column(again, STATUS) == ["Done", "Done"]
+    _select(again, _ids(again).index(first))
+    assert not again.undo_button.isEnabled()  # the newer run blocks it, as it should
+    assert again.blocked_label.text() == f"Undo the newer run(s) first: {second}"
+
+
+def test_done_undo_refuses_while_a_relocate_is_pending(qtbot, make_window, tmp_path, errors,
+                                                       monkeypatch):
+    old, new, first, second = _blocking_pair(tmp_path)
+    _failing_record_writes(monkeypatch, lambda n, path: path.stem == second)
+    with pytest.raises(OSError):
+        journal.relocate_root(old, new)
+    w = make_window()
+    w.root, w._run_id = new, first  # as if Done showed first's sort
+    w._undo()
+    qtbot.waitUntil(lambda: errors != [])
+    assert errors[0].startswith(history_page.PENDING)
+    assert (new / "e/a.jpg").read_bytes() == b"a"
+    assert not any(r.undone for r in load_all_runs())
 
 
 # ----- the keyboard, end to end ------------------------------------------------------------

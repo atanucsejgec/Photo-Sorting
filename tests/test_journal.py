@@ -143,6 +143,88 @@ def test_relocate_root_moves_prefix():
     assert relocate_root(Path("/nowhere"), Path("/y")) == 0
 
 
+def _three_under(root: str) -> list[str]:
+    ids = []
+    for sub in ("", "/b", "/c"):
+        j = RunJournal.create(Path(root + sub), "date", False, 0)
+        j.finish("done")
+        ids.append(j.run_id)
+    return ids
+
+
+def _failing_writes(monkeypatch, bad: set[str]):
+    """journal._write_meta raises for the records of the run ids in bad."""
+    real = journal._write_meta
+
+    def flaky(path, meta):
+        if path.stem in bad:
+            raise OSError("disk full")
+        return real(path, meta)
+
+    monkeypatch.setattr(journal, "_write_meta", flaky)
+
+
+def _pending():
+    path = appdata.runs_dir() / "relocating.json"
+    return json.loads(path.read_text()) if path.exists() else []
+
+
+def test_relocate_root_tries_every_record_and_keeps_the_pair_pending(monkeypatch):
+    ids = _three_under("/x/a")
+    _failing_writes(monkeypatch, {ids[1]})
+    with pytest.raises(OSError, match="disk full"):
+        relocate_root(Path("/x/a"), Path("/y"))
+    # the ones before and after the failure are re-pointed all the same
+    assert [_meta(i)["root"] for i in ids] == ["/y", "/x/a/b", "/y/c"]
+    assert _pending() == [{"old": "/x/a", "new": "/y"}]
+    assert [r.run_id for r in load_all_runs()] != []  # the marker is no run
+
+    monkeypatch.undo()
+    journal.finish_relocations()
+    assert [_meta(i)["root"] for i in ids] == ["/y", "/y/b", "/y/c"]
+    assert _pending() == []
+    journal.finish_relocations()  # nothing pending: nothing to do
+
+
+def test_finish_relocations_leaves_a_failing_pair_pending(monkeypatch):
+    ids = _three_under("/x/a")
+    other = _three_under("/p/q")
+    _failing_writes(monkeypatch, {ids[2]})
+    with pytest.raises(OSError):
+        relocate_root(Path("/x/a"), Path("/y"))
+    with pytest.raises(OSError):
+        journal.finish_relocations()
+    relocate_root(Path("/p/q"), Path("/r"))  # another pair, done at once
+    assert _pending() == [{"old": "/x/a", "new": "/y"}]
+    assert [_meta(i)["root"] for i in other] == ["/r", "/r/b", "/r/c"]
+    monkeypatch.undo()
+    journal.finish_relocations()
+    assert _pending() == []
+    assert _meta(ids[2])["root"] == "/y/c"
+
+
+def test_relocate_root_writes_nothing_when_the_marker_cannot_be(monkeypatch):
+    ids = _three_under("/x/a")
+    real = journal._write_meta
+
+    def no_marker(path, meta):
+        if path.name == "relocating.json":
+            raise OSError("read-only")
+        return real(path, meta)
+
+    monkeypatch.setattr(journal, "_write_meta", no_marker)
+    with pytest.raises(OSError, match="read-only"):
+        relocate_root(Path("/x/a"), Path("/y"))
+    assert [_meta(i)["root"] for i in ids] == ["/x/a", "/x/a/b", "/x/a/c"]
+
+
+def test_finish_relocations_refuses_an_unreadable_marker():
+    appdata.runs_dir().mkdir(parents=True, exist_ok=True)
+    (appdata.runs_dir() / "relocating.json").write_text("{broken")
+    with pytest.raises(ValueError):
+        journal.finish_relocations()
+
+
 def test_import_run_copies_and_verifies(tmp_path):
     old = tmp_path / "pics" / ".photosort" / "runs"
     lines = b'{"op": "move", "i": 0, "src": "a.jpg", "dst": "x/a.jpg"}\n{"op": "done", "i": 0}\n'

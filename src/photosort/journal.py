@@ -15,6 +15,12 @@ its root re-pointed (relocate_root). JSON is written ASCII-escaped, so Linux
 names that are not valid UTF-8 (lone surrogates in Python) round-trip
 unchanged.
 
+A folder that was moved is re-pointed (relocate_root) under a marker,
+"relocating.json": the {old, new} pair is written there first and taken off
+only once every record is re-pointed, so a pair left half done (a failed
+write, the app closed) is finished by finish_relocations, which every undo
+calls first.
+
 Runs the owner forgets are listed in "forgotten.json" (rewritten atomically)
 by run_id and started time, so an old copy is never imported again. A list
 that can't be read is never written over: forgetting moves it aside first, as
@@ -24,6 +30,7 @@ that can't be read is never written over: forgetting moves it aside first, as
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +42,11 @@ from photosort import appdata
 RUNS_DIR = Path(".photosort") / "runs"
 
 _FORGOTTEN = "forgotten.json"
+_RELOCATING = "relocating.json"  # {old, new} pairs not yet fully re-pointed
+_NOT_RUNS = (_FORGOTTEN, _RELOCATING)
+
+# One relocation (or finish_relocations) at a time, by any thread.
+_relocating = threading.Lock()
 
 _log = logging.getLogger("photosort")
 
@@ -185,7 +197,7 @@ def _metas() -> list[tuple[Path, dict]]:
         return []
     result = []
     for path in runs.glob("*.json"):
-        if path.name == _FORGOTTEN:
+        if path.name in _NOT_RUNS:
             continue
         try:
             meta = _read_meta(path)
@@ -337,9 +349,82 @@ def _forgotten_for_update(path: Path) -> list:
 
 def relocate_root(old: Path, new: Path) -> int:
     """Re-point every run whose root is old, or a folder inside it, to the
-    same place under new. Return how many runs changed."""
-    old_path, new_path = Path(_abs(old)), Path(_abs(new))
-    changed = 0
+    same place under new. Return how many runs changed.
+
+    The pair is first written to the pending list (relocating.json); a
+    failure to write that raises before any record changes. Every record is
+    then tried, even after one fails; any failure is raised at the end (an
+    OSError) and the pair stays pending, for finish_relocations. Calling it
+    again with the same pair finishes the job too.
+    """
+    pair = {"old": _abs(old), "new": _abs(new)}
+    with _relocating:
+        pending = _pending_for_update()
+        if pair not in pending:
+            _runs_dir().mkdir(parents=True, exist_ok=True)
+            _write_meta(_runs_dir() / _RELOCATING, pending + [pair])
+        changed, errors = _repoint(Path(pair["old"]), Path(pair["new"]))
+        _raise_any(errors)
+        _drop_pending(pair)
+    return changed
+
+
+def finish_relocations() -> None:
+    """Finish every relocation left pending (see relocate_root), in the
+    order they were started. A pair that still fails stays pending; the
+    failures are raised at the end (OSError). Raises ValueError, changing
+    nothing, when the pending list can't be read: no undo may go ahead then,
+    as a newer run may still be recorded under an old path."""
+    with _relocating:
+        errors: list[OSError] = []
+        for pair in _pending_for_update():
+            _, failed = _repoint(Path(pair["old"]), Path(pair["new"]))
+            if failed:
+                errors += failed
+            else:
+                _drop_pending(pair)
+        _raise_any(errors)
+
+
+def _pending_for_update() -> list[dict]:
+    """The pending pairs. ValueError if the list can't be parsed; OSError if
+    it can't be read (it is never written over then)."""
+    path = _runs_dir() / _RELOCATING
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return []
+    try:
+        pairs = json.loads(data)
+    except ValueError:
+        pairs = None
+    if not isinstance(pairs, list) or not all(
+            isinstance(p, dict) and isinstance(p.get("old"), str)
+            and isinstance(p.get("new"), str) for p in pairs):
+        raise ValueError(f"The list of moved folders still being re-pointed ({path}) "
+                         "can't be read")
+    return [{"old": p["old"], "new": p["new"]} for p in pairs]
+
+
+def _drop_pending(pair: dict) -> None:
+    """Take pair off the pending list. A failure is only logged: a pair left
+    pending is harmless, as re-pointing it again changes nothing."""
+    path = _runs_dir() / _RELOCATING
+    try:
+        pending = [p for p in _pending_for_update() if p != pair]
+        if pending:
+            _write_meta(path, pending)
+        else:
+            path.unlink(missing_ok=True)
+            fsync_dir(path.parent)
+    except (OSError, ValueError) as e:
+        _log.warning("Could not update %s: %s", path, e)
+
+
+def _repoint(old_path: Path, new_path: Path) -> tuple[int, list[OSError]]:
+    """Re-point the records under old_path, trying every one; return how
+    many changed and the errors of those that couldn't be."""
+    changed, errors = 0, []
     for path, meta in _metas():
         root = meta.get("root")
         if not isinstance(root, str):
@@ -348,9 +433,22 @@ def relocate_root(old: Path, new: Path) -> int:
         if root_path != old_path and not root_path.is_relative_to(old_path):
             continue
         meta["root"] = str(new_path / root_path.relative_to(old_path))
-        _write_meta(path, meta)
-        changed += 1
-    return changed
+        try:
+            _write_meta(path, meta)
+        except OSError as e:
+            _log.warning("Could not re-point %s: %s", path.name, e)
+            errors.append(e)
+        else:
+            changed += 1
+    return changed, errors
+
+
+def _raise_any(errors: list[OSError]) -> None:
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise OSError(f"{str(errors[0]) or type(errors[0]).__name__} "
+                      f"(and {len(errors) - 1} more)")
 
 
 def _import_key(meta: dict) -> tuple[str, str]:

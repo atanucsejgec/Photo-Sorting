@@ -6,9 +6,11 @@ chosen on Home and the folders inside it. Rows are picked with the arrows,
 Shift/Ctrl, Space (the focused row on or off) and Ctrl+A.
 
 Undo (the button, or Enter) asks first, with "Cancel" focused, then undoes
-the picked runs newest first in one worker.Task, which first brings in old
-records (migrate.bring_in) of each of their folders, so a newer old run
-that blocks one is seen. It stops at the first run that is blocked or
+the picked runs newest first in one worker.Task (undo_many). That first
+finishes any moved folder's re-pointing left pending (refusing to undo
+while it fails: finish_moved_folders, which Done's undo runs first too),
+then brings in old records (migrate.bring_in) of each of their folders, so
+a newer run that blocks one is seen. It stops at the first run that is blocked or
 fails: the newer ones stay undone, the older ones are not tried, and the
 message says which. undo_running(True/False) says when it starts and ends,
 so the window can keep the sidebar locked meanwhile (an undo can't stop
@@ -24,6 +26,7 @@ files at its recorded place is taken as the same one: every run of the old
 path, or of a folder inside it, is re-pointed there (journal.relocate_root).
 """
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,7 +37,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from photosort import migrate
+from photosort import journal, migrate
 from photosort.journal import (
     RunInfo, forget_runs, load_all_runs, load_moves, relocate_root,
 )
@@ -47,6 +50,7 @@ from photosort.undo import (
     BlockingRun, UndoBlocked, UndoResult, blocking_runs, dependents, related_roots, undo_run,
 )
 
+_log = logging.getLogger("photosort")
 _STATUS_LABELS = {"done": "Done", "cancelled": "Cancelled", "failed": "Failed"}
 _UNREADABLE = (OSError, ValueError, KeyError, TypeError)
 
@@ -55,6 +59,10 @@ WHERE = "Where is this folder now?"
 NOT_SAME = "This doesn't look like the same folder"
 DEPEND = "Forget the older runs that depend on it too, or undo it first."
 FORGET = "Your files stay where they are, but these runs can no longer be undone."
+PENDING = ("Could not undo yet: some runs of a moved folder still point to its old "
+           "place, and nothing is undone until they all point to the new one")
+RETRIED = ("It is tried again before every undo, and nothing is undone until "
+           "it works.")
 INTRO = ("Past sorts of every folder, newest first. "
          "Undo newer runs before older ones that touched the same files.")
 
@@ -111,11 +119,35 @@ class ManyUndone:
     stopped: tuple[str, str, UndoResult | None] | None = None  # (run_id, why, partial)
 
 
-def undo_many(runs: list[tuple[Path, str]], progress=None) -> ManyUndone:
-    """Undo runs, (root, run_id) newest first, one after another (on a
-    worker thread), stopping at the first one blocked or failing."""
+def finish_moved_folders(cancel=None) -> None:
+    """journal.finish_relocations, first thing in every undo (a worker
+    Task's first function): a run still recorded under a moved folder's old
+    path would not be seen to block, so while one can't be re-pointed the
+    undo refuses (RuntimeError, in the owner's words)."""
+    try:
+        journal.finish_relocations()
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"{PENDING}: {str(e) or type(e).__name__}") from e
+
+
+def undo_many(run_ids: list[str], progress=None) -> ManyUndone:
+    """Undo the runs, newest first, one after another (on a worker thread),
+    stopping at the first one blocked or failing.
+
+    Moved folders' pending re-pointing is finished first (else it raises,
+    undoing nothing), then each run's root is read from the store, and the
+    old records of each of those folders are brought in (a newer old run may
+    block one)."""
+    finish_moved_folders()
+    roots = {r.run_id: r.root for r in load_all_runs()}
+    for root in dict.fromkeys(roots[i] for i in run_ids if i in roots):
+        migrate.bring_in(root)
     outcome = ManyUndone()
-    for root, run_id in runs:
+    for run_id in run_ids:
+        root = roots.get(run_id)
+        if root is None:
+            outcome.stopped = (run_id, "Could not undo: its record is gone", None)
+            return outcome
         try:
             result = undo_with_message(root, run_id, progress=progress)
         except RuntimeError as e:
@@ -132,6 +164,10 @@ def _runs_word(n: int) -> str:
     return f"{n} run" if n == 1 else f"{n} runs"
 
 
+def _files_put_back(n: int) -> str:
+    return f"{n} file put back" if n == 1 else f"{n} files put back"
+
+
 def many_summary(outcome: ManyUndone, total: int) -> str:
     """What undoing total runs (more than one) did, in the owner's words."""
     ids = ", ".join(run_id for run_id, _ in outcome.undone)
@@ -141,12 +177,12 @@ def many_summary(outcome: ManyUndone, total: int) -> str:
         combined.renamed += r.renamed
     if outcome.stopped is None:
         lines = [f"Undo complete: {total} runs undone ({ids}), "
-                 f"{combined.restored} files put back."]
+                 f"{_files_put_back(combined.restored)}."]
         return "\n".join(lines + _after_lines(combined))
     run_id, why, _ = outcome.stopped
     k = len(outcome.undone)
     first = f"Undo stopped: {k} of {total} runs undone"
-    first += f" ({ids}), {combined.restored} files put back." if k else "."
+    first += f" ({ids}), {_files_put_back(combined.restored)}." if k else "."
     lines = [first, *_after_lines(combined), f"Stopped at {run_id}: {why}"]
     if k + 1 < total:
         lines.append("The older runs were not tried.")
@@ -353,6 +389,10 @@ class HistoryPage(QWidget):
         selected (or else selecting the first)."""
         keep = [r.run_id for r in self._selected_rows()]
         current = self._current_row()
+        try:
+            journal.finish_relocations()  # so each Status is right
+        except (OSError, ValueError) as e:
+            _log.warning("Moved folders not all re-pointed yet: %s", e)
         runs = load_all_runs()
         if self.filter_switch.isChecked() and self.root is not None:
             runs = [r for r in runs if _inside(r.root, self.root)]
@@ -463,9 +503,7 @@ class HistoryPage(QWidget):
         self._total = len(todo)
         self._update_buttons()
         self.result_label.setText("Putting files back…")
-        task = Task(undo_many, [(roots[r.run_id], r.run_id) for r in todo], cancellable=False)
-        for root in dict.fromkeys(roots[r.run_id] for r in todo):
-            task.first(migrate.bring_in, root)  # a newer old run may block one
+        task = Task(undo_many, [r.run_id for r in todo], cancellable=False)
         task.signals.result.connect(self._on_undone)
         task.signals.error.connect(self._on_undo_error)
         self._task = task  # keep it alive while it runs
@@ -492,11 +530,10 @@ class HistoryPage(QWidget):
                 return None
             try:
                 relocate_root(root, picked)
-            except OSError as e:
+            except (OSError, ValueError) as e:
                 self.refresh()
-                self.show_error(f"Couldn't point the runs to the new folder: "
-                                f"{str(e) or type(e).__name__}\n"
-                                "Undo again and pick the same folder to finish.")
+                self.show_error(f"Couldn't point every run to the new folder: "
+                                f"{str(e) or type(e).__name__}\n{RETRIED}")
                 return None
             self.refresh()
         return {r.run_id: r.root for r in load_all_runs()}
@@ -546,6 +583,7 @@ class HistoryPage(QWidget):
             return
         if extra:
             total = len(chosen) + len(extra)
+            self._select_ids(chosen + extra)  # the owner sees what goes
             if not dialogs.ask(self, "Older runs depend on it",
                                f"{DEPEND}\n\n{', '.join(extra)}", yes=f"Forget all {total}",
                                no="Cancel", default="no"):
@@ -564,6 +602,14 @@ class HistoryPage(QWidget):
             return
         self.refresh()
         self.result_label.setText(f"Forgot {_runs_word(len(ids))}.")
+
+    def _select_ids(self, run_ids: list[str]) -> None:
+        """Select the rows of run_ids (those listed) as well."""
+        model = self.runs_table.selectionModel()
+        flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+        for n, row in enumerate(self._rows):
+            if row.run_id in run_ids:
+                model.select(self.runs_table.model().index(n, 0), flags)
 
     def _dependents_of(self, rows: list[_Row]) -> list[str]:
         """The run ids, newest first, of the older not-undone runs that the
