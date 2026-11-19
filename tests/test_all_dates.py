@@ -197,6 +197,16 @@ def test_an_existing_named_day_folder_takes_that_days_files(tmp_path, no_created
     assert plan.summary == ["2 files → 1 month folders, 1 day folders"]
 
 
+def test_a_file_in_any_day_folder_of_its_date_stays(tmp_path, no_created):
+    month = tmp_path / "2024" / "03-March"
+    (month / "05-03-2024").mkdir(parents=True)
+    _touch(month / "05-03-2024 Puri" / "a.pdf", date(2024, 3, 5))
+    _touch(tmp_path / "b.pdf", date(2024, 3, 5))
+    plan = prepare_all_dates_plan(tmp_path, True, date_source="modified")
+    assert _dsts(plan) == {"b.pdf": "2024/03-March/05-03-2024/b.pdf"}
+    assert plan.unchanged == 1
+
+
 def test_created_dates_and_the_fallback_count(tmp_path, monkeypatch):
     _touch(tmp_path / "a.pdf", date(2024, 3, 5))
     _touch(tmp_path / "b.pdf", date(2024, 3, 5))

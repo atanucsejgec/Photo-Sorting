@@ -51,19 +51,37 @@ def existing_day_folder(root: Path, d: date) -> str | None:
 
     It is a folder in d's month folder (found case-insensitively) named
     "DD-MM-YYYY" or "DD-MM-YYYY <anything>", in any case; of several, the
-    first by name. None if there is none.
+    first by name (as names are matched, see naming.fold; names the same
+    that way, by code point). None if there is none.
     """
     root = Path(root)
     month = resolve_existing_dir(root, date_target(d, 0))
-    day = fold(_day_name(d))
     try:
         with os.scandir(root / month) as entries:
-            names = sorted(entry.name for entry in entries
-                           if (fold(entry.name) == day or fold(entry.name).startswith(day + " "))
-                           and entry.is_dir())
+            names = sorted((entry.name for entry in entries
+                            if _is_day_folder_name(entry.name, d) and entry.is_dir()),
+                           key=lambda name: (fold(name), name))
     except OSError:
         return None
     return f"{month}/{names[0]}" if names else None
+
+
+def _is_day_folder_name(name: str, d: date) -> bool:
+    """Whether name is d's day folder's: "DD-MM-YYYY" or "DD-MM-YYYY <anything>", any case."""
+    day = fold(_day_name(d))
+    return fold(name) == day or fold(name).startswith(day + " ")
+
+
+def in_day_folder_of(rel: str, d: date | None) -> bool:
+    """Whether the file rel (relative POSIX) sits in a day folder of its own
+    date d, named or not, in d's month folder (any case): it is in place
+    there, never moved to another day folder of d (the owner's named folder
+    is never emptied into another)."""
+    if d is None:
+        return False
+    parent, _, _ = rel.rpartition("/")
+    month, _, folder = parent.rpartition("/")
+    return fold(month) == fold(date_target(d, 0)) and _is_day_folder_name(folder, d)
 
 
 def day_folder_rule(root: Path, files: list[str],
@@ -132,7 +150,7 @@ def plan_date(root: Path, files: list[str], dates: dict[str, date | None],
         day = None if d is None else named.get(d) or day_folder_of(d)
         target = day if day is not None else date_target(d, 0)
         parent, _, name = rel.rpartition("/")
-        if parent.casefold() == target.casefold():
+        if parent.casefold() == target.casefold() or in_day_folder_of(rel, d):
             unchanged += 1
             continue
         moves.append(Move(rel, allocator.allocate(f"{target}/{name}")))

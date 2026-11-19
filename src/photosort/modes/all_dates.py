@@ -22,7 +22,7 @@ from typing import Literal
 
 from photosort.dates import find_date
 from photosort.media import kind
-from photosort.modes.date_mode import date_target, day_folder_rule
+from photosort.modes.date_mode import date_target, day_folder_rule, in_day_folder_of
 from photosort.naming import TargetAllocator, fold, real_dir, resolve_existing_dir
 from photosort.plan import Move, Plan
 from photosort.scanner import walk_all_files
@@ -193,7 +193,7 @@ def plan_all_dates(root: Path, files: list[str], dates: dict[str, date], *,
     for rel in files:
         target, in_day_folder = targets[rel]
         parent, _, name = rel.rpartition("/")
-        if fold(parent) == fold(target):
+        if fold(parent) == fold(target) or in_day_folder_of(rel, dates[rel]):
             unchanged += 1
             continue
         if is_blocked(target):

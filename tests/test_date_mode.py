@@ -331,15 +331,45 @@ def test_prepare_date_scan_cancel(tmp_path, make_jpeg):
                              cancel=mid) is None
 
 
-def test_date_mode_prepare_still_plans(tmp_path, make_jpeg):
-    # Until the busy-days page exists, Date's prepare scans and plans unnamed.
+def test_date_mode_prepare_scans(tmp_path, make_jpeg):
+    # Date's prepare scans; its flow asks about the busy days, then plans.
     for i in range(12):
         make_jpeg(tmp_path / f"p{i:02d}.jpg", "2025:02:20 10:00:00")
     spec = MODE_SPECS["date"]
-    assert spec.kind == "plan"
-    plan = spec.prepare(tmp_path, False)
-    assert isinstance(plan, Plan)
-    assert {m.dst.rsplit("/", 1)[0] for m in plan.moves} == {"2025/02-February/20-02-2025"}
+    assert spec.kind == "date"
+    found = spec.prepare(tmp_path, False)
+    assert isinstance(found, DateScan)
+    assert list(busy_days(found)) == [D20]
     cancel = threading.Event()
     cancel.set()
     assert spec.prepare(tmp_path, False, cancel=cancel) is None
+
+
+def test_a_file_in_any_day_folder_of_its_date_stays(tmp_path):
+    # Two day folders for one date: neither is emptied into the other.
+    month = tmp_path / "2025/02-February"
+    (month / "20-02-2025").mkdir(parents=True)
+    (month / "20-02-2025 Puri").mkdir()
+    dates = {"2025/02-February/20-02-2025 Puri/a.jpg": D20,
+             "2025/02-february/20-02-2025 puri/b.jpg": D20,  # any case
+             "2025/02-February/20-02-2025/c.jpg": D20,
+             "2025/02-February/20-02-2025 Puri/old.jpg": date(2025, 2, 21),
+             "Other/20-02-2025 Puri/d.jpg": D20,
+             "new.jpg": D20}
+    plan = plan_date(tmp_path, sorted(dates), dates)
+    assert _dsts(plan) == {
+        "2025/02-February/20-02-2025 Puri/old.jpg": "2025/02-February/old.jpg",
+        "Other/20-02-2025 Puri/d.jpg": "2025/02-February/20-02-2025/d.jpg",
+        "new.jpg": "2025/02-February/20-02-2025/new.jpg"}
+    assert plan.unchanged == 3
+    assert plan.summary[-1] == "3 already in place"
+
+
+@pytest.mark.usefixtures("case_sensitive_fs")
+def test_existing_day_folder_first_by_folded_name(tmp_path):
+    month = tmp_path / "2025/02-February"
+    (month / "20-02-2025 Zoo").mkdir(parents=True)
+    (month / "20-02-2025 beach").mkdir()  # "Z" < "b" by code point; b before z by name
+    assert existing_day_folder(tmp_path, D20) == "2025/02-February/20-02-2025 beach"
+    (month / "20-02-2025 Beach").mkdir()  # the same folded: by code point
+    assert existing_day_folder(tmp_path, D20) == "2025/02-February/20-02-2025 Beach"

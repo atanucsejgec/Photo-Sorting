@@ -199,7 +199,7 @@ def test_cancel_while_checking_returns_home(qtbot, make_window, photos, monkeypa
         cancel.wait(10)
         return None
 
-    monkeypatch.setattr(date_mode, "prepare_date_plan", slow_prepare)
+    monkeypatch.setattr(date_mode, "prepare_date_scan", slow_prepare)
     w = make_window()
     w.folder_edit.setText(str(photos))
     w.mode_buttons["date"].click()
@@ -328,7 +328,7 @@ def test_one_task_at_a_time(qtbot, make_window, photos, monkeypatch):
         cancel.wait(10)
         return None
 
-    monkeypatch.setattr(date_mode, "prepare_date_plan", slow_prepare)
+    monkeypatch.setattr(date_mode, "prepare_date_scan", slow_prepare)
     w = make_window()
     w.folder_edit.setText(str(photos))
     w.mode_buttons["date"].click()
@@ -360,7 +360,7 @@ def test_stale_plan_is_never_executed(qtbot, make_window, photos, make_jpeg, err
     def broken(root, include_subfolders, progress=None, cancel=None):
         raise RuntimeError("unreadable")
 
-    monkeypatch.setattr(date_mode, "prepare_date_plan", broken)
+    monkeypatch.setattr(date_mode, "prepare_date_scan", broken)
     w.mode_buttons["date"].click()
     qtbot.waitUntil(lambda: errors != [])
     assert errors == ["Could not check the files: unreadable"]
@@ -760,15 +760,16 @@ def test_cancel_after_the_finder_loop_returns_home(qtbot, make_window, photos,
     assert w.current_page() is w.home
 
 
-def test_cancel_after_planning_returns_home(qtbot, make_window, photos, make_jpeg,
+def test_cancel_after_scanning_returns_home(qtbot, make_window, photos, make_jpeg,
                                             monkeypatch):
+    from datetime import date
+
     from photosort.journal import load_runs
-    from photosort.plan import Move, Plan
 
     make_jpeg(photos / "a.jpg", EXIF)
     started = threading.Event()
-    plan = Plan("date", [Move("a.jpg", "2025/a.jpg")], ["1 files → somewhere"])
-    monkeypatch.setattr(date_mode, "prepare_date_plan", _stubborn(plan, started))
+    scan = date_mode.DateScan(photos, ["a.jpg"], {"a.jpg": date(2025, 2, 20)})
+    monkeypatch.setattr(date_mode, "prepare_date_scan", _stubborn(scan, started))
     w = make_window()
     w.folder_edit.setText(str(photos))
     w.mode_buttons["date"].click()

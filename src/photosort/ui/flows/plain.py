@@ -1,4 +1,4 @@
-"""Modes whose moves are planned straight away: Date, Type, Camera, Location."""
+"""Modes whose moves are planned straight away: Type, Camera, Location."""
 
 from functools import partial
 from pathlib import Path

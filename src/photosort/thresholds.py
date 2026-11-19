@@ -72,6 +72,10 @@ EVENT_MIN_FILES = 10  # a run of fewer files is no event
 EVENT_MIN_FILES_RANGE = (2, 1000)
 EVENT_THUMBS = 4  # thumbnails shown for each event ...
 EVENT_THUMB_PX = 120  # ... at most this long on their longest side
+BUSY_DAY_COLLAGE = 12  # thumbnails in a busy day's collage ...
+BUSY_DAY_COLLAGE_ROWS = 2  # ... in this many rows ...
+BUSY_DAY_THUMB_PX = 64  # ... each at most this long on its longest side
+BUSY_DAY_ALL_THUMB_PX = 120  # a busy day's Show all thumbnails, longest side
 
 # Date: a day with at least this many photos (videos don't count) is a busy
 # day, which the owner may name: its folder is then "DD-MM-YYYY <name>".

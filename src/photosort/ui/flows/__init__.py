@@ -1,6 +1,7 @@
 """The ways a sort runs, one module per kind of mode (see photosort.modes.MODE_SPECS):
 
-- plain: the moves are planned straight away (Date, Type, Camera, Location);
+- plain: the moves are planned straight away (Type, Camera, Location);
+- date: Date, its busy days (if any) named first, then planned;
 - files: every file, not only media, planned straight away after a warning
   when subfolders are included, and for Date (all files) the date to sort
   by (Extension, Date (all files));
