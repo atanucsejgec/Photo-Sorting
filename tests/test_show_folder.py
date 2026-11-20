@@ -29,6 +29,7 @@ def test_the_command_asks_the_file_manager_to_show_the_item(tmp_path):
     assert set(uri[len("file://"):]) <= set(
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~/%")
     assert command[-1] == ""
+    assert command[command.index("--timeout") + 1] == "5"
 
 
 def test_a_name_that_is_not_utf8_keeps_its_bytes(tmp_path):
@@ -58,3 +59,17 @@ def test_nothing_else_opens_when_the_call_works(qtbot, tmp_path, monkeypatch, op
     show_folder.show_in_folder(tmp_path / "a.jpg")
     qtbot.waitUntil(lambda: not show_folder._running, timeout=5000)
     assert opened == []
+
+
+def test_the_folder_that_opens_keeps_a_name_that_is_not_utf8(qtbot, tmp_path, monkeypatch):
+    folder = Path(os.fsdecode(bytes(tmp_path) + b"/caf\xe9"))
+    try:
+        folder.mkdir()
+    except OSError:
+        pytest.skip("this filesystem refuses names that are not UTF-8")
+    urls = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: urls.append(url) or True)
+    monkeypatch.setattr(show_folder, "show_item_command", lambda path: ["false"])
+    show_folder.show_in_folder(folder / "a.jpg")
+    qtbot.waitUntil(lambda: len(urls) == 1, timeout=5000)
+    assert bytes(urls[0].toEncoded()).endswith(b"/caf%E9")

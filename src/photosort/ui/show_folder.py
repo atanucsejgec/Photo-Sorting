@@ -21,22 +21,29 @@ _log = logging.getLogger("photosort")
 _running: set[QProcess] = set()  # kept alive until each one ends
 
 
+TIMEOUT_S = 5  # a file manager that hasn't answered by then: the folder opens instead
+
+
+def file_uri(path: Path) -> str:
+    """path's file:// URI, %-encoded from its bytes (a name not UTF-8 kept)."""
+    return "file://" + urllib.parse.quote(os.fsencode(os.path.abspath(path)), safe="/")
+
+
 def show_item_command(path: Path) -> list[str]:
     """The gdbus command asking the file manager to show path, selected.
 
     The URI is fully %-encoded from the path's bytes, so a quote, bracket or
     a name that is not UTF-8 can neither break the GVariant text nor be lost.
     """
-    uri = "file://" + urllib.parse.quote(os.fsencode(os.path.abspath(path)), safe="/")
-    return ["gdbus", "call", "--session",
+    return ["gdbus", "call", "--session", "--timeout", str(TIMEOUT_S),
             "--dest", "org.freedesktop.FileManager1",
             "--object-path", "/org/freedesktop/FileManager1",
             "--method", "org.freedesktop.FileManager1.ShowItems",
-            f"['{uri}']", ""]
+            f"['{file_uri(path)}']", ""]
 
 
 def _open_folder(path: Path) -> None:
-    QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent)))
+    QDesktopServices.openUrl(QUrl.fromEncoded(file_uri(Path(path).parent).encode()))
 
 
 def show_in_folder(path: Path) -> None:
