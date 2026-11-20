@@ -780,3 +780,100 @@ def test_undo_of_an_outside_only_run_needs_its_root(tmp_path):
     assert not root.exists()  # nothing made where the drive was
     assert (target / "a.jpg").read_bytes() == b"a"
 
+
+
+# ----- the mount point each folder was on --------------------------------------
+
+def _fake_mounts(monkeypatch, mounts: set) -> None:
+    """os.path.ismount is true for "/" and the folders in mounts (changed
+    by the test: a drive plugged in or not)."""
+    monkeypatch.setattr(os.path, "ismount",
+                        lambda p: os.path.abspath(p) in {"/", *map(str, mounts)})
+
+
+def test_outside_only_run_refused_when_its_root_drive_is_gone(tmp_path, monkeypatch):
+    from photosort.journal import mount_of
+    from photosort.ui.history_page import folder_found
+
+    media = tmp_path / "media" / "x"
+    root, target = media / "photos", tmp_path / "Archive"
+    _write(root / "a.jpg", b"a")
+    target.mkdir()
+    mounts = {media}
+    _fake_mounts(monkeypatch, mounts)
+    run_id = _preview_to(root, "a.jpg", target)
+    (run,) = load_runs(root)
+    assert dict(run.mounts) == {root: media, target: Path(mount_of(target))}
+    assert undo.root_present(run) and undo.unmounted(run) is None
+    mounts.clear()  # unplugged: the folders left are on "/" now
+    assert undo.unmounted(run) == root
+    assert not undo.root_present(run)
+    assert not folder_found(root, load_all_runs())
+    with pytest.raises(undo.FolderMissing) as caught:
+        undo_run(root, run_id)
+    assert str(caught.value) == f"{root} isn't there — is the drive plugged in?"
+    assert (target / "a.jpg").read_bytes() == b"a"  # nothing moved
+    assert list(root.iterdir()) == []
+    assert not _undone(root, run_id)
+    mounts.add(media)  # plugged back in
+    undo_run(root, run_id)
+    assert (root / "a.jpg").read_bytes() == b"a"
+
+
+def test_outside_folder_refused_when_its_drive_is_gone(tmp_path, monkeypatch):
+    usb = tmp_path / "media" / "usb"
+    root, target = tmp_path / "photos", usb / "Keep"
+    _write(root / "a.jpg", b"a")
+    _write(root / "b.jpg", b"b")
+    target.mkdir(parents=True)
+    mounts = {usb}
+    _fake_mounts(monkeypatch, mounts)
+    from photosort.modes.preview import PreviewSession
+
+    session = PreviewSession(root, False)
+    session.move("a.jpg", target)
+    session.move("b.jpg", root / "Kept")
+    run_id = session.finish()
+    (run,) = load_runs(root)
+    assert dict(run.mounts)[target] == usb
+    mounts.clear()  # the folder is still there, but not on its drive
+    with pytest.raises(undo.FolderMissing) as caught:
+        undo_run(root, run_id)
+    assert str(caught.value) == f"{target} isn't there — is the drive plugged in?"
+    assert (root / "Kept" / "b.jpg").read_bytes() == b"b"  # nothing moved
+    assert (target / "a.jpg").read_bytes() == b"a"
+    assert not _undone(root, run_id)
+    mounts.add(usb)
+    undo_run(root, run_id)
+    assert sorted(p.name for p in root.iterdir()) == ["a.jpg", "b.jpg"]
+
+
+def test_mounts_of_old_runs_are_never_checked(tmp_path, monkeypatch):
+    from fstree import old_layout_run
+    from photosort import migrate
+
+    media = tmp_path / "media" / "x"
+    root = media / "pics"
+    _write(root / "a.jpg", b"a")
+    mounts = {media}
+    _fake_mounts(monkeypatch, mounts)
+    old_layout_run(root, [("a.jpg", "2020/a.jpg")])
+    migrate.bring_in(root, strict=True)
+    (old,) = load_runs(root)
+    assert old.mounts is None
+    mounts.clear()
+    assert undo.unmounted(old) is None
+    assert undo.root_present(old)
+    assert undo_run(root, old.run_id).restored == 1
+
+
+def test_undo_with_the_mount_unchanged_works(tmp_path, monkeypatch):
+    media = tmp_path / "media" / "x"
+    root = media / "pics"
+    _write(root / "a.jpg", b"a")
+    _fake_mounts(monkeypatch, {media})
+    run_id = _run(root, [("a.jpg", "d/a.jpg")])
+    (run,) = load_runs(root)
+    assert run.mounts == ((root, media),)
+    assert undo_run(root, run_id).restored == 1
+    assert (root / "a.jpg").read_bytes() == b"a"

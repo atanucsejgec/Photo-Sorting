@@ -522,3 +522,31 @@ def test_old_meta_without_also_roots_reads_as_none(tmp_path):
     assert "also_roots" not in meta
     (run,) = load_runs(tmp_path)
     assert run.also_roots == ()
+
+
+def test_mounts_recorded_for_every_new_run(tmp_path, monkeypatch):
+    media = tmp_path / "media"
+    monkeypatch.setattr(os.path, "ismount",
+                        lambda p: os.path.abspath(p) in {"/", str(media)})
+    assert journal.mount_of(media / "a" / "b") == str(media)
+    assert journal.mount_of(media) == str(media)
+    assert journal.mount_of(tmp_path) == "/"
+    j = RunJournal.create(media / "pics", "date", False, 0)
+    assert _meta(j.run_id)["mounts"] == {str(media / "pics"): str(media)}
+    j.add_also_root(tmp_path / "other")
+    assert _meta(j.run_id)["mounts"] == {str(media / "pics"): str(media),
+                                         str(tmp_path / "other"): "/"}
+    j.finish("done")
+    (run,) = load_all_runs()
+    assert run.mounts == ((media / "pics", media), (tmp_path / "other", Path("/")))
+
+
+def test_relocation_records_the_new_mount(tmp_path, monkeypatch):
+    media = tmp_path / "media"
+    monkeypatch.setattr(os.path, "ismount",
+                        lambda p: os.path.abspath(p) in {"/", str(media)})
+    j = RunJournal.create(tmp_path / "pics", "date", False, 0)
+    j.finish("done")
+    (media / "pics").mkdir(parents=True)
+    relocate_root(tmp_path / "pics", media / "pics")
+    assert _meta(j.run_id)["mounts"] == {str(media / "pics"): str(media)}

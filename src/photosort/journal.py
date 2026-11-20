@@ -81,6 +81,15 @@ def norm_root(path) -> Path:
         return Path(os.path.abspath(path))
 
 
+def mount_of(folder) -> str:
+    """The mount point folder is on: folder (norm_root) or the nearest
+    folder around it for which os.path.ismount is true."""
+    path = norm_root(folder)
+    while not os.path.ismount(path) and path != path.parent:
+        path = path.parent
+    return str(path)
+
+
 def abs_path(root: Path, p: str) -> Path:
     """Where a recorded path p (a move's src or dst, a made or removed
     folder) is: p itself when it is absolute (outside root), else root / p."""
@@ -170,6 +179,7 @@ class RunJournal:
             "moved": 0,
             "undone": False,
         }
+        meta["mounts"] = {meta["root"]: mount_of(meta["root"])}
         journal = cls(root, run_id, meta, log)
         _write_meta(journal._meta_path, meta)
         return journal
@@ -202,6 +212,7 @@ class RunJournal:
         also = self._meta.setdefault("also_roots", [])
         if folder not in also:
             also.append(folder)
+            self._meta.setdefault("mounts", {})[folder] = mount_of(folder)
             _write_meta(self._meta_path, self._meta)
 
     def record_dir_created(self, rel: str) -> None:
@@ -228,6 +239,9 @@ class RunInfo:
     root: Path
     # The folders outside root that the run moved files into (Preview).
     also_roots: tuple[Path, ...] = ()
+    # (folder, the mount point it was on when recorded) for root and each
+    # also_root; None for a run recorded before mounts were kept.
+    mounts: tuple[tuple[Path, Path], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -269,6 +283,7 @@ def _run_info(meta: dict) -> RunInfo | None:
             undone=bool(meta["undone"]),
             root=Path(str(meta["root"])),
             also_roots=_also_roots(meta),
+            mounts=_mounts(meta),
         )
     except (ValueError, KeyError, TypeError):
         return None
@@ -282,6 +297,18 @@ def _also_roots(meta: dict) -> tuple[Path, ...]:
             isinstance(a, str) and Path(a).is_absolute() for a in also):
         raise TypeError("also_roots is not a list of absolute paths")
     return tuple(Path(a) for a in also)
+
+
+def _mounts(meta: dict) -> tuple[tuple[Path, Path], ...] | None:
+    """The run's "mounts" (None when missing, as on every older run).
+    TypeError when it is there but not a {folder: mount point} of strings."""
+    if "mounts" not in meta:
+        return None
+    mounts = meta["mounts"]
+    if not isinstance(mounts, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in mounts.items()):
+        raise TypeError("mounts is not a map of folders to mount points")
+    return tuple((Path(k), Path(v)) for k, v in mounts.items())
 
 
 def load_all_runs() -> list[RunInfo]:
@@ -535,6 +562,10 @@ def _repoint(old_path: Path, new_path: Path,
         if root_path != old_path and not root_path.is_relative_to(old_path):
             continue
         meta["root"] = str(new_path / root_path.relative_to(old_path))
+        mounts = meta.get("mounts")
+        if isinstance(mounts, dict):  # the root's mount is where it is now
+            mounts.pop(root, None)
+            mounts[meta["root"]] = mount_of(meta["root"])
         try:
             _write_meta(path, meta)
         except OSError as e:

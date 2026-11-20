@@ -26,7 +26,7 @@ from pathlib import Path
 from photosort.executor import PHOTOSORT_DIR, move_file
 from photosort.journal import (
     JournalMove, RunInfo, abs_path, load_all_runs, load_dirs, load_moves, load_runs,
-    mark_undone,
+    mark_undone, mount_of,
 )
 from photosort.naming import TargetAllocator, resolve_existing_dir
 
@@ -121,13 +121,25 @@ def _holds_its_files(root: Path, moves: list[JournalMove]) -> bool:
     return not left or files_in(root, left)
 
 
+def unmounted(run: RunInfo) -> Path | None:
+    """A folder of the run (its root or an also_root) that is not on the
+    mount point it was recorded on (a drive unplugged, its empty mount point
+    or nothing left), or None. A run recorded before mounts were kept is
+    never checked."""
+    for folder, mount in run.mounts or ():
+        if Path(mount_of(folder)) != mount:
+            return folder
+    return None
+
+
 def root_present(run: RunInfo) -> bool:
     """Whether the run's folder is there: a folder, holding at least one
     file of its done moves (_holds_its_files). An empty mount point, left
-    behind by an unplugged drive, is not. A run that moved nothing (or left
-    nothing within its folder) needs the folder only; one whose record
+    behind by an unplugged drive, is not, nor is any folder of the run off
+    the mount point it was recorded on (unmounted). A run that moved
+    nothing (or left nothing within its folder) needs the folder only; one whose record
     can't be read is taken as there (its undo says what is wrong)."""
-    if not run.root.is_dir():
+    if not run.root.is_dir() or unmounted(run) is not None:
         return False
     try:
         moves = load_moves(run.root, run.run_id)
@@ -358,7 +370,8 @@ def undo_run(
     UndoBlocked if a newer run must be undone first, and FolderMissing
     (nothing done, the run still undoable) if the run had done moves and
     not one of its files is in root, moved or back; for a run that moved
-    files outside root, also (checked first, before anything moves) if one
+    files outside root, also (checked first, before anything moves, as is
+    every folder of the run being on its recorded mount point) if one
     of those folders is not there (outside_folders, _outside_there), or root
     is not, or none of its files within root are. progress(processed,
     total) is called after each recorded move.
@@ -373,9 +386,12 @@ def undo_run(
     this = runs[k]
     if this.undone:
         raise ValueError(f"Run {run_id} is already undone")
+    # All or nothing: an unplugged drive must not leave a half undone run.
+    gone = unmounted(this)
+    if gone is not None:
+        raise FolderMissing(gone, outside=True)
     moves = load_moves(root, run_id)
     outside = outside_folders(this, moves)
-    # All or nothing: an unplugged drive must not leave a half undone run.
     for folder in outside:
         if not folder.is_dir():
             raise FolderMissing(folder, outside=True)
