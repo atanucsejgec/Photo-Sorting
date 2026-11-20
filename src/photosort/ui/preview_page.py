@@ -24,6 +24,13 @@ Moves (and put-backs, and the finish) run one at a time, in order, on pool
 threads: the next file shows at once. The viewer lets go of a file before
 its move is queued. A move that fails puts the file back in the list where
 it was, and says "Couldn't move <name>: <error>"; the session goes on.
+What the queue comes back with is added under the message line's text, so
+a failure is not wiped by a later note ("Nothing to put back").
+
+M remembers the file shown; a slot or Other folder… moves that file only
+if it is still the one shown (a put-back may land meanwhile, while the
+picker is open, say), else "The file changed — press M again". Any change
+of the file shown closes the overlay, and the focus goes to the file.
 
 The Preview ends when the owner leaves (Esc, then Leave), moves on past the
 last file, or closes the window (shutdown(), which does the queued moves
@@ -66,6 +73,7 @@ LAST_FILE = "That was the last file"
 LIST_FULL = "The list is full; edit it with L"
 EDITOR_FULL = "The list is full; remove a folder first"
 NOTHING_TO_PUT_BACK = "Nothing to put back"
+FILE_CHANGED = "The file changed — press M again"
 FINISHING = "Finishing…"
 PICK_TITLE = "Move to which folder?"
 ADD_TITLE = "Add a folder"
@@ -253,6 +261,7 @@ class PreviewPage(QWidget):
         self._boxes: dict[str, _ViewerBox] = {}
         self._box: _ViewerBox | None = None  # the box shown
         self._shown: Path | None = None  # the file shown
+        self._overlay_rel: str | None = None  # the file shown when M opened the overlay
         self._shows = 0  # bumped at each file shown: a late stat for another is dropped
         self._facts: tuple[int | None, float | None] = (None, None)
         self._stat_tasks: set[Task] = set()
@@ -329,7 +338,8 @@ class PreviewPage(QWidget):
         # that a held → never runs on past the last file.
         self._keys = [
             shortcuts.bind(self, "N", "N", "not needed",
-                           lambda: self._move_to(self.root / NOT_NEEDED), repeat=False),
+                           lambda: self._move_to(self.root / NOT_NEEDED, self.current()),
+                           repeat=False),
             shortcuts.bind(self, "M", "M", "move to…", self._open_overlay, repeat=False),
             shortcuts.bind(self, "L", "L", "edit folders", self._edit_slots, repeat=False),
             shortcuts.bind(self, "Ctrl+Z", "Ctrl+Z", "put back", self._put_back,
@@ -450,7 +460,12 @@ class PreviewPage(QWidget):
         self._show_in(self._box_for(file_kind(path)), path)
 
     def _show_in(self, box: _ViewerBox, path: Path, message: str = "") -> None:
-        """Show path in box; the file shown before is let go first."""
+        """Show path in box; the file shown before is let go first. The
+        overlay, if open, closes: it was for the file shown before (or, for
+        a viewer that failed, its box is gone), and the focus goes to box."""
+        if self.overlay.isVisible():
+            self.overlay.hide()
+            self._sync_keys()
         if self._box is not None and self._box is not box:
             self._box.viewer.release()
         if self._shown != path:
@@ -541,9 +556,16 @@ class PreviewPage(QWidget):
             self._elide(label)
 
     def _say(self, text: str) -> None:
-        """A problem or a note, under the top lines; hidden while there is none."""
+        """A problem or a note, under the top lines, in place of what was
+        there (the owner has acted since); hidden while there is none."""
         self.message_label.setText(text)
         self.message_label.setVisible(bool(text))
+
+    def _tell(self, text: str) -> None:
+        """A problem or a note that a move, a put-back or the queue came
+        back with: added under what is there, so a failure stays in view."""
+        old = self.message_label.text()
+        self._say(f"{old}\n{text}" if old and text not in old.split("\n") else text)
 
     def message(self) -> str:
         return self.message_label.text()
@@ -615,6 +637,7 @@ class PreviewPage(QWidget):
         if not self._active() or self.current() is None:
             return
         self._say("")
+        self._overlay_rel = self.current()
         self.overlay.show()
         self._place_overlay()
         self.overlay.raise_()
@@ -639,32 +662,46 @@ class PreviewPage(QWidget):
             self._say(problem)
             return
         self._close_overlay()
-        self._move_to(Path(folder))
+        self._move_to(Path(folder), self._overlay_rel)
 
     def _other_from_overlay(self) -> None:
+        rel = self._overlay_rel
         self._close_overlay()
-        self._other_folder()
+        self._other_folder(rel)
 
-    def _other_folder(self) -> None:
-        if not self._active() or self.current() is None:
+    def _other_folder(self, rel: str | None) -> None:
+        """Pick a folder inside root and move rel (the file shown when M
+        was pressed) there, adding the folder to the slots."""
+        if not self._still_shown(rel):
             return
         picked = choose_folder(self, PICK_TITLE, self.root)
-        if picked is None or not self._active() or self.current() is None:
+        if picked is None or not self._active():
             return
         if not inside_root(self.root, picked):
             self._say(outside_message(self.root))
             return
+        if not self._still_shown(rel):  # a put-back landed while the picker was open
+            return
         note = self._add_slot(picked)
-        if self._move_to(picked) and note:
+        if self._move_to(picked, rel) and note:
             self._say(note)
+
+    def _still_shown(self, rel: str | None) -> bool:
+        """Whether rel is the file shown; if not, say so (nothing is moved)."""
+        if not self._active() or rel is None:
+            return False
+        if rel != self.current():
+            self._say(FILE_CHANGED)
+            return False
+        return True
 
     # ----- moving --------------------------------------------------------------------------------
 
-    def _move_to(self, target: Path) -> bool:
-        """Queue the move of the file shown into target, and show the next
-        one; False if there is nothing to move, or it is in target already."""
-        rel = self.current()
-        if not self._active() or rel is None:
+    def _move_to(self, target: Path, rel: str | None) -> bool:
+        """Queue the move of rel, the file shown, into target, and show the
+        next one. False, with nothing moved, if rel is not the file shown
+        any more, or it is in target already."""
+        if not self._still_shown(rel):
             return False
         name = rel.rpartition("/")[2]
         if _same((self.root / rel).parent, target):
@@ -697,7 +734,7 @@ class PreviewPage(QWidget):
             self._problems.append(text)
             return
         self._reinsert(rel)
-        self._say(text)
+        self._tell(text)
 
     def _reinsert(self, rel: str, order: float | None = None) -> int:
         """Put rel back in the list where it was; its place."""
@@ -713,13 +750,12 @@ class PreviewPage(QWidget):
 
     def _put_back(self) -> None:
         if not self._active():
-            return
-        self._say("")
+            return  # what is said stays: a failure is not wiped by Ctrl+Z
         self._enqueue(self.session.put_back, self._put_back_ok, self._put_back_failed)
 
     def _put_back_ok(self, back: str | None) -> None:
         if back is None:
-            self._say(NOTHING_TO_PUT_BACK)
+            self._tell(NOTHING_TO_PUT_BACK)
             return
         rel = self._moved.pop() if self._moved else back
         if self._ending:
@@ -737,7 +773,7 @@ class PreviewPage(QWidget):
         if self._ending:
             self._problems.append(text)
         else:
-            self._say(text)
+            self._tell(text)
 
     def _arrow(self, event: QKeyEvent) -> bool:
         """← or → (no modifier): the file before or after. Past the last

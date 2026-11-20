@@ -439,6 +439,109 @@ def test_shift_arrows_seek_and_s_cycles_speed_on_audio(qtbot, make_window, root,
     assert errors == []
 
 
+# ----- the shown file changing under the overlay or the picker ----------------------------
+
+def _slow_moves(monkeypatch) -> threading.Event:
+    """Moves wait for the gate (set it to let them through)."""
+    gate = threading.Event()
+    real = preview_mode.move_file
+
+    def slow(src, dst):
+        gate.wait(5)
+        real(src, dst)
+
+    monkeypatch.setattr(preview_mode, "move_file", slow)
+    return gate
+
+
+def test_a_put_back_landing_while_the_overlay_is_open_closes_it(qtbot, make_window, three,
+                                                               monkeypatch, errors):
+    w = make_window(_settings(three / "Trips"))
+    page = _open(qtbot, w, three)
+    _key(qtbot, Qt.Key.Key_N)  # a
+    _idle(qtbot, page)
+    gate = _slow_moves(monkeypatch)
+    _key(qtbot, Qt.Key.Key_Z, CTRL)  # waits at the gate
+    _key(qtbot, Qt.Key.Key_M)  # on b
+    assert page.overlay.isVisible()
+    gate.set()
+    _showing(qtbot, page, "1 of 3 · a.jpg")  # a is back, and shown
+    assert not page.overlay.isVisible()
+    assert _focused() is page._box
+    assert w.strip.text() == f"{IMAGE_KEYS} · {PAGE_KEYS}"
+    # A late slot pick for b (a click already queued) moves nothing.
+    page.overlay.picked.emit(0)
+    assert page.message() == "The file changed — press M again"
+    _key(qtbot, Qt.Key.Key_1)  # a digit with the overlay closed: nothing
+    _key(qtbot, Qt.Key.Key_Right)  # the keys work
+    _showing(qtbot, page, "2 of 3 · b.jpg")
+    _key(qtbot, Qt.Key.Key_M)
+    _key(qtbot, Qt.Key.Key_1)
+    _idle(qtbot, page)
+    assert (three / "Trips" / "b.jpg").is_file()
+    assert (three / "a.jpg").is_file()
+    assert errors == []
+
+
+def test_a_viewer_failing_while_the_overlay_is_open_closes_it(qtbot, make_window, root,
+                                                             errors):
+    (root / "broken.jpg").write_bytes(b"not a jpeg")
+    w = make_window()
+    page = _open(qtbot, w, root)
+    _key(qtbot, Qt.Key.Key_M)  # before the decode fails, a moment later
+    qtbot.waitUntil(lambda: isinstance(page.viewer(), pv.InfoCard), timeout=WAIT_MS)
+    assert not page.overlay.isVisible()
+    assert _focused() is page._box
+    _key(qtbot, Qt.Key.Key_M)  # the keys work
+    assert page.overlay.isVisible()
+    _key(qtbot, Qt.Key.Key_Escape)
+    assert errors == []
+
+
+def test_a_put_back_landing_while_the_picker_is_open_moves_nothing(qtbot, make_window, three,
+                                                                  monkeypatch, errors):
+    (three / "Trips").mkdir()
+    w = make_window()
+    page = _open(qtbot, w, three)
+    _key(qtbot, Qt.Key.Key_N)  # a
+    _idle(qtbot, page)
+    gate = _slow_moves(monkeypatch)
+
+    def picker(parent, title, start):
+        assert page.current() == "b.jpg"
+        gate.set()
+        qtbot.waitUntil(lambda: page.current() == "a.jpg", timeout=WAIT_MS)  # put back
+        return three / "Trips"
+
+    monkeypatch.setattr(pp, "choose_folder", picker)
+    _key(qtbot, Qt.Key.Key_Z, CTRL)
+    _key(qtbot, Qt.Key.Key_M)  # on b
+    _key(qtbot, Qt.Key.Key_Return)
+    _idle(qtbot, page)
+    assert page.message() == "The file changed — press M again"
+    assert list((three / "Trips").iterdir()) == []
+    assert (three / "a.jpg").is_file() and (three / "b.jpg").is_file()
+    assert page.slots() == [None] * 10  # nothing moved: nothing listed
+    assert page.current() == "a.jpg"
+    assert errors == []
+
+
+def test_a_failure_stays_visible_after_a_later_note(qtbot, make_window, three, monkeypatch,
+                                                    errors):
+    def move_file(src, dst):
+        raise PermissionError(13, "Permission denied", str(dst))
+
+    monkeypatch.setattr(preview_mode, "move_file", move_file)
+    w = make_window()
+    page = _open(qtbot, w, three)
+    _key(qtbot, Qt.Key.Key_N)
+    _key(qtbot, Qt.Key.Key_Z, CTRL)  # nothing moved: nothing to put back
+    qtbot.waitUntil(lambda: "Nothing to put back" in page.message(), timeout=WAIT_MS)
+    assert page.message().startswith("Couldn't move a.jpg: ")
+    assert "Permission denied" in page.message()
+    assert errors == []
+
+
 # ----- moving a file that is shown ---------------------------------------------------------
 
 def test_playing_file_released_before_move(qtbot, make_window, root, monkeypatch, errors):
@@ -598,7 +701,7 @@ def test_last_file_ends_session(qtbot, make_window, root, errors):
     _key(qtbot, Qt.Key.Key_N)
     qtbot.waitUntil(lambda: w.current_page() is w.done_page, timeout=WAIT_MS)
     assert w.done_label.text() == ("That was the last file.\n"
-                                   "Moved 1 files: 1 to Not needed, 0 to folders")
+                                   "Moved 1 file: 1 to Not needed, 0 to folders")
     assert (root / NOT_NEEDED / "a.jpg").is_file()
     assert [r.status for r in load_runs(root)] == ["done"]
     assert errors == []

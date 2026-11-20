@@ -8,7 +8,7 @@ which brings the folder's old records in first (not strictly, as before a
 sort). With none to show, the summary says "No files to preview".
 
 When the Preview ends, the Done page says "Moved N files: X to Not needed,
-Y to folders", counting the moves still standing (a file put back is not
+Y to folders" ("1 file" for one), counting the moves still standing (a file put back is not
 moved), with Undo for the run. If none is standing, it goes Home: the run,
 if one was made, is in History and undoing it changes nothing.
 """
@@ -68,8 +68,9 @@ def done_lines(end: PreviewEnd) -> list[str]:
     """What the Done page says of a Preview that moved files."""
     to_not_needed, to_folders = end.counts
     lines = [f"{LAST_FILE}."] if end.last else []
-    lines.append(f"Moved {to_not_needed + to_folders} files: {to_not_needed} to Not needed, "
-                 f"{to_folders} to folders")
+    moved = to_not_needed + to_folders
+    lines.append(f"Moved {moved} file{'' if moved == 1 else 's'}: {to_not_needed} to "
+                 f"Not needed, {to_folders} to folders")
     return lines + end.problems
 
 
