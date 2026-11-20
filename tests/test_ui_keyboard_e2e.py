@@ -62,6 +62,7 @@ from photosort.ui.flows import events as events_flow
 from photosort.ui.flows import face as face_flow
 from photosort.ui.flows import groups as groups_flow
 from photosort.ui.flows import pick_faces as pick_flow
+from photosort.ui.flows import preview as preview_flow
 from photosort.ui.fullscreen_viewer import FullscreenViewer
 from photosort.ui.home_page import ModeTile
 from photosort.ui.main_window import MainWindow
@@ -924,6 +925,9 @@ def _each_page(qtbot, w: MainWindow, root: Path):
     w.flow_state = _clip_sort(root)
     clip_flow._ask(w, {})
     yield w.category_review_page
+    w.mode = "preview"
+    preview_flow._on_listed(w, root, False, [None] * 10, ["day.jpg"])
+    yield w.preview_page
     w.show_summary(["1 files → Duplicates"], can_go=True)
     yield w.summary_page
     w._show_done(["Moved 1 files."], can_undo=True)
@@ -941,7 +945,9 @@ def test_every_pages_strip_is_its_live_keys(qtbot, make_window, photos):
         screen = w.sidebar if w.sidebar.isAncestorOf(focus) else page
         text = w.strip.text()
         assert text and text == _records(focus, screen), type(page).__name__
-        assert "Tab" in text or page is w.progress_page, type(page).__name__
+        # Not on Progress, nor on Preview: the file shown is its one place for
+        # the focus, so Tab has nowhere to go.
+        assert "Tab" in text or page in (w.progress_page, w.preview_page), type(page).__name__
         shown.append(page)
     assert len(shown) == w.stack.count() and set(shown) == {
         w.stack.widget(n) for n in range(w.stack.count())}  # every page

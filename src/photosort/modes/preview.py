@@ -168,7 +168,7 @@ class PreviewSession:
         """Move the file rel into target_folder; return where it went (relative
         to root; a taken name gets " (n)").
 
-        Raises ValueError if target_folder is not inside root, and
+        Raises ValueError if target_folder or the file is not inside root, and
         FileNotFoundError if the file is gone; nothing is moved then. Missing
         folders on the way are made, journalled. A file already in
         target_folder stays where it is (rel is returned, nothing recorded).
@@ -183,6 +183,10 @@ class PreviewSession:
                 raise ValueError("Photo Sorter keeps its own records there. "
                                  "Pick another folder.")
             src = self.root / rel
+            # The file itself may be a link (it is moved, never followed); the
+            # folder it is in must be inside root, as every path journalled is.
+            if not inside_root(self.root, src.parent):
+                raise ValueError(f"{rel} isn't inside {self.root.name}")
             if not os.path.lexists(src):
                 raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(src))
             if _same_folder(src.parent, self.root / folder):

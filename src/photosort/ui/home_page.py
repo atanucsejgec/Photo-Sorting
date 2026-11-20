@@ -47,6 +47,7 @@ TILES: tuple[tuple[str, str], ...] = (
     ("date", "Year / month"),
     ("face", "Per person"),
     ("pick_faces", "Click faces, make folders"),
+    ("preview", "Look at each file, move it"),
     ("duplicates", "Exact copies"),
     ("repeated", "Bursts, keep best"),
     ("content", "Food, pets, nature…"),

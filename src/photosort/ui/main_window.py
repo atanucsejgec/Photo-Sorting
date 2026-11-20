@@ -3,7 +3,7 @@ under them.
 
 The sidebar's pages are Sort (Home), History, People and Settings. A sort
 adds the Progress, Review, Bad photos, Events, Busy days, Face setup, Face
-questions, Pick faces, Which folder?, Summary and Done pages. From the moment
+questions, Pick faces, Which folder?, Preview, Summary and Done pages. From the moment
 a sort starts until its Done page the sidebar is locked (dimmed, and can't be
 focused or clicked): Esc and
 Back are the way out, as before. It is locked too while any Task runs (an
@@ -73,7 +73,7 @@ from photosort.ui.events_page import EventsPage
 from photosort.ui.face_question_page import FaceQuestionPage
 from photosort.ui.face_setup_page import FaceSetupPage
 from photosort.ui.flows import (
-    bad, clip, date, events, face, files, groups, no_people, pick_faces, plain,
+    bad, clip, date, events, face, files, groups, no_people, pick_faces, plain, preview,
 )
 from photosort.ui.history_page import (
     HistoryPage, bring_in_for_undo, finish_moved_folders, undo_summary, undo_with_message,
@@ -82,6 +82,7 @@ from photosort.ui.home_page import HomePage
 from photosort.ui.model_download import ensure_models
 from photosort.ui.people_page import PeoplePage
 from photosort.ui.pick_faces_page import PickFacesPage
+from photosort.ui.preview_page import PreviewPage
 from photosort.ui.progress_page import ProgressPage
 from photosort.ui.review_page import ReviewPage
 from photosort.ui.settings_page import SettingsPage
@@ -102,7 +103,7 @@ MIN_WIDTH, MIN_HEIGHT = 800, 460
 # The flow that runs each kind of mode.
 _FLOWS = {"plan": plain, "date": date, "files": files, "groups": groups, "bad": bad,
           "events": events, "face": face, "pickfaces": pick_faces, "nopeople": no_people,
-          "content": clip, "notes": clip}
+          "content": clip, "notes": clip, "preview": preview}
 
 
 class MainWindow(QMainWindow):
@@ -186,13 +187,15 @@ class MainWindow(QMainWindow):
         self.pick_faces_page = self._build_pick_faces()
         self.which_folder_page = self._build_which_folder()
         self.category_review_page = self._build_category_review()
+        self.preview_page = self._build_preview()
         self.summary_page = self._build_summary()
         self.done_page = self._build_done()
         for page in (self.home, self.history_page, self.people_page, self.settings_page,
                      self.progress_page, self.review_page, self.bad_page,
                      self.events_page, self.busy_days_page, self.face_setup_page,
                      self.face_question_page, self.pick_faces_page, self.which_folder_page,
-                     self.category_review_page, self.summary_page, self.done_page):
+                     self.category_review_page, self.preview_page, self.summary_page,
+                     self.done_page):
             self.stack.addWidget(page)
         # Pages the sidebar stays usable on (it is locked on the others).
         self._free_pages = (self.home, self.history_page, self.people_page,
@@ -303,6 +306,13 @@ class MainWindow(QMainWindow):
         page.finished.connect(lambda answers: clip.plan_moves(self, answers))
         page.cancelled.connect(self.leave_review)
         page.left.connect(self.leave_review)
+        return page
+
+    def _build_preview(self) -> PreviewPage:
+        page = PreviewPage()
+        page.ended.connect(lambda end: preview.on_ended(self, end))
+        page.slots_changed.connect(lambda slots: preview.on_slots_changed(self, slots))
+        page.keys_changed.connect(self.strip.refresh)
         return page
 
     def _build_summary(self) -> SummaryPage:
@@ -592,6 +602,11 @@ class MainWindow(QMainWindow):
         self.done_page.show_result(lines, can_undo)
         self.show_page(self.done_page)
 
+    def show_run_done(self, run_id: str, lines: list[str]) -> None:
+        """Done for a run made outside Go (Preview's): lines, and Undo for it."""
+        self._run_id = run_id
+        self._show_done(lines, can_undo=True)
+
     def _open_folder(self) -> None:
         """Show the sorted folder in the system's file manager."""
         url = QUrl.fromLocalFile(str(self.root)) if self.root is not None else None
@@ -681,5 +696,6 @@ class MainWindow(QMainWindow):
         self.pick_faces_page.stop_thumbnails()
         self.which_folder_page.stop_thumbnails()
         self.face_question_page.stop_loading()
+        self.preview_page.shutdown()  # its queued moves are done, and its run finished
         QThreadPool.globalInstance().waitForDone()
         super().closeEvent(event)

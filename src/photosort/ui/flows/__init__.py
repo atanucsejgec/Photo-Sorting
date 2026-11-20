@@ -12,7 +12,9 @@
 - pick_faces: every face grouped into people, for the owner to pick and
   make folders of (Pick faces);
 - no_people: the photos with no face found, planned straight away (No people);
-- clip: Content and Notes & Pages, judged with CLIP, then the unsure photos.
+- clip: Content and Notes & Pages, judged with CLIP, then the unsure photos;
+- preview: every file shown one at a time on the Preview page, each moved at
+  once by the owner (no plan, no summary: Done comes when it ends).
 
 Each module has MODELS, the AI models it needs before it starts, and
 start(window, root, include_subfolders, spec), which the MainWindow calls once

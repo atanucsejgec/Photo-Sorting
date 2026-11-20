@@ -21,6 +21,7 @@ MODE_ICONS: dict[str, str] = {
     "date": "calendar",
     "face": "scan-face",
     "pick_faces": "users",
+    "preview": "eye",
     "duplicates": "copy",
     "repeated": "film",
     "content": "shapes",

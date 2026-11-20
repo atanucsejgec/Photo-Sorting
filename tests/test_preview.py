@@ -287,6 +287,7 @@ def test_session_run_listed_in_history_as_preview(root):
 def test_a_session_leaves_no_photosort_folder(root):
     _write(root / "a.jpg", b"aaa")
     _write(root / "sub" / "b.jpg", b"bbb")
+    before = tree(root)
     session = PreviewSession(root, True)
     session.move("a.jpg", root / NOT_NEEDED)
     session.move("sub/b.jpg", root / "Trips")
@@ -294,3 +295,80 @@ def test_a_session_leaves_no_photosort_folder(root):
     run_id = session.finish()
     undo.undo_run(root, run_id)
     assert not [p for p in root.rglob("*") if p.name.casefold() == ".photosort"]
+    assert tree(root) == before
+
+
+def test_moves_and_put_backs_with_names_reused_then_undo(root):
+    _write(root / "a.jpg", b"top")
+    _write(root / "sub" / "a.jpg", b"sub")
+    _write(root / "b.jpg", b"bbb")
+    before = tree(root)
+    session = PreviewSession(root, True)
+    assert session.move("a.jpg", root / NOT_NEEDED) == "Not needed/a.jpg"
+    assert session.move("sub/a.jpg", root / NOT_NEEDED) == "Not needed/a (1).jpg"
+    assert session.put_back() == "sub/a.jpg"
+    # The name freed by the put-back is taken again.
+    assert session.move("sub/a.jpg", root / NOT_NEEDED) == "Not needed/a (1).jpg"
+    assert session.move("b.jpg", root / "Trips") == "Trips/b.jpg"
+    assert session.put_back() == "b.jpg"
+    assert session.move("b.jpg", root / "sub") == "sub/b.jpg"
+    assert (root / "Not needed" / "a (1).jpg").read_bytes() == b"sub"
+    assert session.counts() == (2, 1)
+    run_id = session.finish()
+    assert not (root / "Trips").exists()  # made by the session, empty again: tidied
+    undo.undo_run(root, run_id)
+    assert tree(root) == before
+
+
+def test_a_move_failing_after_its_intent_leaves_the_session_going(root, monkeypatch):
+    from photosort.modes import preview
+
+    _write(root / "a.jpg", b"aaa")
+    _write(root / "b.jpg", b"bbb")
+    before = tree(root)
+    real = preview.move_file
+    calls = []
+
+    def failing_once(src, dst):
+        calls.append((src, dst))
+        if len(calls) == 1:
+            raise PermissionError(13, "Permission denied", str(dst))
+        real(src, dst)
+
+    monkeypatch.setattr(preview, "move_file", failing_once)
+    session = PreviewSession(root, False)
+    with pytest.raises(PermissionError):
+        session.move("a.jpg", root / NOT_NEEDED)
+    assert session.moved == []
+    assert (root / "a.jpg").read_bytes() == b"aaa"
+    assert session.move("b.jpg", root / "Trips") == "Trips/b.jpg"
+    assert session.move("a.jpg", root / NOT_NEEDED) == "Not needed/a.jpg"
+    assert session.counts() == (1, 1)
+    run_id = session.finish()
+    undo.undo_run(root, run_id)
+    assert tree(root) == before
+
+
+@pytest.mark.parametrize("rel", ["../outside.jpg", "sub/../../outside.jpg"])
+def test_move_refuses_a_file_outside_the_root(root, tmp_path, rel):
+    _write(tmp_path / "outside.jpg", b"out")
+    (root / "sub").mkdir()
+    session = PreviewSession(root, False)
+    with pytest.raises(ValueError):
+        session.move(rel, root / NOT_NEEDED)
+    with pytest.raises(ValueError):
+        session.move(str(tmp_path / "outside.jpg"), root / NOT_NEEDED)
+    assert (tmp_path / "outside.jpg").read_bytes() == b"out"
+    assert not (root / NOT_NEEDED).exists()
+    assert session.finish() is None
+    assert load_runs(root) == []
+
+
+def test_move_refuses_a_file_through_a_link_out_of_the_root(root, tmp_path):
+    _write(tmp_path / "elsewhere" / "x.jpg", b"xxx")
+    (root / "link").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    session = PreviewSession(root, False)
+    with pytest.raises(ValueError):
+        session.move("link/x.jpg", root / NOT_NEEDED)
+    assert (tmp_path / "elsewhere" / "x.jpg").read_bytes() == b"xxx"
+    assert session.finish() is None

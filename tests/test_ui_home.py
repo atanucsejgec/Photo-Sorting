@@ -19,6 +19,7 @@ TILES = [
     ("date", "Date", "Year / month"),
     ("face", "Face", "Per person"),
     ("pick_faces", "Pick faces", "Click faces, make folders"),
+    ("preview", "Preview", "Look at each file, move it"),
     ("duplicates", "Duplicates", "Exact copies"),
     ("repeated", "Repeated shots", "Bursts, keep best"),
     ("content", "Content", "Food, pets, nature…"),
@@ -114,7 +115,7 @@ def test_tiles_sit_in_four_columns_in_order(qtbot, make_window):
         assert w.home.tile_layout.getItemPosition(w.home.tile_layout.indexOf(tile))[:2] == (
             n // 4, n % 4)
     rows = sorted({t.geometry().top() for t in tiles})
-    assert len(rows) == 4  # 4 + 4 + 4 + 3
+    assert len(rows) == 4  # 4 + 4 + 4 + 4
 
 
 def test_focus_starts_on_date(qtbot, make_window):
@@ -133,7 +134,7 @@ def test_arrows_follow_four_columns(qtbot, make_window):
     _focus(qtbot, date)
     for key in (Qt.Key.Key_Right, Qt.Key.Key_Right, Qt.Key.Key_Down):
         qtbot.keyClick(_focused(), key)
-    assert _focused() is w.mode_buttons["notes"]
+    assert _focused() is w.mode_buttons["content"]
     qtbot.keyClick(_focused(), Qt.Key.Key_Up)
     qtbot.keyClick(_focused(), Qt.Key.Key_Left)
     assert _focused() is w.mode_buttons["face"]
@@ -144,9 +145,9 @@ def test_arrows_follow_four_columns(qtbot, make_window):
 def test_down_into_a_short_last_row_lands_on_its_last_tile(qtbot, make_window, monkeypatch):
     monkeypatch.setattr(home_page, "TILES", home_page.TILES[:11])  # 4 + 4 + 3
     w = _show(qtbot, make_window())
-    _focus(qtbot, w.mode_buttons["bad"])  # index 7: below it is nothing
+    _focus(qtbot, w.mode_buttons["notes"])  # index 7: below it is nothing
     qtbot.keyClick(_focused(), Qt.Key.Key_Down)
-    assert _focused() is w.mode_buttons["camera"]
+    assert _focused() is w.mode_buttons["location"]
 
 
 def test_arrows_follow_the_reflowed_grid(qtbot):
