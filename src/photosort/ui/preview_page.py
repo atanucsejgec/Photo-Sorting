@@ -17,7 +17,9 @@ overlay, where 1…9 and 0 move it to that slot, Enter (or "Other folder…")
 picks another folder (anywhere: see modes.preview.target_problem for the
 ones refused), and Esc closes it; L edits the slots
 (SlotEditor); Ctrl+Z puts back the last file moved, and shows it again;
-Esc asks whether to leave. The viewer's own keys (Space, Shift+←/→, S,
+E (or "Show in folder") shows the file selected in the file manager
+(ui.show_folder), and the Preview stays on it; Esc asks whether to leave.
+The viewer's own keys (Space, Shift+←/→, S,
 +/−, F, ↑/↓, PgUp/PgDn, O) are offered to it first: each viewer sits in a
 box that takes the focus and hands it every key press that is not one of
 the page's shortcuts (a viewer never takes those), then ←/→ to the page.
@@ -72,7 +74,7 @@ from shiboken6 import isValid
 from photosort.modes.preview import (
     NOT_NEEDED, SLOTS, PreviewSession, file_kind, inside_root, target_problem,
 )
-from photosort.ui import dialogs, shortcuts
+from photosort.ui import dialogs, shortcuts, show_folder
 from photosort.ui import preview_viewers as pv
 from photosort.ui.labels import literal
 from photosort.ui.shortcuts import ShortcutStrip
@@ -97,6 +99,7 @@ ADD_TITLE = "Add a folder"
 EDITOR_TITLE = "Preview folders"
 OTHER_BUTTON = "Other folder… (Enter)"
 EDIT_BUTTON = "Edit folders (L)"
+SHOW_BUTTON = "Show in folder (E)"
 EMPTY_SLOT = "—"
 PATH_PLACEHOLDER = "Paste or type a folder path"
 FOLDER_NOT_FOUND = "Folder not found"
@@ -408,6 +411,10 @@ class PreviewPage(QWidget):
         self.edit_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.edit_button.clicked.connect(self._edit_slots)
         side_layout.addWidget(self.edit_button)
+        self.show_button = QPushButton(literal(SHOW_BUTTON))
+        self.show_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.show_button.clicked.connect(self._show_in_folder)
+        side_layout.addWidget(self.show_button)
 
         body = QHBoxLayout()
         body.setSpacing(16)
@@ -425,6 +432,8 @@ class PreviewPage(QWidget):
                            repeat=False),
             shortcuts.bind(self, "M", "M", "move to…", self._open_overlay, repeat=False),
             shortcuts.bind(self, "L", "L", "edit folders", self._edit_slots, repeat=False),
+            shortcuts.bind(self, "E", "E", "show in folder", self._show_in_folder,
+                           repeat=False),
             shortcuts.bind(self, "Ctrl+Z", "Ctrl+Z", "put back", self._put_back,
                            repeat=False),
             shortcuts.bind(self, "Escape", "Esc", "leave", self._leave, repeat=False),
@@ -991,6 +1000,12 @@ class PreviewPage(QWidget):
             QTimer.singleShot(MOVING_AFTER_MS, slow)
 
     # ----- ending -------------------------------------------------------------------------------
+
+    def _show_in_folder(self) -> None:
+        """The file shown, selected in the file manager (nothing moves)."""
+        rel = self.current()
+        if rel is not None and self._active() and not self.overlay.isVisible():
+            show_folder.show_in_folder(self.root / rel)
 
     def _leave(self) -> None:
         if self._active() and dialogs.ask(self, LEAVE_TITLE, LEAVE_TEXT, yes="Leave",

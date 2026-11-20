@@ -46,6 +46,7 @@ from photosort.settings import Settings, load_settings
 from photosort.ui import icons
 from photosort.ui import preview_page as pp
 from photosort.ui import preview_viewers as pv
+from photosort.ui import show_folder
 from photosort.ui.flows import preview as preview_flow
 from photosort.ui.home_page import TILES
 from photosort.ui.shortcuts import ShortcutStrip
@@ -55,8 +56,8 @@ SHIFT = Qt.KeyboardModifier.ShiftModifier
 CTRL = Qt.KeyboardModifier.ControlModifier
 ALT = Qt.KeyboardModifier.AltModifier
 NONE = Qt.KeyboardModifier.NoModifier
-PAGE_KEYS = ("←→ file · N not needed · M move to… · L edit folders · Ctrl+Z put back · "
-             "Esc leave")
+PAGE_KEYS = ("←→ file · N not needed · M move to… · L edit folders · E show in folder · "
+             "Ctrl+Z put back · Esc leave")
 IMAGE_KEYS = "+− zoom · F fit · ↑↓ scroll"
 ASK_STRIP = "←→ choose · Enter pick · Esc no/close"
 
@@ -90,6 +91,14 @@ def three(root) -> Path:
     for name, colour in (("a.jpg", "red"), ("b.jpg", "green"), ("c.jpg", "blue")):
         _jpeg(root / name, colour)
     return root
+
+
+@pytest.fixture(autouse=True)
+def shown_in_folder(monkeypatch):
+    """No test opens the real file manager: E and Show in folder are recorded here."""
+    shown: list[Path] = []
+    monkeypatch.setattr(show_folder, "show_in_folder", shown.append)
+    return shown
 
 
 @pytest.fixture(autouse=True)
@@ -1484,7 +1493,8 @@ def test_fits_1024x600_and_strip_lists_keys(qtbot, make_window, root, errors):
     assert page.minimumSizeHint().height() <= room.height()
     window = w.rect()
     strip_top = w.strip.mapTo(w, QPoint(0, 0)).y()
-    for widget in (page.title_label, page.folder_label, page.edit_button, page.viewers,
+    for widget in (page.title_label, page.folder_label, page.edit_button, page.show_button,
+                   page.viewers,
                    *page.slot_labels):
         assert widget.isVisible(), widget
         rect = QRect(widget.mapTo(w, QPoint(0, 0)), widget.size())
@@ -1518,3 +1528,39 @@ def test_a_photo_that_cant_be_shown_shows_the_info_card(qtbot, make_window, root
     assert pv.CANT_SHOW_IMAGE in page.viewer().text()
     assert _focused() is page._box
     assert errors == []
+
+
+# ----- show in folder ------------------------------------------------------------------------
+
+def test_e_shows_the_file_in_its_folder(qtbot, make_window, three, shown_in_folder, errors):
+    (three / "Trips").mkdir()
+    w = make_window(_settings(three / "Trips"))
+    page = _open(qtbot, w, three)
+    _showing(qtbot, page, "1 of 3 · a.jpg")
+    _key(qtbot, Qt.Key.Key_E)
+    assert shown_in_folder == [three / "a.jpg"]
+    assert page.current() == "a.jpg"  # nothing moved, the same file stays shown
+    assert _focused() is page._box
+    _key(qtbot, Qt.Key.Key_Right)
+    _showing(qtbot, page, "2 of 3 · b.jpg")
+    page.show_button.click()
+    assert shown_in_folder == [three / "a.jpg", three / "b.jpg"]
+    assert _focused() is page._box  # the button never takes the focus
+    assert sorted(p.name for p in three.iterdir()) == ["Trips", "a.jpg", "b.jpg", "c.jpg"]
+    assert page.show_button.text().replace("&&", "&") == pp.SHOW_BUTTON
+    assert errors == []
+
+
+def test_e_is_off_while_the_overlay_is_open(qtbot, make_window, three, shown_in_folder):
+    (three / "Trips").mkdir()
+    w = make_window(_settings(three / "Trips"))
+    page = _open(qtbot, w, three)
+    _showing(qtbot, page, "1 of 3 · a.jpg")
+    _key(qtbot, Qt.Key.Key_M)
+    qtbot.waitUntil(page.overlay.isVisible, timeout=WAIT_MS)
+    _key(qtbot, Qt.Key.Key_E)
+    assert shown_in_folder == []
+    _key(qtbot, Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not page.overlay.isVisible(), timeout=WAIT_MS)
+    _key(qtbot, Qt.Key.Key_E)
+    assert shown_in_folder == [three / "a.jpg"]
