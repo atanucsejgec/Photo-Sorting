@@ -54,6 +54,7 @@ went.
 
 import logging
 import os
+import urllib.parse
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -85,7 +86,6 @@ LEAVE_TITLE = "Leave Preview?"
 LEAVE_TEXT = "The files moved so far stay where they are now; Undo can put them back."
 LAST_FILE = "That was the last file"
 LIST_FULL = "The list is full; edit it with L"
-EDITOR_FULL = "The list is full; remove a folder first"
 NOTHING_TO_PUT_BACK = "Nothing to put back"
 FILE_CHANGED = "The file changed — press M again"
 FINISHING = "Finishing…"
@@ -125,25 +125,55 @@ def slot_name(root: Path, folder: str | None) -> str:
 
 
 def _usable(root: Path, folder: str | None) -> bool:
-    """Whether a slot is shown plain: a folder that is there now, and can
-    take files (greyed otherwise; one missing inside root still works)."""
-    return (folder is not None and target_problem(root, folder) is None
-            and Path(folder).is_dir())
+    """Whether a slot is shown plain: it can take files now (greyed: empty,
+    an app folder, or outside root and not there; one missing inside root
+    is made again by the move)."""
+    return folder is not None and target_problem(root, folder) is None
 
 
 def moving_text(name: str, root: Path, folder: Path) -> str:
     return f"Moving {name} to {slot_name(root, str(folder))}…"
 
 
+def _first_line(text: str) -> str:
+    """The first line of text with something in it, stripped ("" if none)."""
+    return next((line.strip() for line in text.splitlines() if line.strip()), "")
+
+
+def local_path_of_url(url: str) -> str:
+    """The path of a file: URL, its %-escapes read as the bytes they are (a
+    folder name need not be UTF-8); "" if it is not a local file URL."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme.casefold() != "file" or parts.netloc.casefold() not in ("", "localhost"):
+        return ""
+    return os.fsdecode(urllib.parse.unquote_to_bytes(parts.path))
+
+
+def paste_text(text: str) -> str:
+    """What a paste puts in the path box: its first line, a file: URL as
+    its path. A path that is not UTF-8 can't be shown (Qt's text would
+    lose its bytes): the URL stays, read at Enter (folder_from_text)."""
+    text = _first_line(text)
+    if text.casefold().startswith("file:"):
+        path = local_path_of_url(text)
+        try:
+            path.encode("utf-8")
+        except UnicodeEncodeError:
+            return text
+        return path or text
+    return text
+
+
 def folder_from_text(root: Path, text: str) -> Path | None:
-    """The folder a pasted or typed path names: spaces and quotes around it
-    are dropped, a file:// URL is made a path, ~ is expanded, and a relative
-    path is taken inside root. None if nothing is left."""
-    text = text.strip()
+    """The folder a pasted or typed path names: the first line, spaces and
+    quotes around it dropped, a file:// URL made a path (local_path_of_url),
+    ~ expanded, and a relative path taken inside root. None if nothing is
+    left."""
+    text = _first_line(text)
     while len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
         text = text[1:-1].strip()
     if text.casefold().startswith("file:"):
-        text = QUrl(text).toLocalFile()
+        text = local_path_of_url(text)
     if not text:
         return None
     path = Path(text).expanduser()
@@ -991,20 +1021,19 @@ class PreviewPage(QWidget):
 # ----- the slot editor ---------------------------------------------------------------------------
 
 class _PathEdit(QLineEdit):
-    """The editor's path box. Ctrl+V of a folder copied in a file manager
-    (a file:// URL on the clipboard) puts in its path."""
+    """The editor's path box. Ctrl+V puts in the first line pasted, and a
+    folder copied in a file manager (a file:// URL) as its path."""
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         if event.matches(QKeySequence.StandardKey.Paste) and not self.isReadOnly():
             mime = QGuiApplication.clipboard().mimeData()
             if mime is None:
                 text = ""
-            else:
+            else:  # the first local URL, kept as bytes (see local_path_of_url)
                 urls = [url for url in mime.urls() if url.isLocalFile()]
-                text = urls[0].toLocalFile() if urls else mime.text()
-            text = text.strip()
-            if text.casefold().startswith("file:"):
-                text = QUrl(text).toLocalFile() or text
+                text = (urls[0].toString(QUrl.ComponentFormattingOption.FullyEncoded)
+                        if urls else mime.text())
+            text = paste_text(text)
             if text:
                 self.insert(text)
             event.accept()
@@ -1018,7 +1047,7 @@ class SlotEditor(QDialog):
     The path box at the top takes a pasted or typed folder path (see
     folder_from_text): Enter puts it in the first empty slot, if it is an
     existing folder ("Folder not found"), not listed ("Already in the list
-    (slot N)"), and there is room ("The list is full").
+    (slot N)"), and there is room ("The list is full"). Add… says the same.
 
     Add… picks a folder (the picker starts at root, can go anywhere and can
     make one) and puts it in the chosen slot if that is empty, else in the
@@ -1028,7 +1057,8 @@ class SlotEditor(QDialog):
     are numbered afresh: 1…9, then 0.
 
     Keys: ↑↓ choose, Insert or A add, Delete remove, Alt+↑ and Alt+↓ move
-    (off while the path box has the focus: its Enter adds its path),
+    (off while the path box has the focus, even after an add: its Enter
+    adds its path, and its Esc empties it, or cancels if it is empty),
     Enter saves (Save) and Esc cancels (Enter presses a button Tab has reached
     instead: widgets.ButtonKeys).
     """
@@ -1110,6 +1140,11 @@ class SlotEditor(QDialog):
                 ("Alt+Up", "Alt+↑", "move up", self.up_button, True),
                 ("Alt+Down", "Alt+↓", "move down", self.down_button, True))]
         shortcuts.bind(self.path_edit, "Return", "Enter", "add", self._add_typed, repeat=False)
+        # Esc empties a box with something in it; in an empty one it cancels (the dialog's).
+        self._clear_key = shortcuts.bind(self.path_edit, "Escape", "Esc", "clear",
+                                         self.path_edit.clear, repeat=False)
+        self._clear_key.setEnabled(False)
+        self.path_edit.textChanged.connect(self._box_changed)
         shortcuts.pause_while_focused(self.path_edit, [key for key, _ in self._keys],
                                       resume=self._update_buttons)
         shortcuts.describe(self, "Esc", "cancel")
@@ -1144,26 +1179,50 @@ class SlotEditor(QDialog):
         self.remove_button.setEnabled(filled)
         self.up_button.setEnabled(filled and row > 0)
         self.down_button.setEnabled(filled and row < SLOTS - 1)
-        if shortcuts.follow(self._keys):
+        if self.path_edit.hasFocus():  # off while typing (pause_while_focused)
+            changed = False
+            for key, _ in self._keys:
+                changed |= key.isEnabled()
+                key.setEnabled(False)
+        else:
+            changed = shortcuts.follow(self._keys)
+        if changed:
+            self.strip.refresh()
+
+    def _box_changed(self, text: str) -> None:
+        if self._clear_key.isEnabled() != bool(text):
+            self._clear_key.setEnabled(bool(text))
             self.strip.refresh()
 
     def _message(self, text: str) -> None:
         self.message_label.setText(text)
         self.message_label.setVisible(bool(text))
 
+    def _refusal(self, folder: Path) -> str | None:
+        """Why folder can't be listed (the path box's and Add…'s words); None
+        if it can."""
+        if not folder.is_dir():
+            return FOLDER_NOT_FOUND
+        problem = target_problem(self.root, folder)
+        if problem is not None:
+            return problem
+        for n, listed in enumerate(self._slots):
+            if listed is not None and _same(Path(listed), folder):
+                return f"Already in the list (slot {slot_key(n)})"
+        if None not in self._slots:
+            return PATH_LIST_FULL
+        return None
+
     def _add(self) -> None:
         if None not in self._slots:
-            self._message(EDITOR_FULL)
+            self._message(PATH_LIST_FULL)
             return
         picked = choose_folder(self, ADD_TITLE, self.root)
         if picked is None:
             return
-        problem = target_problem(self.root, picked)
+        problem = self._refusal(picked)
         if problem is not None:
             self._message(problem)
-            return
-        if any(f is not None and _same(Path(f), picked) for f in self._slots):
-            self._message(f"{slot_name(self.root, str(picked))} is listed already")
             return
         self._message("")
         row = self.list_widget.currentRow()
@@ -1179,19 +1238,9 @@ class SlotEditor(QDialog):
         if folder is None:
             self._message("")
             return
-        if not folder.is_dir():
-            self._message(FOLDER_NOT_FOUND)
-            return
-        problem = target_problem(self.root, folder)
+        problem = self._refusal(folder)
         if problem is not None:
             self._message(problem)
-            return
-        for n, listed in enumerate(self._slots):
-            if listed is not None and _same(Path(listed), folder):
-                self._message(f"Already in the list (slot {slot_key(n)})")
-                return
-        if None not in self._slots:
-            self._message(PATH_LIST_FULL)
             return
         self._message("")
         row = self._slots.index(None)

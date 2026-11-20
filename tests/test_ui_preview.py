@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.parse
 import wave
 from pathlib import Path
 
@@ -31,7 +32,7 @@ from keys import (
     settings_path,  # noqa: F401
 )
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QThreadPool
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QRect, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QKeyEvent, QPainter, QPdfWriter
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QApplication, QPushButton
@@ -53,6 +54,7 @@ WAIT_MS = 10000
 SHIFT = Qt.KeyboardModifier.ShiftModifier
 CTRL = Qt.KeyboardModifier.ControlModifier
 ALT = Qt.KeyboardModifier.AltModifier
+NONE = Qt.KeyboardModifier.NoModifier
 PAGE_KEYS = ("←→ file · N not needed · M move to… · L edit folders · Ctrl+Z put back · "
              "Esc leave")
 IMAGE_KEYS = "+− zoom · F fit · ↑↓ scroll"
@@ -173,7 +175,7 @@ def test_m_then_digit_moves_to_slot(qtbot, make_window, three, errors):
         "1  Trips", "2  —", "3  Family/Kids", "4  —"]
     assert page.slot_labels[0].objectName() == ""
     assert page.slot_labels[1].objectName() == "muted"
-    assert page.slot_labels[2].objectName() == "muted"  # missing (made again on use)
+    assert page.slot_labels[2].objectName() == ""  # missing inside: made again on use
     _key(qtbot, Qt.Key.Key_M)
     assert page.overlay.isVisible()
     assert _focused() is page.overlay
@@ -425,6 +427,7 @@ def test_slot_editor_add_remove_reorder_renumbers_and_saves(qtbot, make_window, 
                                                             settings_path, tmp_path,
                                                             monkeypatch, errors):
     a, b, c, d = (three / name for name in ("A", "B", "C", "D"))
+    d.mkdir()  # the picker gives a folder that is there
     elsewhere = tmp_path / "Elsewhere"  # a drive that is not plugged in
     picks = [elsewhere, d]
     monkeypatch.setattr(pp, "choose_folder", lambda parent, title, start: picks.pop(0))
@@ -452,7 +455,7 @@ def test_slot_editor_add_remove_reorder_renumbers_and_saves(qtbot, make_window, 
 
     _in_dialog(qtbot, act)
     _key(qtbot, Qt.Key.Key_L)
-    assert seen["refused"] == "Elsewhere isn't there — is the drive plugged in?"
+    assert seen["refused"] == "Folder not found"
     assert seen["strip"] == ("↑↓ choose · Enter save · Insert/A add · Del remove · "
                              "Alt+↓ move down · Esc cancel · Tab/Shift+Tab area")
     assert "Alt+↑ move up" in seen["live"]
@@ -506,6 +509,9 @@ def test_folder_from_text(tmp_path, monkeypatch):
     assert pp.folder_from_text(root, "Trips/../Kids") == root / "Kids"  # inside the root
     assert pp.folder_from_text(root, "  ") is None
     assert pp.folder_from_text(root, '""') is None
+    assert pp.folder_from_text(root, "\n  /a/b \n/c/d\n") == Path("/a/b")  # the first line
+    assert pp.folder_from_text(root, "file:///a/caf%E9") == Path(os.fsdecode(b"/a/caf\xe9"))
+    assert pp.folder_from_text(root, "file://localhost/a/b") == Path("/a/b")
 
 
 @pytest.mark.real_dialogs
@@ -545,7 +551,7 @@ def test_paste_path_adds_to_first_free_slot(qtbot, make_window, three, tmp_path,
     _in_dialog(qtbot, act)
     _key(qtbot, Qt.Key.Key_L)
     assert seen["placeholder"] == "Paste or type a folder path"
-    assert seen["strip"].startswith("Enter add · Esc cancel")
+    assert seen["strip"] == "Enter add · Esc cancel · Tab/Shift+Tab area"
     assert seen["pasted"] == str(two)
     assert seen["after"] == (True, "", True, "")
     assert seen["typed"] == ("a", ["1  A", "2  Elsewhere Two", "3  C", "4  —"])
@@ -576,7 +582,8 @@ def test_paste_missing_path_says_folder_not_found(qtbot, make_window, three, tmp
                          _rows(dialog, 2), dialog.isVisible()))
         _enter_path(qtbot, dialog, "   ")  # nothing in it: nothing said
         seen.append(dialog.message_label.text())
-        _key(qtbot, Qt.Key.Key_Escape)
+        _key(qtbot, Qt.Key.Key_Escape)  # empties the box
+        _key(qtbot, Qt.Key.Key_Escape)  # cancels
 
     _in_dialog(qtbot, act)
     _key(qtbot, Qt.Key.Key_L)
@@ -607,7 +614,8 @@ def test_paste_duplicate_and_full(qtbot, make_window, three, tmp_path, errors):
         _enter_path(qtbot, dialog, str(three / "x" / ".." / "S2") + "/")  # the same one
         seen.append(dialog.message_label.text())
         seen.append(_rows(dialog, 4))
-        _key(qtbot, Qt.Key.Key_Escape)
+        _key(qtbot, Qt.Key.Key_Escape)  # empties the box
+        _key(qtbot, Qt.Key.Key_Escape)  # cancels
 
     _in_dialog(qtbot, duplicate)
     _key(qtbot, Qt.Key.Key_L)
@@ -623,12 +631,182 @@ def test_paste_duplicate_and_full(qtbot, make_window, three, tmp_path, errors):
         seen.append(dialog.message_label.text())
         _enter_path(qtbot, dialog, str(tmp_path / "New"))
         seen.append((dialog.message_label.text(), dialog.path_edit.text()))
-        _key(qtbot, Qt.Key.Key_Escape)
+        _key(qtbot, Qt.Key.Key_Escape)  # empties the box
+        _key(qtbot, Qt.Key.Key_Escape)  # cancels
 
     _in_dialog(qtbot, when_full)
     _key(qtbot, Qt.Key.Key_L)
     assert seen == ["Already in the list (slot 0)", ("The list is full", str(tmp_path / "New"))]
     assert page.slots() == [str(f) for f in full]
+    _activate(qtbot, w)
+    assert errors == []
+
+
+@pytest.mark.real_dialogs
+def test_path_box_keeps_the_editor_keys_off_after_an_add(qtbot, make_window, three, tmp_path,
+                                                         monkeypatch, errors):
+    a, b = three / "A", three / "B"
+    (tmp_path / "New").mkdir()
+    picked = []
+    monkeypatch.setattr(pp, "choose_folder",
+                        lambda parent, title, start: picked.append(title))
+    w = make_window(_settings(a, b))
+    page = _open(qtbot, w, three)
+    seen = {}
+
+    def act(dialog):
+        qtbot.waitUntil(lambda: _focused() is dialog.list_widget)
+        _key(qtbot, Qt.Key.Key_Down)  # B chosen: Alt+↑ would move it, Del remove it
+        _enter_path(qtbot, dialog, str(tmp_path / "New"))
+        seen["rows"] = _rows(dialog, 4)
+        for key, modifier in ((Qt.Key.Key_Down, ALT), (Qt.Key.Key_Up, ALT),
+                              (Qt.Key.Key_Insert, NONE), (Qt.Key.Key_Delete, NONE)):
+            _key(qtbot, key, modifier)
+        seen["after"] = (_rows(dialog, 4), _focused() is dialog.path_edit,
+                         [key.isEnabled() for key, _ in dialog._keys])
+        seen["strip"] = dialog.findChild(ShortcutStrip).text()
+        dialog.list_widget.setFocus(Qt.FocusReason.OtherFocusReason)  # the keys come back
+        qtbot.waitUntil(lambda: _focused() is dialog.list_widget)
+        seen["back"] = [key.isEnabled() for key, _ in dialog._keys]
+        _key(qtbot, Qt.Key.Key_Escape)
+
+    _in_dialog(qtbot, act)
+    _key(qtbot, Qt.Key.Key_L)
+    rows = ["1  A", "2  B", "3  New", "4  —"]
+    assert seen["rows"] == rows
+    assert seen["after"] == (rows, True, [False] * 4)
+    assert seen["strip"] == "Enter add · Esc cancel · Tab/Shift+Tab area"
+    assert picked == []
+    assert seen["back"] == [True, True, True, True]  # B chosen: add, remove, up, down
+    _activate(qtbot, w)
+    assert errors == []
+
+
+@pytest.mark.real_dialogs
+def test_esc_in_the_path_box_clears_it_then_cancels(qtbot, make_window, three, errors):
+    a = three / "A"
+    w = make_window(_settings(a))
+    page = _open(qtbot, w, three)
+    seen = []
+
+    def act(dialog):
+        qtbot.waitUntil(lambda: _focused() is dialog.list_widget)
+        dialog.path_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+        qtbot.waitUntil(lambda: _focused() is dialog.path_edit)
+        strip = dialog.findChild(ShortcutStrip)
+        qtbot.keyClicks(dialog.path_edit, "/somewhere")
+        seen.append(strip.text())
+        _key(qtbot, Qt.Key.Key_Escape)
+        seen.append((dialog.isVisible(), dialog.path_edit.text(), strip.text()))
+        dialog.list_widget.setFocus(Qt.FocusReason.OtherFocusReason)
+        qtbot.waitUntil(lambda: _focused() is dialog.list_widget)
+        _key(qtbot, Qt.Key.Key_Delete)  # a change, to see the cancel drop it
+        dialog.path_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+        qtbot.waitUntil(lambda: _focused() is dialog.path_edit)
+        _key(qtbot, Qt.Key.Key_Escape)  # the box is empty: cancel
+        seen.append(dialog.isVisible())
+
+    _in_dialog(qtbot, act)
+    _key(qtbot, Qt.Key.Key_L)
+    assert seen == ["Enter add · Esc clear · Tab/Shift+Tab area",
+                    (True, "", "Enter add · Esc cancel · Tab/Shift+Tab area"), False]
+    assert page.slots() == [str(a)] + [None] * 9
+    _activate(qtbot, w)
+    assert errors == []
+
+
+@pytest.mark.real_dialogs
+def test_paste_takes_the_first_line_or_the_first_url(qtbot, make_window, three, tmp_path,
+                                                     errors):
+    w = make_window()
+    page = _open(qtbot, w, three)
+    one, two = tmp_path / "one", tmp_path / "two"
+    seen = []
+
+    def act(dialog):
+        qtbot.waitUntil(lambda: _focused() is dialog.list_widget)
+        dialog.path_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+        qtbot.waitUntil(lambda: _focused() is dialog.path_edit)
+        QApplication.clipboard().setText(f"\n  {one} \n{two}\n")
+        _key(qtbot, Qt.Key.Key_V, CTRL)
+        seen.append(dialog.path_edit.text())
+        dialog.path_edit.clear()
+        mime = QMimeData()
+        mime.setUrls([QUrl("https://example.org/x"), QUrl.fromLocalFile(str(two)),
+                      QUrl.fromLocalFile(str(one))])
+        QApplication.clipboard().setMimeData(mime)
+        _key(qtbot, Qt.Key.Key_V, CTRL)
+        seen.append(dialog.path_edit.text())
+        dialog.reject()
+
+    _in_dialog(qtbot, act)
+    _key(qtbot, Qt.Key.Key_L)
+    assert seen == [str(one), str(two)]
+    assert page.slots() == [None] * 10
+    _activate(qtbot, w)
+    assert errors == []
+
+
+@pytest.mark.real_dialogs
+def test_paste_a_folder_whose_name_is_not_utf8(qtbot, make_window, three, tmp_path, errors):
+    raw = os.fsencode(tmp_path) + b"/caf\xe9"
+    try:
+        os.mkdir(raw)
+    except (OSError, UnicodeError):
+        pytest.skip("this filesystem does not take a non-UTF-8 name")
+    folder = Path(os.fsdecode(raw))
+    w = make_window()
+    page = _open(qtbot, w, three)
+    seen = []
+
+    def act(dialog):
+        qtbot.waitUntil(lambda: _focused() is dialog.list_widget)
+        dialog.path_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+        qtbot.waitUntil(lambda: _focused() is dialog.path_edit)
+        QApplication.clipboard().setText("file://" + urllib.parse.quote(raw))
+        _key(qtbot, Qt.Key.Key_V, CTRL)
+        _key(qtbot, Qt.Key.Key_Return)
+        seen.append((dialog.message_label.text(), _rows(dialog, 1)))
+        dialog.list_widget.setFocus(Qt.FocusReason.OtherFocusReason)
+        qtbot.waitUntil(lambda: _focused() is dialog.list_widget)
+        _key(qtbot, Qt.Key.Key_Return)
+
+    _in_dialog(qtbot, act)
+    _key(qtbot, Qt.Key.Key_L)
+    assert seen[0][0] == ""
+    assert page.slots()[0] == str(folder)
+    assert Path(page.slots()[0]).is_dir()
+    _activate(qtbot, w)
+    assert errors == []
+
+
+@pytest.mark.real_dialogs
+def test_add_uses_the_path_box_messages(qtbot, make_window, three, tmp_path, monkeypatch,
+                                        errors):
+    a = three / "A"
+    a.mkdir()
+    (three / "x").mkdir()
+    picks = [three / "x" / ".." / "A", tmp_path / "gone"]
+    monkeypatch.setattr(pp, "choose_folder", lambda parent, title, start: picks.pop(0))
+    w = make_window(_settings(a))
+    page = _open(qtbot, w, three)
+    seen = []
+
+    def act(dialog):
+        qtbot.waitUntil(lambda: _focused() is dialog.list_widget)
+        _key(qtbot, Qt.Key.Key_A)
+        seen.append(dialog.message_label.text())
+        _key(qtbot, Qt.Key.Key_A)
+        seen.append(dialog.message_label.text())
+        dialog._slots = [str(three / f"S{n}") for n in range(10)]
+        dialog._add()  # full (its button is off then; the message is the box's)
+        seen.append(dialog.message_label.text())
+        _key(qtbot, Qt.Key.Key_Escape)
+
+    _in_dialog(qtbot, act)
+    _key(qtbot, Qt.Key.Key_L)
+    assert seen == ["Already in the list (slot 1)", "Folder not found", "The list is full"]
+    assert page.slots() == [str(a)] + [None] * 9
     _activate(qtbot, w)
     assert errors == []
 
