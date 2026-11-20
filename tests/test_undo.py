@@ -877,3 +877,157 @@ def test_undo_with_the_mount_unchanged_works(tmp_path, monkeypatch):
     assert run.mounts == ((root, media),)
     assert undo_run(root, run_id).restored == 1
     assert (root / "a.jpg").read_bytes() == b"a"
+
+
+# ----- a put-back undone onto a taken name: later steps follow the file -------
+
+def _target(root: Path, tmp_path: Path, where: str, name: str = "T") -> Path:
+    folder = root / name if where == "inside" else tmp_path / "usb" / name
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+@pytest.mark.parametrize("where", ["inside", "outside"])
+def test_undoing_a_put_back_onto_a_taken_name_never_moves_the_stranger(tmp_path, where):
+    from photosort.modes.preview import PreviewSession
+
+    root = tmp_path / "pics"
+    _write(root / "x.jpg", b"ours")
+    target = _target(root, tmp_path, where)
+    session = PreviewSession(root, False)
+    session.move("x.jpg", target)
+    assert session.put_back() == "x.jpg"
+    run_id = session.finish()
+    _write(target / "x.jpg", b"stranger")  # a new file takes the name later
+
+    result = undo_run(root, run_id)
+
+    assert (target / "x.jpg").read_bytes() == b"stranger"  # it stays
+    assert (root / "x.jpg").read_bytes() == b"ours"  # ours comes home
+    assert sorted(p.name for p in target.iterdir()) == ["x.jpg"]
+    assert result.failed == [] and result.missing == []
+    assert result.renamed == []  # in the end it is back under its own name
+    assert _undone(root, run_id)
+
+
+@pytest.mark.parametrize("where", ["inside", "outside"])
+def test_a_chain_of_moves_and_put_backs_of_one_file_follows_it(tmp_path, where):
+    from photosort.modes.preview import PreviewSession
+
+    root = tmp_path / "pics"
+    _write(root / "x.jpg", b"ours")
+    a = _target(root, tmp_path, where, "A")
+    b = _target(root, tmp_path, where, "B")
+    session = PreviewSession(root, False)
+    for folder in (a, b, a):  # moved three times, put back each time
+        session.move("x.jpg", folder)
+        assert session.put_back() == "x.jpg"
+    run_id = session.finish()
+    _write(a / "x.jpg", b"stranger a")
+    _write(b / "x.jpg", b"stranger b")
+
+    result = undo_run(root, run_id)
+
+    assert (a / "x.jpg").read_bytes() == b"stranger a"
+    assert (b / "x.jpg").read_bytes() == b"stranger b"
+    assert sorted(p.name for p in a.iterdir()) == ["x.jpg"]
+    assert sorted(p.name for p in b.iterdir()) == ["x.jpg"]
+    assert (root / "x.jpg").read_bytes() == b"ours"
+    assert (result.failed, result.missing, result.renamed) == ([], [], [])
+    assert _undone(root, run_id)
+
+
+def test_a_file_moved_on_after_a_rename_follows_it(tmp_path):
+    """A recorded chain: x to A, on to B, then put back to A; A/x taken by
+    then. Every step follows where the file really is."""
+    root = tmp_path / "pics"
+    _write(root / "B" / "x.jpg", b"ours")
+    run_id = _crashed_journal(root, [
+        ("x.jpg", "A/x.jpg", True), ("A/x.jpg", "B/x.jpg", True),
+        ("B/x.jpg", "A/x.jpg", True), ("A/x.jpg", "B/x.jpg", True),
+    ])
+    _write(root / "A" / "x.jpg", b"stranger")
+    result = undo_run(root, run_id)
+    assert (root / "A" / "x.jpg").read_bytes() == b"stranger"
+    assert (root / "x.jpg").read_bytes() == b"ours"
+    assert not (root / "B" / "x.jpg").exists()
+    assert result.renamed == [] and result.failed == []
+
+
+def test_a_put_back_that_fails_leaves_the_stranger_alone(tmp_path, monkeypatch):
+    from photosort import undo as undo_module
+    from photosort.modes.preview import PreviewSession
+
+    root = tmp_path / "pics"
+    _write(root / "x.jpg", b"ours")
+    target = _target(root, tmp_path, "outside")
+    session = PreviewSession(root, False)
+    session.move("x.jpg", target)
+    session.put_back()
+    run_id = session.finish()
+    _write(target / "x.jpg", b"stranger")
+    real = undo_module.move_file
+
+    def held(src, dst):
+        if Path(src) == root / "x.jpg":
+            raise PermissionError("held open")
+        return real(src, dst)
+
+    monkeypatch.setattr(undo_module, "move_file", held)
+    result = undo_run(root, run_id)
+    assert result.failed and not _undone(root, run_id)
+    assert (target / "x.jpg").read_bytes() == b"stranger"  # never moved
+    assert (root / "x.jpg").read_bytes() == b"ours"
+    assert sorted(p.name for p in target.iterdir()) == ["x.jpg"]
+
+
+# ----- the mount check: only runs with also_roots; root_present its own -------
+
+def test_a_sort_whose_mount_layout_changed_still_undoes(tmp_path, monkeypatch):
+    from photosort.ui.history_page import folder_found
+
+    media = tmp_path / "media" / "x"
+    root = media / "pics"
+    _write(root / "a.jpg", b"a")
+    mounts = {media}
+    _fake_mounts(monkeypatch, mounts)
+    run_id = _run(root, [("a.jpg", "d/a.jpg")])
+    mounts.clear()  # the drive is now mounted another way: same folder, same files
+    (run,) = load_runs(root)
+    assert undo.unmounted(run) is None
+    assert undo.root_present(run)
+    assert folder_found(root, load_all_runs())
+    assert undo_run(root, run_id).restored == 1
+    assert (root / "a.jpg").read_bytes() == b"a"
+
+
+def test_an_unplugged_outside_drive_leaves_the_root_found(tmp_path, monkeypatch):
+    from photosort.ui.history_page import folder_found
+
+    usb = tmp_path / "media" / "usb"
+    root, target = tmp_path / "photos", usb / "Keep"
+    _write(root / "a.jpg", b"a")
+    _write(root / "b.jpg", b"b")
+    target.mkdir(parents=True)
+    mounts = {usb}
+    _fake_mounts(monkeypatch, mounts)
+    from photosort.modes.preview import PreviewSession
+
+    session = PreviewSession(root, False)
+    session.move("a.jpg", target)
+    session.move("b.jpg", root / "Kept")
+    run_id = session.finish()
+    mounts.clear()  # only the outside drive is gone
+    (run,) = load_runs(root)
+    assert undo.root_present(run)
+    assert folder_found(root, load_all_runs())
+    with pytest.raises(undo.FolderMissing) as caught:
+        undo_run(root, run_id)
+    assert str(caught.value) == f"{target} isn't there — is the drive plugged in?"
+    assert not _undone(root, run_id)
+
+
+def test_one_message_form_for_a_missing_outside_folder(tmp_path):
+    gone = tmp_path / "usb" / "Trips"
+    assert undo.drive_missing(gone) == f"{gone} isn't there — is the drive plugged in?"
+    assert str(undo.FolderMissing(gone, outside=True)) == undo.drive_missing(gone)

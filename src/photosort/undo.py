@@ -9,7 +9,10 @@ place is taken, even by a name differing only in case (the owner's drive is
 NTFS), the file comes back as "name (1).ext" beside it. The one exception
 is an empty folder the run itself made there (a file called "PDF" moved
 away, then a PDF folder made in its place): that folder is removed first,
-so the file comes back under its own name.
+so the file comes back under its own name. A file put back under a new
+name (a put-back undone onto a name taken since) is followed: the earlier
+moves of that file take it from where it really landed, never the file now
+at the recorded name.
 
 A Preview run may have moved files into folders outside its root (journal
 paths there are absolute, the folders listed in the run's also_roots). Undo
@@ -55,6 +58,13 @@ class UndoBlocked(Exception):
         self.blocking = blocking
 
 
+def drive_missing(folder: Path) -> str:
+    """What the owner is told when a folder outside a run's root (or a
+    run's folder off its drive) is not there: Undo, History and Preview all
+    say it this way, the full path first."""
+    return f"{folder} isn't there — is the drive plugged in?"
+
+
 class FolderMissing(Exception):
     """None of the run's files are in its folder (a drive unplugged, its
     empty mount point left behind), or, with outside, a folder outside the
@@ -63,7 +73,7 @@ class FolderMissing(Exception):
 
     def __init__(self, root: Path, outside: bool = False) -> None:
         if outside:
-            super().__init__(f"{root} isn't there — is the drive plugged in?")
+            super().__init__(drive_missing(root))
         else:
             super().__init__(f"None of this sort's files are in {root}. "
                              "Is the drive plugged in?")
@@ -121,12 +131,19 @@ def _holds_its_files(root: Path, moves: list[JournalMove]) -> bool:
     return not left or files_in(root, left)
 
 
-def unmounted(run: RunInfo) -> Path | None:
-    """A folder of the run (its root or an also_root) that is not on the
-    mount point it was recorded on (a drive unplugged, its empty mount point
-    or nothing left), or None. A run recorded before mounts were kept is
-    never checked."""
+def unmounted(run: RunInfo, root_only: bool = False) -> Path | None:
+    """A folder of the run (its root or an also_root; with root_only, its
+    root alone) that is not on the mount point it was recorded on (a drive
+    unplugged, its empty mount point or nothing left), or None. Only a run
+    that moved files outside its root (also_roots) is checked: for any
+    other, its own files in its folder are proof enough, and a drive
+    mounted another way must not stop its undo. A run recorded before
+    mounts were kept is never checked."""
+    if not run.also_roots:
+        return None
     for folder, mount in run.mounts or ():
+        if root_only and folder != run.root:
+            continue
         if Path(mount_of(folder)) != mount:
             return folder
     return None
@@ -135,11 +152,12 @@ def unmounted(run: RunInfo) -> Path | None:
 def root_present(run: RunInfo) -> bool:
     """Whether the run's folder is there: a folder, holding at least one
     file of its done moves (_holds_its_files). An empty mount point, left
-    behind by an unplugged drive, is not, nor is any folder of the run off
-    the mount point it was recorded on (unmounted). A run that moved
+    behind by an unplugged drive, is not, nor is the root off the mount
+    point it was recorded on (unmounted, root_only: a folder outside it
+    that is not there is for its undo to say, not "Folder not found"). A run that moved
     nothing (or left nothing within its folder) needs the folder only; one whose record
     can't be read is taken as there (its undo says what is wrong)."""
-    if not run.root.is_dir() or unmounted(run) is not None:
+    if not run.root.is_dir() or unmounted(run, root_only=True) is not None:
         return False
     try:
         moves = load_moves(run.root, run.run_id)
@@ -334,6 +352,12 @@ def dependents(root: Path, run_id: str) -> list[RunInfo]:
     return found
 
 
+def _key(path: Path) -> str:
+    """path as undo_run compares the places files were put back to:
+    absolute, casefolded (the owner's drive is NTFS)."""
+    return os.path.abspath(path).casefold()
+
+
 def _is_ours(rel: str) -> bool:
     return rel.split("/")[0].casefold() == PHOTOSORT_DIR
 
@@ -416,12 +440,29 @@ def undo_run(
     # out. Its listing can be stale only by still holding names undo has
     # since moved away, so a clash is re-checked against the disk.
     allocators: dict[Path, TargetAllocator] = {}
+    # Where each file put back really landed, by the place it was put back
+    # to (absolute, casefolded): a later step (an earlier move) whose dst is
+    # that place takes the file from there. Its name may have been taken
+    # meanwhile, so it landed as "name (1)", and the file now at the name
+    # is someone else's; or it could not be moved (None: it is not there).
+    # landed_renamed: the renamed entry of each, dropped once moved on.
+    landed: dict[str, Path | None] = {}
+    landed_renamed: dict[str, tuple[str, str]] = {}
     for n, move in enumerate(reversed(moves), start=1):
         src, dst = abs_path(root, move.src), abs_path(root, move.dst)
+        dst_key = _key(dst)
+        if dst_key in landed:
+            dst = landed[dst_key]
+            entry = landed_renamed.pop(dst_key, None)
+            if entry is not None and entry in result.renamed:
+                result.renamed.remove(entry)  # moved on: it was not the end
+        src_key = _key(src)
+        landed.pop(src_key, None)
+        landed_renamed.pop(src_key, None)
         # Where the file goes back: a path under root, or a name in the
         # folder outside root it came from (a put-back from there).
         base = src.parent if _outside(move.src) else root
-        if os.path.lexists(dst):
+        if dst is not None and os.path.lexists(dst):
             try:
                 if base is root:
                     folder, _, name = move.src.rpartition("/")
@@ -447,12 +488,15 @@ def undo_run(
                 # Carry on with the rest; the run stays undoable for a retry.
                 result.failed.append((move.src, str(e) or type(e).__name__))
                 allocators.pop(base, None)  # release the name it reserved
+                landed[src_key] = None  # not put back: nothing of it there
             else:
                 back = target if base is root else (base / target).as_posix()
+                landed[src_key] = base / target
                 if back != move.src:
                     # The original place is taken (both copies of a half-finished
                     # cross-drive move, a new file, or a case twin): keep both.
                     result.renamed.append((move.src, back))
+                    landed_renamed[src_key] = (move.src, back)
                 result.restored += 1
         elif not os.path.lexists(src):
             result.missing.append(move.src)

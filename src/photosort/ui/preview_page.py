@@ -168,12 +168,15 @@ def folder_from_text(root: Path, text: str) -> Path | None:
     """The folder a pasted or typed path names: the first line, spaces and
     quotes around it dropped, a file:// URL made a path (local_path_of_url),
     ~ expanded, and a relative path taken inside root. None if nothing is
-    left."""
+    left. Raises ValueError (FOLDER_NOT_FOUND) for a file: URL that names
+    no local path (one of another host)."""
     text = _first_line(text)
     while len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
         text = text[1:-1].strip()
     if text.casefold().startswith("file:"):
         text = local_path_of_url(text)
+        if not text:
+            raise ValueError(FOLDER_NOT_FOUND)
     if not text:
         return None
     path = Path(text).expanduser()
@@ -714,8 +717,10 @@ class PreviewPage(QWidget):
             names.append(f"{slot_key(n)} {name}")
             label.setText(label.fontMetrics().elidedText(
                 f"{slot_key(n)}  {name}", Qt.TextElideMode.ElideMiddle, SIDE_WIDTH - 8))
-            label.setToolTip(folder or "Empty")
-            look = "" if _usable(self.root, folder) else "muted"
+            problem = None if folder is None else target_problem(self.root, folder)
+            # A missing folder says why, as a move to it would (the full path).
+            label.setToolTip(problem or folder or "Empty")
+            look = "" if folder is not None and problem is None else "muted"
             if label.objectName() != look:
                 label.setObjectName(look)
                 label.style().unpolish(label)
@@ -1234,7 +1239,11 @@ class SlotEditor(QDialog):
     def _add_typed(self) -> None:
         """Put the folder in the path box in the first empty slot, and empty
         the box; or say why not (the box keeps it, to be put right)."""
-        folder = folder_from_text(self.root, self.path_edit.text())
+        try:
+            folder = folder_from_text(self.root, self.path_edit.text())
+        except ValueError as e:
+            self._message(str(e))
+            return
         if folder is None:
             self._message("")
             return

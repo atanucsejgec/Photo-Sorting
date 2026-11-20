@@ -139,18 +139,19 @@ def finish_moved_folders(cancel=None) -> None:
         raise RuntimeError(f"{PENDING}: {str(e) or type(e).__name__}") from e
 
 
-def bring_in_for_undo(root: Path, cancel=None) -> None:
+def bring_in_for_undo(root: Path, run_ids: list[str], cancel=None) -> None:
     """migrate.bring_in, strict, first thing in every undo (after
-    finish_moved_folders): raises migrate.MigrationIncomplete, in the
-    owner's words, while a folder related to root, or to a folder outside
-    it that one of its runs not undone moved files into (also_roots), still
-    holds an old run neither imported nor forgotten, as it may be newer
-    than the run undone. Never stopped part-way (an undo can't be cancelled)."""
+    finish_moved_folders) of the runs run_ids of root: raises
+    migrate.MigrationIncomplete, in the owner's words, while a folder
+    related to root, or to a folder outside it that one of those runs moved
+    files into (also_roots), still holds an old run neither imported nor
+    forgotten, as it may be newer than the run undone. Only those runs'
+    folders: a drive another run used is never walked, nor in the way.
+    Never stopped part-way (an undo can't be cancelled)."""
     migrate.bring_in(root, strict=True)
-    wanted = journal.root_key(root)
+    wanted = set(run_ids)
     also = dict.fromkeys(folder for run in load_all_runs()
-                         if journal.root_key(run.root) == wanted and not run.undone
-                         for folder in run.also_roots)
+                         if run.run_id in wanted for folder in run.also_roots)
     for folder in also:
         migrate.bring_in(folder, strict=True)
 
@@ -166,7 +167,7 @@ def undo_many(run_ids: list[str], progress=None) -> ManyUndone:
     finish_moved_folders()
     roots = {r.run_id: r.root for r in load_all_runs()}
     for root in dict.fromkeys(roots[i] for i in run_ids if i in roots):
-        bring_in_for_undo(root)
+        bring_in_for_undo(root, [i for i in run_ids if roots.get(i) == root])
     outcome = ManyUndone()
     for run_id in run_ids:
         root = roots.get(run_id)

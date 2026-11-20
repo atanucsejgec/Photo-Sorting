@@ -29,6 +29,7 @@ from photosort.executor import PHOTOSORT_DIR, make_parents, move_file, remove_if
 from photosort.journal import RunJournal, abs_path, norm_root
 from photosort.naming import TargetAllocator
 from photosort.scanner import walk_all_files
+from photosort.undo import drive_missing
 from photosort.settings import PREVIEW_SLOTS
 
 MODE = "preview"
@@ -87,11 +88,6 @@ def inside_root(root: Path, folder: Path) -> bool:
 APP_FOLDER = "Photo Sorter keeps its own records there. Pick another folder."
 
 
-def missing_message(folder: Path) -> str:
-    """What the owner is told when a folder outside the root is not there."""
-    return f"{Path(folder).name or folder} isn't there — is the drive plugged in?"
-
-
 def _in_app_folder(folder: Path) -> bool:
     """Whether folder (resolved) is in a .photosort folder or in the app's
     data folder (its undo records)."""
@@ -112,7 +108,7 @@ def target_problem(root: Path, folder) -> str | None:
     if _in_app_folder(folder):
         return APP_FOLDER
     if not inside_root(root, folder) and not folder.is_dir():
-        return missing_message(folder)
+        return drive_missing(folder)
     return None
 
 
@@ -190,7 +186,7 @@ class PreviewSession:
 
         Raises ValueError if target_folder is in an app folder or the file is
         not inside root, and FileNotFoundError if the file is gone or
-        target_folder is outside root and missing (missing_message); nothing
+        target_folder is outside root and missing (undo.drive_missing); nothing
         is moved then. Missing folders on the way inside root are made,
         journalled. A file already in target_folder stays where it is (rel
         is returned, nothing recorded).
@@ -207,7 +203,7 @@ class PreviewSession:
             if not inside_root(self.root, src.parent):
                 raise ValueError(f"{rel} isn't inside {self.root.name}")
             if not inside and not target_folder.is_dir():
-                raise FileNotFoundError(missing_message(target_folder))
+                raise FileNotFoundError(drive_missing(target_folder))
             if not os.path.lexists(src):
                 raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(src))
             name = rel.rpartition("/")[2]

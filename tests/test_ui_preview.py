@@ -40,7 +40,7 @@ from PySide6.QtWidgets import QApplication, QPushButton
 from fstree import tree
 from photosort.journal import load_runs
 from photosort.modes import preview as preview_mode
-from photosort import executor
+from photosort import executor, undo
 from photosort.modes.preview import NOT_NEEDED
 from photosort.settings import Settings, load_settings
 from photosort.ui import icons
@@ -326,7 +326,9 @@ def test_missing_outside_slot_says_plug_in(qtbot, make_window, three, tmp_path, 
     assert page.slot_labels[0].text() == "1  Trips"
     _key(qtbot, Qt.Key.Key_M)
     _key(qtbot, Qt.Key.Key_1)
-    assert page.message() == "Trips isn't there — is the drive plugged in?"
+    assert page.message() == f"{gone} isn't there — is the drive plugged in?"
+    assert page.message() == undo.drive_missing(gone)  # the one form, as Undo says it
+    assert page.slot_labels[0].toolTip() == undo.drive_missing(gone)
     assert page.overlay.isVisible()
     assert page.current() == "a.jpg"
     _key(qtbot, Qt.Key.Key_Escape)
@@ -512,6 +514,8 @@ def test_folder_from_text(tmp_path, monkeypatch):
     assert pp.folder_from_text(root, "\n  /a/b \n/c/d\n") == Path("/a/b")  # the first line
     assert pp.folder_from_text(root, "file:///a/caf%E9") == Path(os.fsdecode(b"/a/caf\xe9"))
     assert pp.folder_from_text(root, "file://localhost/a/b") == Path("/a/b")
+    with pytest.raises(ValueError, match="Folder not found"):  # a URL of another host
+        pp.folder_from_text(root, "file://server/share/a")
 
 
 @pytest.mark.real_dialogs
@@ -576,7 +580,7 @@ def test_paste_missing_path_says_folder_not_found(qtbot, make_window, three, tmp
     def act(dialog):
         qtbot.waitUntil(lambda: _focused() is dialog.list_widget)
         for text in (str(tmp_path / "nope"), str(tmp_path / "file.txt"),
-                     (tmp_path / "gone dir").as_uri()):
+                     (tmp_path / "gone dir").as_uri(), "file://server/share/Trips"):
             _enter_path(qtbot, dialog, text)
             seen.append((dialog.message_label.text(), dialog.path_edit.text(),
                          _rows(dialog, 2), dialog.isVisible()))
@@ -587,11 +591,12 @@ def test_paste_missing_path_says_folder_not_found(qtbot, make_window, three, tmp
 
     _in_dialog(qtbot, act)
     _key(qtbot, Qt.Key.Key_L)
-    assert seen[:3] == [
+    assert seen[:4] == [
         ("Folder not found", str(tmp_path / "nope"), ["1  A", "2  —"], True),
         ("Folder not found", str(tmp_path / "file.txt"), ["1  A", "2  —"], True),
-        ("Folder not found", (tmp_path / "gone dir").as_uri(), ["1  A", "2  —"], True)]
-    assert seen[3] == ""
+        ("Folder not found", (tmp_path / "gone dir").as_uri(), ["1  A", "2  —"], True),
+        ("Folder not found", "file://server/share/Trips", ["1  A", "2  —"], True)]
+    assert seen[4] == ""
     assert page.slots() == [str(a)] + [None] * 9
     _activate(qtbot, w)
     assert errors == []

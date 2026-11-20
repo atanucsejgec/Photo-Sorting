@@ -642,7 +642,7 @@ class MainWindow(QMainWindow):
         self.done_page.undo_started()
         task = Task(undo_with_message, self.root, self._run_id, cancellable=False)
         task.first(finish_moved_folders)  # else a run under an old path is unseen
-        task.first(bring_in_for_undo, self.root)  # a newer old run may block it
+        task.first(bring_in_for_undo, self.root, [self._run_id])  # a newer old run may block it
         self.run_task(task, self._on_undone, self._on_undo_error)
 
     def _on_undone(self, result: UndoResult) -> None:

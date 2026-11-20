@@ -219,7 +219,8 @@ def test_target_problem(root, tmp_path, _app_data):
     assert target_problem(root, tmp_path / "other") is None
     assert target_problem(root, str(tmp_path / "other")) is None
     assert target_problem(root, tmp_path / "gone") == (
-        "gone isn't there — is the drive plugged in?")
+        f"{tmp_path / 'gone'} isn't there — is the drive plugged in?")
+    assert target_problem(root, tmp_path / "gone") == undo.drive_missing(tmp_path / "gone")
     (root / ".photosort").mkdir()
     assert target_problem(root, root / ".photosort") == APP_FOLDER
     (tmp_path / "x" / ".photosort" / "y").mkdir(parents=True)
@@ -235,7 +236,8 @@ def test_move_refuses_a_missing_outside_folder_and_app_folders(root, tmp_path, _
     session = PreviewSession(root, False)
     with pytest.raises(FileNotFoundError) as caught:
         session.move("a.jpg", tmp_path / "Drive" / "Trips")
-    assert str(caught.value) == "Trips isn't there — is the drive plugged in?"
+    assert str(caught.value) == (
+        f"{tmp_path / 'Drive' / 'Trips'} isn't there — is the drive plugged in?")
     assert not (tmp_path / "Drive").exists()
     with pytest.raises(ValueError, match="keeps its own records"):
         session.move("a.jpg", _app_data)

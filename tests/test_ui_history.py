@@ -1134,14 +1134,14 @@ def test_bring_in_for_undo_covers_the_runs_outside_folders(tmp_path):
     root, target = tmp_path / "pics", tmp_path / "Archive"
     _write(root / "a.jpg", b"a")
     target.mkdir()
-    _preview_to(root, [("a.jpg", target)])
-    history_page.bring_in_for_undo(root)  # nothing old anywhere
+    run_id = _preview_to(root, [("a.jpg", target)])
+    history_page.bring_in_for_undo(root, [run_id])  # nothing old anywhere
     old = target / ".photosort" / "runs"
     old.mkdir(parents=True)
     (old / "20240101-120000-date.json").write_text("not json")  # an old run unread
     (old / "20240101-120000-date.jsonl").write_text("")
     with pytest.raises(migrate.MigrationIncomplete):
-        history_page.bring_in_for_undo(root)
+        history_page.bring_in_for_undo(root, [run_id])
     with pytest.raises(migrate.MigrationIncomplete):
         history_page.undo_many([r.run_id for r in load_all_runs()])
     assert (target / "a.jpg").read_bytes() == b"a"
@@ -1159,3 +1159,67 @@ def test_undo_many_says_plug_in_for_a_missing_outside_folder(tmp_path):
     assert outcome.stopped == (
         run_id, f"Could not undo: {target} isn't there — is the drive plugged in?", None)
     assert not load_all_runs()[0].undone
+
+
+def _old_unread_run_in(folder: Path) -> None:
+    """An old run in folder's .photosort/runs that can't be read: a strict
+    bring_in of folder refuses."""
+    old = folder / ".photosort" / "runs"
+    old.mkdir(parents=True)
+    (old / "20240101-120000-date.json").write_text("not json")
+    (old / "20240101-120000-date.jsonl").write_text("")
+
+
+def test_undoing_a_sort_never_walks_an_older_preview_runs_drive(
+        qtbot, make_window, tmp_path, errors, monkeypatch):
+    from photosort import migrate
+
+    root, target = tmp_path / "pics", tmp_path / "usb" / "Archive"
+    _write(root / "a.jpg", b"a")
+    _write(root / "b.jpg", b"b")
+    target.mkdir(parents=True)
+    _preview_to(root, [("a.jpg", target)])  # older: the only run that used the drive
+    _old_unread_run_in(target)
+    walked = []
+    real = migrate.bring_in
+    monkeypatch.setattr(migrate, "bring_in",
+                        lambda folder, *a, **k: (walked.append(Path(folder)),
+                                                 real(folder, *a, **k))[1])
+    sort = _run(root, [("b.jpg", "d/b.jpg")])
+    outcome = history_page.undo_many([sort])
+    assert outcome.stopped is None and [i for i, _ in outcome.undone] == [sort]
+    assert (root / "b.jpg").read_bytes() == b"b"
+    assert target not in walked
+
+    again = _run(root, [("b.jpg", "e/b.jpg")])  # the Done page's undo too
+    w = make_window()
+    w.root, w._run_id = root, again
+    w._undo()
+    qtbot.waitUntil(lambda: next(r for r in load_all_runs() if r.run_id == again).undone)
+    assert errors == []
+    assert (root / "b.jpg").read_bytes() == b"b"
+    assert target not in walked
+
+
+def test_an_unplugged_outside_drive_says_plug_in_without_asking_where(
+        qtbot, make_history, tmp_path, asked, shown, picker, monkeypatch):
+    usb = tmp_path / "media" / "usb"
+    root, target = tmp_path / "photos", usb / "Keep"
+    _write(root / "a.jpg", b"a")
+    _write(root / "b.jpg", b"b")
+    target.mkdir(parents=True)
+    mounts = {usb}
+    monkeypatch.setattr(os.path, "ismount",
+                        lambda p: os.path.abspath(p) in {"/", *map(str, mounts)})
+    run_id = _preview_to(root, [("a.jpg", target), ("b.jpg", root / "Kept")])
+    mounts.clear()  # only the outside drive is gone
+    assert history_page.folder_found(root, load_all_runs())
+    d = make_history(None)
+    assert _column(d, STATUS) == ["Done"]
+    _select(d, 0)
+    d.undo_button.click()
+    qtbot.waitUntil(lambda: not d.undoing() and shown != [])
+    assert picker.calls == []
+    assert shown == [f"Could not undo: {target} isn't there — is the drive plugged in?"]
+    assert (target / "a.jpg").read_bytes() == b"a"
+    assert not next(r for r in load_all_runs() if r.run_id == run_id).undone
