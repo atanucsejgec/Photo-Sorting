@@ -1,7 +1,7 @@
 """Run slow work (scanning, moving, undo) off the GUI thread.
 
-A Task calls its function on QThreadPool.globalInstance() and reports back
-through signals. TaskSignals is created on the GUI thread, so its signals are
+A Task calls its function on QThreadPool.globalInstance() (or the pool
+given to start) and reports back through signals. TaskSignals is created on the GUI thread, so its signals are
 queued to slots there: connect them to methods of a QObject that lives on the
 GUI thread (such as the main window).
 
@@ -56,11 +56,11 @@ class Task(QRunnable):
         before start."""
         self._first.append((fn, args))
 
-    def start(self) -> None:
-        """Run on the pool. Connect to the signals first: the garbage check,
-        connected here, then runs after them."""
+    def start(self, pool: QThreadPool | None = None) -> None:
+        """Run on pool (the global one by default). Connect to the signals
+        first: the garbage check, connected here, then runs after them."""
         gc_guard.watch(self.signals)
-        QThreadPool.globalInstance().start(self)
+        (pool or QThreadPool.globalInstance()).start(self)
 
     def run(self) -> None:
         # A Task runs once, but may be kept alive long after: it lets go of

@@ -145,6 +145,66 @@ def test_image_viewer_zoom_past_the_copy_decodes_the_original(qtbot, tmp_path, m
     assert viewer.view.sceneRect().width() == pytest.approx(1200)
 
 
+def test_viewer_pools_run_one_heavy_task_at_a_time():
+    """Decodes and PDF renders have their own one-thread pools, never the
+    global one (16 threads: 16 full-size decodes at once ran out of memory)."""
+    from PySide6.QtCore import QThreadPool
+    image, pdf = pv.image_pool(), pv.pdf_pool()
+    assert image.maxThreadCount() == 1
+    assert pdf.maxThreadCount() == 1
+    assert image is not pdf
+    assert QThreadPool.globalInstance() not in (image, pdf)
+    assert pv.image_pool() is image and pv.pdf_pool() is pdf  # made once
+
+
+def test_a_queued_decode_cancelled_returns_at_once(tmp_path, monkeypatch):
+    def never(*_a, **_k):
+        raise AssertionError("a cancelled decode opened the file")
+
+    monkeypatch.setattr(pv, "open_image", never)
+    cancel = threading.Event()
+    cancel.set()
+    assert pv._decode(7, tmp_path / "x.jpg", 4096, cancel=cancel) == (7, None, None)
+
+
+def _full_asked(qtbot, tmp_path, monkeypatch, original: tuple[int, int],
+                copy: tuple[int, int]) -> list[int]:
+    """Load a photo whose own size says original (its file is copy), zoom
+    in to 800 %; the max_px of every decode asked for."""
+    asked = []
+    real = pv._decode
+
+    def spy(generation, path, max_px, progress=None, cancel=None):
+        asked.append(max_px)
+        return real(generation, path, max_px, progress, cancel)
+
+    monkeypatch.setattr(pv, "_decode", spy)
+    monkeypatch.setattr(pv, "image_size", lambda _path: original)
+    viewer = _shown(qtbot, pv.ImageViewer(), (400, 300))
+    viewer.load(_jpeg(tmp_path / "p.jpg", copy))
+    qtbot.waitUntil(viewer.is_loaded, timeout=WAIT_MS)
+    assert viewer.image_size() == original
+    for _ in range(40):
+        viewer.handle_key(_key(Qt.Key.Key_Plus, "+"))
+    assert viewer.zoom() == pv.ZOOM_MAX
+    qtbot.wait(300)
+    pv.image_pool().waitForDone()
+    viewer.release()
+    return asked
+
+
+def test_full_resolution_decode_capped_at_8192(qtbot, tmp_path, monkeypatch):
+    assert pv.FULL_MAX_PX == 8192
+    asked = _full_asked(qtbot, tmp_path, monkeypatch, (9000, 6300), (900, 630))  # 56.7 MP
+    assert asked == [pv.IMAGE_MAX_PX, 8192]
+
+
+def test_no_full_resolution_decode_over_64_megapixels(qtbot, tmp_path, monkeypatch):
+    assert pv.FULL_SKIP_PIXELS == 64_000_000
+    asked = _full_asked(qtbot, tmp_path, monkeypatch, (10000, 7000), (1000, 700))  # 70 MP
+    assert asked == [pv.IMAGE_MAX_PX]  # the zoom stays on the 4096 copy
+
+
 def test_image_viewer_heic_or_jpg_loads_off_gui_thread(qtbot, tmp_path, monkeypatch):
     threads = []
     real = pv.open_image
@@ -494,6 +554,33 @@ def test_media_viewer_video_first_frame_paused(qtbot, tmp_path):
     qtbot.wait(300)
     assert viewer.player.position() == 0  # still not playing
     viewer.release()
+
+
+def test_media_viewers_can_share_one_player(qtbot, tmp_path):
+    """The page gives its video and audio viewers one SharedPlayer: only the
+    viewer with a file loaded acts on the player's signals."""
+    shared = pv.SharedPlayer()
+    sound = _shown(qtbot, pv.MediaViewer(video=False, shared=shared))
+    picture = pv.MediaViewer(video=True, shared=shared)
+    qtbot.addWidget(picture)
+    assert sound.player is picture.player is shared.player
+    assert sound.audio is shared.audio
+    failed = []
+    sound.failed.connect(failed.append)
+    picture.failed.connect(failed.append)
+    sound.load(_wav(tmp_path / "a.wav", seconds=2.0))
+    qtbot.waitUntil(lambda: sound.player.duration() > 0, timeout=WAIT_MS)
+    assert sound.time_text() == "0:00 / 0:02"
+    sound.release()
+    picture.load(_wav(tmp_path / "b.wav", seconds=4.0))
+    qtbot.waitUntil(lambda: picture.player.duration() > 3000, timeout=WAIT_MS)
+    assert picture.player.videoOutput() is picture.video_widget
+    picture.release()
+    sound.load(tmp_path / "a.wav")
+    qtbot.waitUntil(lambda: 0 < sound.player.duration() < 3000, timeout=WAIT_MS)
+    assert sound.player.videoOutput() is None
+    sound.release()
+    assert failed == []
 
 
 def test_media_viewer_unplayable_fails(qtbot, tmp_path):

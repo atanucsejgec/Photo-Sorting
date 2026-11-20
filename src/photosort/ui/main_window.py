@@ -64,7 +64,7 @@ from photosort.modes import MODE_LABELS, MODE_SPECS
 from photosort.people import PeopleStore
 from photosort.plan import Plan
 from photosort.settings import Settings, default_path, save_settings
-from photosort.ui import dialogs, icons, shortcuts
+from photosort.ui import dialogs, icons, preview_viewers, shortcuts
 from photosort.ui.bad_photos_page import BadPhotosPage
 from photosort.ui.busy_days_page import BusyDaysPage
 from photosort.ui.category_review_page import CategoryReviewPage
@@ -697,5 +697,6 @@ class MainWindow(QMainWindow):
         self.which_folder_page.stop_thumbnails()
         self.face_question_page.stop_loading()
         self.preview_page.shutdown()  # its queued moves are done, and its run finished
+        preview_viewers.wait_for_pools()  # after shutdown's release(): queued work is skipped
         QThreadPool.globalInstance().waitForDone()
         super().closeEvent(event)

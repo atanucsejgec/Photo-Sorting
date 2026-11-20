@@ -7,7 +7,10 @@ folder picker is patched (preview_page.choose_folder); the app's own dialogs
 are real where a test is marked real_dialogs, answered by keys.
 """
 
+import shutil
+import subprocess
 import threading
+import time
 import wave
 from pathlib import Path
 
@@ -322,7 +325,7 @@ def test_slot_editor_add_remove_reorder_renumbers_and_saves(qtbot, make_window, 
     _in_dialog(qtbot, act)
     _key(qtbot, Qt.Key.Key_L)
     assert seen["refused"] == outside_message(three)
-    assert seen["strip"] == ("↑↓ choose · Enter OK · Insert/A add · Del remove · "
+    assert seen["strip"] == ("↑↓ choose · Enter save · Insert/A add · Del remove · "
                              "Alt+↓ move down · Esc cancel · Tab/Shift+Tab area")
     assert "Alt+↑ move up" in seen["live"]
     expected = [str(b), str(c), str(d)] + [None] * 7
@@ -444,6 +447,127 @@ def test_shift_arrows_seek_and_s_cycles_speed_on_audio(qtbot, make_window, root,
     assert errors == []
 
 
+def test_holding_right_over_big_photos_decodes_one_at_a_time(qtbot, make_window, root,
+                                                             monkeypatch, errors):
+    """Each decode of a big photo can take hundreds of MB: holding → never
+    has two running at once, and the ones passed by are skipped."""
+    for n in range(10):
+        _jpeg(root / f"p{n}.jpg", size=(1600, 1200))
+    lock = threading.Lock()
+    running, most, done = [0], [0], []
+    real = pv._decode
+
+    def decode(generation, path, max_px, progress=None, cancel=None):
+        with lock:
+            running[0] += 1
+            most[0] = max(most[0], running[0])
+        try:
+            result = real(generation, path, max_px, progress, cancel)
+            if result[1] is not None:
+                time.sleep(0.3)  # a big photo takes a while
+                done.append(path.name)
+            return result
+        finally:
+            with lock:
+                running[0] -= 1
+
+    monkeypatch.setattr(pv, "_decode", decode)
+    w = make_window()
+    page = _open(qtbot, w, root)
+    for _ in range(9):
+        _hold(Qt.Key.Key_Right, times=1)  # a held key's repeats, ~30 a second
+        qtbot.wait(30)
+    _showing(qtbot, page, "10 of 10 · p9.jpg")
+    qtbot.waitUntil(page.viewer().is_loaded, timeout=WAIT_MS)
+    assert most[0] == 1
+    assert done[-1] == "p9.jpg"
+    assert len(done) < 10  # the photos passed by while queued were never decoded
+    assert errors == []
+
+
+def _counting_players(monkeypatch, page_of) -> tuple[list, list]:
+    """Count the QMediaPlayers made, and what the page said as each was made."""
+    made, said = [], []
+
+    class Counting(QMediaPlayer):
+        def __init__(self, *args) -> None:
+            super().__init__(*args)
+            made.append(self)
+            said.append(page_of().message())
+
+    monkeypatch.setattr(pv, "QMediaPlayer", Counting)
+    return made, said
+
+
+def test_the_player_is_made_once_when_the_page_opens_and_reused(qtbot, make_window, root,
+                                                              monkeypatch, errors):
+    """Making the first player loads the media backend (0.5–2 s on the GUI
+    thread): it is done when the page opens, behind a status line, never on
+    a file change, and every media file after uses that one player."""
+    _jpeg(root / "a.jpg")
+    _wav(root / "b.wav", seconds=2.0)
+    if shutil.which("ffmpeg"):
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+                        "-i", "testsrc=s=64x48:d=2", "-pix_fmt", "yuv420p",
+                        str(root / "c.mp4")], check=True)
+    _wav(root / "d.wav", seconds=2.0)
+    w = make_window()
+    made, said = _counting_players(monkeypatch, lambda: w.preview_page)
+    page = _open(qtbot, w, root)
+    qtbot.waitUntil(lambda: len(made) == 1, timeout=WAIT_MS)
+    assert page.current() == "a.jpg"
+    assert said == [pp.PLAYER_READYING]
+    qtbot.waitUntil(lambda: page.message() == "", timeout=WAIT_MS)
+    count = len(page.files)
+    for n in range(2, count + 1):
+        _key(qtbot, Qt.Key.Key_Right)
+        _showing(qtbot, page, f"{n} of {count}")
+        viewer = page.viewer()
+        assert isinstance(viewer, pv.MediaViewer)
+        assert viewer.player is made[0]
+        qtbot.waitUntil(lambda viewer=viewer: viewer.player.duration() > 0, timeout=WAIT_MS)
+    assert len(made) == 1
+    assert errors == []
+
+
+def test_a_first_file_that_plays_waits_for_the_player(qtbot, make_window, root, monkeypatch,
+                                                      errors):
+    _wav(root / "a.wav", seconds=2.0)
+    _jpeg(root / "z.jpg")
+    w = make_window()
+    made, said = _counting_players(monkeypatch, lambda: w.preview_page)
+    page = _open(qtbot, w, root)
+    assert page.current() == "a.wav"
+    assert len(made) == 1 and said == [pp.PLAYER_READYING]
+    assert page.viewer().player is made[0]
+    qtbot.waitUntil(lambda: page.viewer().player.duration() > 0, timeout=WAIT_MS)
+    assert page.message() == ""
+    assert errors == []
+
+
+def test_no_player_is_made_for_a_folder_with_nothing_to_play(qtbot, make_window, three,
+                                                            monkeypatch, errors):
+    w = make_window()
+    made, _said = _counting_players(monkeypatch, lambda: w.preview_page)
+    page = _open(qtbot, w, three)
+    _key(qtbot, Qt.Key.Key_Right)
+    _showing(qtbot, page, "2 of 3 · b.jpg")
+    qtbot.wait(100)
+    assert made == []
+    assert errors == []
+
+
+def test_the_message_line_keeps_the_last_three_lines(qtbot, make_window, three, errors):
+    w = make_window()
+    page = _open(qtbot, w, three)
+    for text in ("one", "two", "three", "four", "five"):
+        page._tell(text)
+    assert page.message() == "three\nfour\nfive"
+    page._tell("four")  # said already: not said again
+    assert page.message() == "three\nfour\nfive"
+    assert errors == []
+
+
 # ----- the shown file changing under the overlay or the picker ----------------------------
 
 def _slow_moves(monkeypatch) -> threading.Event:
@@ -489,11 +613,21 @@ def test_a_put_back_landing_while_the_overlay_is_open_closes_it(qtbot, make_wind
 
 
 def test_a_viewer_failing_while_the_overlay_is_open_closes_it(qtbot, make_window, root,
-                                                             errors):
+                                                             monkeypatch, errors):
     (root / "broken.jpg").write_bytes(b"not a jpeg")
+    gate = threading.Event()
+    real = pv._decode
+
+    def decode(*args, **kwargs):
+        gate.wait(5)  # it fails only once M has opened the overlay
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pv, "_decode", decode)
     w = make_window()
     page = _open(qtbot, w, root)
     _key(qtbot, Qt.Key.Key_M)  # before the decode fails, a moment later
+    assert page.overlay.isVisible()
+    gate.set()
     qtbot.waitUntil(lambda: isinstance(page.viewer(), pv.InfoCard), timeout=WAIT_MS)
     assert not page.overlay.isVisible()
     assert _focused() is page._box
@@ -768,7 +902,7 @@ def test_closing_the_window_lets_go_of_the_pdf_before_waiting_for_the_pool(
     viewer = page._box.viewer
     assert isinstance(viewer, pv.PdfViewer)
     qtbot.waitUntil(lambda: 1 in viewer.rendered_pages(), timeout=WAIT_MS)
-    events = []
+    events, waited = [], []
     real_release, real_wait = pv.PdfViewer.release, QThreadPool.waitForDone
     real_render = pv.PdfiumFile.render
 
@@ -778,6 +912,7 @@ def test_closing_the_window_lets_go_of_the_pdf_before_waiting_for_the_pool(
 
     def wait(self, *a):
         events.append("wait")
+        waited.append(self)
         return real_wait(self, *a)
 
     def render(self, *a, **k):
@@ -795,6 +930,9 @@ def test_closing_the_window_lets_go_of_the_pdf_before_waiting_for_the_pool(
     assert events.index("release") < events.index("wait")
     assert "drawn" not in events[events.index("release"):]
     assert viewer._file is None
+    # the viewers' own pools are waited for too (the PDF is closed on its pool)
+    assert any(pool is pv.pdf_pool() for pool in waited)
+    assert any(pool is pv.image_pool() for pool in waited)
     assert errors == []
 
 
@@ -821,9 +959,9 @@ def test_the_listing_brings_old_records_in_and_skips_slots_and_not_needed(
     first = []
     real_start = Task.start
 
-    def start(task):
+    def start(task, *pool):
         first.extend(task._first)
-        real_start(task)
+        real_start(task, *pool)
 
     monkeypatch.setattr(Task, "start", start)
     w = make_window(_settings(root / "Trips"))

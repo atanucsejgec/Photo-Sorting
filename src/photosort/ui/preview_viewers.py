@@ -20,6 +20,22 @@ reading a text file, and the info card's size, date and type. A result for
 a file that is no longer the one loaded is dropped (each load gets a new
 generation number).
 
+The heavy work has pools of its own, each one thread (image_pool, pdf_pool):
+a photo's decode can take hundreds of MB, so holding → through big photos
+must never run many at once, as the global pool's 16 threads would. A decode
+or render queued there and no longer wanted returns at once when its turn
+comes. Text and the info card's facts stay on the global pool. Whoever
+waits for the work to end (the window, as it closes) calls wait_for_pools
+too, after the viewers' release().
+
+A photo is first decoded at most IMAGE_MAX_PX on its longest side; zoomed in,
+again at most FULL_MAX_PX, and never for a photo over FULL_SKIP_PIXELS (its
+zoom stays on the first copy).
+
+The video and audio viewers of a page share one SharedPlayer: the first
+QMediaPlayer of the process loads Qt's media backend, 0.5–2 s on the GUI
+thread, so the page makes it once, when it opens (see preview_page).
+
 PDFs are drawn with pypdfium2 (the Linux PySide6 wheel has no QtPdf). pdfium
 is not thread-safe, so every pdfium call in the process holds one lock
 (_PDFIUM_LOCK). A load opens its document once, on the pool, and keeps it
@@ -37,7 +53,8 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QMimeDatabase, QRect, QRectF, QSize, Qt, QThreadPool, QTimer, QUrl, Signal,
+    QCoreApplication, QMimeDatabase, QObject, QRect, QRectF, QSize, Qt, QThreadPool, QTimer,
+    QUrl, Signal,
 )
 from PySide6.QtGui import (
     QColor, QDesktopServices, QFont, QFontDatabase, QImage, QKeyEvent, QPainter, QPixmap,
@@ -82,7 +99,8 @@ ZOOM_MIN = 0.1
 ZOOM_MAX = 8.0
 ZOOM_STEP = 1.25
 IMAGE_MAX_PX = 4096  # a photo is first decoded at most this many pixels on its longest side
-FULL_MAX_PX = 12000  # zoomed in, it is decoded again in full, at most this
+FULL_MAX_PX = 8192  # zoomed in, it is decoded again in full, at most this
+FULL_SKIP_PIXELS = 64_000_000  # a photo bigger than this is never decoded again in full
 PDF_MAX_DPI = 400.0
 PDF_MAX_PIXELS = 40_000_000  # a page drawn bigger than this is drawn at a lower scale
 PDF_SIZES_CHECK = 100  # opening checks whether it is still wanted every this many pages
@@ -179,6 +197,42 @@ class Viewer(QWidget):
         return list(self.KEYS)
 
 
+# ----- pools -------------------------------------------------------------------------
+
+_POOLS: dict[str, QThreadPool] = {}
+
+
+def _pool(name: str) -> QThreadPool:
+    """The one-thread pool called name, made at first use (again if the
+    application it belonged to has gone)."""
+    pool = _POOLS.get(name)
+    if pool is None or not isValid(pool):
+        pool = QThreadPool(QCoreApplication.instance())
+        pool.setObjectName(f"Preview {name}")
+        pool.setMaxThreadCount(1)
+        _POOLS[name] = pool
+    return pool
+
+
+def image_pool() -> QThreadPool:
+    """Where photos are decoded, one at a time."""
+    return _pool("images")
+
+
+def pdf_pool() -> QThreadPool:
+    """Where PDFs are opened, drawn and closed, one at a time (pdfium takes
+    one lock anyway)."""
+    return _pool("pdf")
+
+
+def wait_for_pools() -> None:
+    """Wait until the viewers' own pools are idle (call release() first, so
+    the work still queued is skipped)."""
+    for pool in list(_POOLS.values()):
+        if isValid(pool):
+            pool.waitForDone()
+
+
 class _Tasks:
     """Pool tasks kept alive until they report; each load is a new generation."""
 
@@ -194,7 +248,8 @@ class _Tasks:
             task.cancel_event.set()
         return self.generation
 
-    def start(self, fn, *args, on_result, on_error) -> Task:
+    def start(self, fn, *args, on_result, on_error, pool: QThreadPool | None = None) -> Task:
+        """fn on pool (the global one by default)."""
         task = Task(fn, *args)
 
         # A result that arrives after the viewer was deleted goes nowhere.
@@ -211,7 +266,10 @@ class _Tasks:
         task.signals.result.connect(result)
         task.signals.error.connect(error)
         self._live.add(task)
-        task.start()
+        if pool is None:
+            task.start()
+        else:
+            task.start(pool)
         return task
 
 
@@ -221,8 +279,9 @@ def _decode(generation: int, path: Path, max_px: int, progress=None, cancel=None
     """(generation, picture, original size) on a pool thread.
 
     picture is a QImage at most max_px on its longest side, CANT_SHOW_IMAGE,
-    or None if cancelled first. original is the photo's own (width, height),
-    the right way up; percentages of zoom are of those pixels.
+    or None if cancelled (a decode queued and no longer wanted returns at
+    once). original is the photo's own (width, height), the right way up;
+    percentages of zoom are of those pixels.
     """
     if cancel is not None and cancel.is_set():
         return generation, None, None
@@ -230,6 +289,8 @@ def _decode(generation: int, path: Path, max_px: int, progress=None, cancel=None
         img = open_image(path, max_px)
     except UnreadableImage:
         return generation, CANT_SHOW_IMAGE, None
+    if cancel is not None and cancel.is_set():
+        return generation, None, None  # no copy for Qt: the memory goes back now
     try:
         original = image_size(path)
     except UnreadableImage:
@@ -270,7 +331,9 @@ class ImageViewer(Viewer):
 
     It is first decoded at most IMAGE_MAX_PX on its longest side. Zoomed
     past 100 % of that copy, the original is decoded again in full (at most
-    FULL_MAX_PX) and swapped in, so zooming shows the real detail.
+    FULL_MAX_PX) and swapped in, so zooming shows the real detail; not for a
+    photo over FULL_SKIP_PIXELS, whose zoom stays on the first copy. Decodes
+    run on image_pool, one at a time.
     """
 
     KEYS = (("+−", "zoom"), ("F", "fit"), ("↑↓", "scroll"))
@@ -307,7 +370,7 @@ class ImageViewer(Viewer):
         generation = self._tasks.generation
         self._tasks.start(_decode, generation, self._path, IMAGE_MAX_PX,
                           on_result=self._decoded, on_error=lambda _m, g=generation:
-                          self._decode_failed(g))
+                          self._decode_failed(g), pool=image_pool())
 
     def _decoded(self, result) -> None:
         generation, image, original = result
@@ -335,7 +398,8 @@ class ImageViewer(Viewer):
 
     def _want_full(self) -> None:
         """Past 100 % of the copy shown, decode the original in full, once."""
-        if self._item is None or self._full_asked:
+        if self._item is None or self._full_asked \
+                or self._original[0] * self._original[1] > FULL_SKIP_PIXELS:
             return
         decoded = self._item.pixmap().width()
         whole = min(FULL_MAX_PX, max(self._original))
@@ -344,7 +408,8 @@ class ImageViewer(Viewer):
         self._full_asked = True
         generation = self._tasks.generation
         self._tasks.start(_decode, generation, self._path, whole,
-                          on_result=self._full_decoded, on_error=lambda _m: None)
+                          on_result=self._full_decoded, on_error=lambda _m: None,
+                          pool=image_pool())
 
     def _full_decoded(self, result) -> None:
         generation, image, _original = result
@@ -517,9 +582,9 @@ class PdfiumFile:
                 document.close()
 
     def close_on_pool(self) -> None:
-        """close() on a pool thread, so the GUI thread never waits for a render."""
+        """close() on pdf_pool, so the GUI thread never waits for a render."""
         self._closed = True  # nothing new starts; the lock-holding close follows
-        QThreadPool.globalInstance().start(self.close)
+        pdf_pool().start(self.close)
 
 
 def _close_document(document) -> None:
@@ -652,7 +717,7 @@ class PdfViewer(Viewer):
         self._file = PdfiumFile(self._path)  # opened on the pool, closed by release()
         generation = self._tasks.generation
         self._tasks.start(_pdf_open, generation, self._file, on_result=self._got_pages,
-                          on_error=lambda m, g=generation: self._fail(g, m))
+                          on_error=lambda m, g=generation: self._fail(g, m), pool=pdf_pool())
 
     def _fail(self, generation: int | None = None, reason: str = "") -> None:
         """Say once, for this load, that the PDF can't be shown."""
@@ -763,7 +828,7 @@ class PdfViewer(Viewer):
             self._pending_dpi[page] = dpi
             self._pending[page] = self._tasks.start(
                 _pdf_render, generation, page, dpi, self._file, on_result=self._rendered,
-                on_error=lambda m, g=generation: self._fail(g, m))
+                on_error=lambda m, g=generation: self._fail(g, m), pool=pdf_pool())
         self._update_page_text()
 
     def _rendered(self, result) -> None:
@@ -889,22 +954,46 @@ class _SeekSlider(QSlider):
         super().mousePressEvent(event)  # the handle is under the pointer now: a drag starts
 
 
+class SharedPlayer(QObject):
+    """One QMediaPlayer and its QAudioOutput, for the MediaViewers of a page.
+
+    The first QMediaPlayer (or QMediaDevices, QAudioOutput) of the process
+    loads Qt's media backend and finds the audio devices: 0.5 s with a warm
+    disk cache, over 2 s cold, all on the GUI thread (its objects must live
+    there). The Preview page makes one when it opens, behind a status line,
+    and its video and audio viewers both use it; after the first, making one
+    is quick.
+    """
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.player = QMediaPlayer(self)
+        self.audio = QAudioOutput(self)
+        self.player.setAudioOutput(self.audio)
+
+
 class MediaViewer(Viewer):
     """A video (video=True) or a sound, paused at the start: it never plays by
-    itself. The speed (1×, 2×, 4×) is kept from one file to the next."""
+    itself. The speed (1×, 2×, 4×) is kept from one file to the next.
+
+    It plays through shared (a SharedPlayer it may share with the page's
+    other MediaViewer: only the one with a file loaded acts on the player's
+    signals, and a load points the player's picture at this viewer), or
+    through a SharedPlayer of its own."""
 
     KEYS = (("Space", "play/pause"), ("Shift+←→", "±10 s"), ("S", "speed"))
     speed = 1.0  # class-wide: every MediaViewer plays at the speed last set
 
-    def __init__(self, video: bool, parent: QWidget | None = None) -> None:
+    def __init__(self, video: bool, parent: QWidget | None = None, *,
+                 shared: SharedPlayer | None = None) -> None:
         super().__init__(parent)
         self.video = video
         self._loaded = False  # the source is loading or loaded (not released)
         self._failed = False
 
-        self.player = QMediaPlayer(self)
-        self.audio = QAudioOutput(self)
-        self.player.setAudioOutput(self.audio)
+        self.shared = shared if shared is not None else SharedPlayer(self)
+        self.player = self.shared.player
+        self.audio = self.shared.audio
         self.player.mediaStatusChanged.connect(self._status_changed)
         self.player.errorOccurred.connect(self._error)
         self.player.positionChanged.connect(self._position_changed)
@@ -914,8 +1003,7 @@ class MediaViewer(Viewer):
         self.video_widget: QVideoWidget | None = None
         self.name_label: QLabel | None = None
         if video:
-            self.video_widget = QVideoWidget()
-            self.player.setVideoOutput(self.video_widget)
+            self.video_widget = QVideoWidget()  # the player is pointed at it by load()
             picture: QWidget = self.video_widget
         else:
             picture = QWidget()
@@ -973,6 +1061,7 @@ class MediaViewer(Viewer):
         if self.name_label is not None:
             self.name_label.setText(path.name)
         self._loaded = True
+        self.player.setVideoOutput(self.video_widget)  # None for a sound
         self.player.setPlaybackRate(MediaViewer.speed)
         self._show_speed()
         self.player.setSource(QUrl.fromLocalFile(str(path)))
@@ -1059,7 +1148,7 @@ class MediaViewer(Viewer):
             self.player.setPosition(self.slider.sliderPosition())
 
     def _state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
-        playing = state == QMediaPlayer.PlaybackState.PlayingState
+        playing = self._loaded and state == QMediaPlayer.PlaybackState.PlayingState
         self.play_button.setText("Pause" if playing else "Play")
 
     def handle_key(self, event: QKeyEvent) -> bool:

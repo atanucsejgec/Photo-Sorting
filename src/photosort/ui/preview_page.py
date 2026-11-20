@@ -25,7 +25,15 @@ threads: the next file shows at once. The viewer lets go of a file before
 its move is queued. A move that fails puts the file back in the list where
 it was, and says "Couldn't move <name>: <error>"; the session goes on.
 What the queue comes back with is added under the message line's text, so
-a failure is not wiped by a later note ("Nothing to put back").
+a failure is not wiped by a later note ("Nothing to put back"); the line
+keeps the last MESSAGE_LINES of them.
+
+The first media player of the process takes 0.5–2 s to make, on the GUI
+thread (it loads Qt's media backend). So a session with a video or a sound
+in its list makes the page's one player (preview_viewers.SharedPlayer) as
+it opens, under "Getting the player ready…", right after the first file is
+shown (or before, if that file is the one that plays), and both media
+viewers use it for every file after: a file change never waits for it.
 
 M remembers the file shown; a slot or Other folder… moves that file only
 if it is still the one shown (a put-back may land meanwhile, while the
@@ -46,7 +54,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QThreadPool, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QKeyEvent
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QListWidget,
@@ -75,6 +83,9 @@ EDITOR_FULL = "The list is full; remove a folder first"
 NOTHING_TO_PUT_BACK = "Nothing to put back"
 FILE_CHANGED = "The file changed — press M again"
 FINISHING = "Finishing…"
+PLAYER_READYING = "Getting the player ready…"
+MESSAGE_LINES = 3  # the message line keeps the last this many notes
+_PLAYS = ("video", "audio")
 PICK_TITLE = "Move to which folder?"
 ADD_TITLE = "Add a folder"
 EDITOR_TITLE = "Preview folders"
@@ -259,6 +270,7 @@ class PreviewPage(QWidget):
         self._index = 0
         self._slots: list[str | None] = [None] * SLOTS
         self._boxes: dict[str, _ViewerBox] = {}
+        self._player: pv.SharedPlayer | None = None  # made once, as a session needs it
         self._box: _ViewerBox | None = None  # the box shown
         self._shown: Path | None = None  # the file shown
         self._overlay_rel: str | None = None  # the file shown when M opened the overlay
@@ -368,9 +380,34 @@ class PreviewPage(QWidget):
         self.set_slots(slots)
         self._sync_keys()
         if self.files:
+            plays = {kind for kind in map(file_kind, (self.root / rel for rel in self.files))
+                     if kind in _PLAYS}
+            if plays and self._player is None:
+                # Made once the page shows, under the status line (see the docstring).
+                self._say(PLAYER_READYING)
+                QTimer.singleShot(0, partial(self._get_player_ready, self.session, plays))
+                if file_kind(self.root / self.files[0]) in _PLAYS:
+                    return  # shown once the player is ready
             self._show_current()
         else:
             self._end(last=True)
+
+    def _get_player_ready(self, session: PreviewSession, plays: set[str]) -> None:
+        """Make the page's player, and the viewers for the kinds that play
+        (plays), on the GUI thread while the status line says so; then show
+        the first file if it was waiting."""
+        if not isValid(self) or session is not self.session or self._ending:
+            return  # that session is over
+        if self._player is None:
+            if self.isVisible():
+                self.repaint()  # the status line shows while the GUI thread waits
+            self._player = pv.SharedPlayer(self)
+            for kind in sorted(plays):
+                self._box_for(kind)
+        if self.message() == PLAYER_READYING:
+            self._say("")
+        if self._shown is None and self._box is None and self.files:
+            self._show_current()
 
     def shutdown(self) -> None:
         """The window is closing: do the moves still queued and finish the
@@ -442,9 +479,11 @@ class PreviewPage(QWidget):
         kind = "other" if kind == "info" else kind
         box = self._boxes.get(kind)
         if box is None:
+            if kind in _PLAYS and self._player is None:
+                self._player = pv.SharedPlayer(self)  # not got ready ahead (never so far)
             makers = {"image": pv.ImageViewer, "pdf": pv.PdfViewer,
-                      "video": partial(pv.MediaViewer, True),
-                      "audio": partial(pv.MediaViewer, False),
+                      "video": partial(pv.MediaViewer, True, shared=self._player),
+                      "audio": partial(pv.MediaViewer, False, shared=self._player),
                       "text": pv.TextViewer, "other": pv.InfoCard}
             viewer = makers[kind]()
             viewer.failed.connect(partial(self._viewer_failed, viewer))  # before any load
@@ -564,8 +603,10 @@ class PreviewPage(QWidget):
     def _tell(self, text: str) -> None:
         """A problem or a note that a move, a put-back or the queue came
         back with: added under what is there, so a failure stays in view."""
-        old = self.message_label.text()
-        self._say(f"{old}\n{text}" if old and text not in old.split("\n") else text)
+        lines = [line for line in self.message_label.text().split("\n") if line]
+        if text not in lines:
+            lines.append(text)
+        self._say("\n".join(lines[-MESSAGE_LINES:]))
 
     def message(self) -> str:
         return self.message_label.text()
@@ -873,7 +914,7 @@ class SlotEditor(QDialog):
     are numbered afresh: 1…9, then 0.
 
     Keys: ↑↓ choose, Insert or A add, Delete remove, Alt+↑ and Alt+↓ move,
-    Enter is OK and Esc cancels (Enter presses a button Tab has reached
+    Enter saves (Save) and Esc cancels (Enter presses a button Tab has reached
     instead: widgets.ButtonKeys).
     """
 
@@ -911,6 +952,7 @@ class SlotEditor(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok_button.setText("Save")  # the strip says "Enter save"
         self.cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
 
         layout = QVBoxLayout(self)
@@ -934,10 +976,10 @@ class SlotEditor(QDialog):
         self.down_button.clicked.connect(lambda: self._move(1))
         self.list_widget.currentRowChanged.connect(self._update_buttons)
         shortcuts.describe(self.list_widget, "↑↓", "choose")
-        shortcuts.bind(self.list_widget, "Return", "Enter", "OK", self.accept, repeat=False)
+        shortcuts.bind(self.list_widget, "Return", "Enter", "save", self.accept, repeat=False)
         words = ((self.add_button, "add"), (self.remove_button, "remove"),
                  (self.up_button, "move up"), (self.down_button, "move down"),
-                 (self.ok_button, "OK"), (self.cancel_button, "cancel"))
+                 (self.ok_button, "save"), (self.cancel_button, "cancel"))
         ButtonKeys([button for button, _ in words])
         for button, word in words:
             shortcuts.describe(button, "Enter", word)
