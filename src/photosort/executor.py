@@ -81,13 +81,15 @@ class ExecResult:
     run_id: str
 
 
-def _make_parents(root: Path, dst: str, journal: RunJournal) -> None:
+def make_parents(root: Path, dst: str, journal: RunJournal) -> list[str]:
     """Create dst's missing parent folders top-down, journalling each one first.
+    Return the folders made (POSIX, relative to root), parents first.
 
     Journal first: a record for a folder that then is not made (or appeared
     meanwhile) is harmless, as undo only removes folders that are empty; a
     folder made with no record would be left behind by undo.
     """
+    made = []
     parts = dst.split("/")[:-1]
     for depth in range(1, len(parts) + 1):
         rel = "/".join(parts[:depth])
@@ -99,6 +101,8 @@ def _make_parents(root: Path, dst: str, journal: RunJournal) -> None:
             os.mkdir(path)
         except FileExistsError:
             continue  # appeared meanwhile
+        made.append(rel)
+    return made
 
 
 def _is_empty_dir(path: Path) -> bool:
@@ -185,24 +189,37 @@ def _remove_empty_dirs(
     for start in sorted(candidates, key=lambda r: r.count("/"), reverse=True):
         rel = start
         while rel and rel.casefold() not in keep_folded:
-            if rel.split("/")[0].casefold() == PHOTOSORT_DIR:
-                break
-            path = root / rel
-            empty = _is_empty_dir(path)
-            cache = None if empty else _cache_only(path)
-            if not empty and cache is None:
-                break
-            # Journal first: a record for a folder that then stays is harmless
-            # (undo's mkdir is a no-op), a removed folder with no record is lost.
-            # Undo recreates the folder; the cache is not worth bringing back.
-            journal.record_dir_removed(rel)
-            try:
-                if cache is not None:
-                    _remove_cache(cache)
-                os.rmdir(path)  # fails unless empty
-            except OSError:
+            if not remove_if_empty(root, rel, journal):
                 break
             rel = rel.rpartition("/")[0]
+
+
+def remove_if_empty(root: Path, rel: str, journal: RunJournal) -> bool:
+    """Remove folder rel (POSIX, under root) if it is empty, journalled; return
+    whether it was removed.
+
+    A folder holding only a .photosort with nothing but the analysis cache
+    in it counts as empty: the cache goes with it. Never removes root or a
+    folder inside a top-level .photosort.
+    """
+    if not rel or rel.split("/")[0].casefold() == PHOTOSORT_DIR:
+        return False
+    path = root / rel
+    empty = _is_empty_dir(path)
+    cache = None if empty else _cache_only(path)
+    if not empty and cache is None:
+        return False
+    # Journal first: a record for a folder that then stays is harmless
+    # (undo's mkdir is a no-op), a removed folder with no record is lost.
+    # Undo recreates the folder; the cache is not worth bringing back.
+    journal.record_dir_removed(rel)
+    try:
+        if cache is not None:
+            _remove_cache(cache)
+        os.rmdir(path)  # fails unless empty
+    except OSError:
+        return False
+    return True
 
 
 def execute(
@@ -237,7 +254,7 @@ def execute(
                 # The allocator spells dst's folders as on disk where a case
                 # variant exists, so no case-twin folder is ever created.
                 dst = allocator.allocate(move.dst)
-                _make_parents(root, dst, journal)
+                make_parents(root, dst, journal)
                 i = journal.record_intent(move.src, dst)
                 move_file(src_path, root / dst)
                 journal.record_done(i)

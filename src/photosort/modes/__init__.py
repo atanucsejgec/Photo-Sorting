@@ -16,7 +16,9 @@ people folder (see modes.no_people); it needs a face engine, so the main
 window runs it too, never through prepare. A mode of kind "pickfaces" finds
 every face, groups them into people for the owner to pick from and make
 folders of, then plans (see modes.pick_faces); the main window runs it too,
-never through prepare. A mode of kind "bad" finds bad
+never through prepare. A mode of kind "preview" shows every file, one at
+a time, for the owner to move at once (see modes.preview); the main window
+runs it too, never through prepare. A mode of kind "bad" finds bad
 photos (a list of Candidates, see modes.bad_photos) for the owner to tick;
 the ticked ones are set aside, flat, in set_aside_folder. A mode of kind
 "events" finds events (see modes.events) for the owner to name, merge,
@@ -43,6 +45,7 @@ MODES: list[tuple[str, str, bool]] = [
     ("date", "Date", True),
     ("face", "Face", True),
     ("pick_faces", "Pick faces", True),
+    ("preview", "Preview", True),
     ("duplicates", "Duplicates", True),
     ("repeated", "Repeated shots", True),
     ("notes", "Notes & Pages", True),
@@ -64,7 +67,7 @@ Progress = Callable[[int, int], None] | None
 @dataclass(frozen=True)
 class ModeSpec:
     kind: Literal["plan", "date", "files", "groups", "face", "pickfaces", "nopeople", "bad",
-                  "events", "content", "notes"]
+                  "events", "content", "notes", "preview"]
     # -> Plan (kinds "plan", "files"), DateScan (kind "date"), list[Group],
     # list[Candidate] (kind "bad") or
     # (list[Event], files in none) (kind "events"); None if cancelled
@@ -181,6 +184,13 @@ def _find_pick_faces(root: Path, include_subfolders: bool, progress: Progress = 
     raise NotImplementedError("Pick faces is run through modes.pick_faces")
 
 
+def _find_preview(root: Path, include_subfolders: bool, progress: Progress = None,
+                  cancel: threading.Event | None = None):
+    # Preview shows the files one at a time and moves each at once; the main
+    # window runs it through modes.preview directly.
+    raise NotImplementedError("Preview is run through modes.preview")
+
+
 def _run_by_window(root: Path, include_subfolders: bool, progress: Progress = None,
                    cancel: threading.Event | None = None):
     # Content and Notes & Pages also need a CLIP engine (and Content the
@@ -192,6 +202,7 @@ MODE_SPECS: dict[str, ModeSpec] = {
     "date": ModeSpec("date", _scan_date),
     "face": ModeSpec("face", _find_faces),
     "pick_faces": ModeSpec("pickfaces", _find_pick_faces),
+    "preview": ModeSpec("preview", _find_preview),
     "duplicates": ModeSpec("groups", _find_duplicates, "Duplicates", "No duplicates found."),
     "repeated": ModeSpec("groups", _find_repeated, "Repeated Shots",
                          "No repeated shots found."),

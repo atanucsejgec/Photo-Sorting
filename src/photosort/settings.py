@@ -28,6 +28,8 @@ from photosort.thresholds import (
     FOLDER_NAME_MAX_BYTES,
 )
 
+PREVIEW_SLOTS = 10  # modes.preview.SLOTS; spelt here as settings loads before any mode
+
 # The Content mode's categories until the owner edits them, in this order.
 DEFAULT_CONTENT_CATEGORIES: tuple[str, ...] = (
     "Food", "Pets & Animals", "Nature & Landscapes", "Selfies & People",
@@ -50,6 +52,15 @@ class Settings:
     last_mode: str | None = None  # the MODES key last started; its tile has focus first
     # The date Date (all files) last sorted by, focused first when it asks again.
     file_date: str = "modified"
+    # Preview's folder slots, keys 1-9 then 0: an absolute path or None each.
+    preview_folders: list[str | None] = field(default_factory=lambda: [None] * PREVIEW_SLOTS)
+
+
+def valid_preview_folders(folders) -> bool:
+    """Whether folders (as loaded) is a usable slot list: PREVIEW_SLOTS
+    entries, each None or an absolute path."""
+    return (isinstance(folders, list) and len(folders) == PREVIEW_SLOTS
+            and all(f is None or (isinstance(f, str) and os.path.isabs(f)) for f in folders))
 
 
 def _int_in(low: int, high: int):
@@ -116,6 +127,7 @@ _VALID = {
     "event_min_files": _int_in(*EVENT_MIN_FILES_RANGE),
     "content_categories": valid_category_list,
     "file_date": lambda v: isinstance(v, str) and v in _FILE_DATES,
+    "preview_folders": valid_preview_folders,
 }
 
 

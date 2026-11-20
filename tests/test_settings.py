@@ -218,3 +218,16 @@ def test_a_bad_file_date_loads_as_modified(tmp_path, bad):
     path = tmp_path / "settings.json"
     path.write_text(json.dumps({"file_date": bad, "use_gpu": False}))
     assert load_settings(path) == Settings(use_gpu=False, file_date="modified")
+
+
+def test_preview_folders_default_and_bad_values(tmp_path):
+    path = tmp_path / "settings.json"
+    assert Settings().preview_folders == [None] * 10
+    assert Settings().preview_folders is not Settings().preview_folders
+    good = ["/photos/Family", None, "/photos/Trips"] + [None] * 7
+    save_settings(Settings(preview_folders=good), path)
+    assert load_settings(path).preview_folders == good
+    for bad in [None, "x", [None] * 9, [None] * 11, ["relative/path"] + [None] * 9,
+                [""] + [None] * 9, [3] + [None] * 9, {"a": 1}]:
+        path.write_text(json.dumps({"preview_folders": bad, "use_gpu": False}))
+        assert load_settings(path) == Settings(use_gpu=False), bad

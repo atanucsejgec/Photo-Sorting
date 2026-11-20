@@ -191,8 +191,14 @@ REVIEWS = {"date": "busy_days_page", "face": "face_setup_page",
            "repeated": "review_page", "bad": "bad_page", "events": "events_page"}
 
 
+# Preview is not driven to a summary through _step: the owner moves its files
+# one key at a time on its own page. test_preview.py checks that a Preview
+# session leaves no .photosort folder.
+NOT_DRIVEN = {"preview"}
+
+
 def test_every_mode_is_covered():
-    assert set(SETUPS) == set(MODE_SPECS)
+    assert set(SETUPS) | NOT_DRIVEN == set(MODE_SPECS)
 
 
 # ----- driving a mode to Done --------------------------------------------------------------
