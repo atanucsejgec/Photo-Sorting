@@ -1,12 +1,15 @@
 """Preview's core: which files are listed, and moving, putting back and journalling them."""
 
+import errno
+import os
 from pathlib import Path
 
 import pytest
 
 from fstree import tree
 from photosort import undo
-from photosort.journal import load_dirs, load_moves, load_runs
+from photosort.executor import execute
+from photosort.journal import RunJournal, load_all_runs, load_dirs, load_moves, load_runs
 from photosort.modes import MODE_LABELS, MODE_SPECS, MODES
 from photosort.modes.preview import (
     NOT_NEEDED,
@@ -16,10 +19,11 @@ from photosort.modes.preview import (
     inside_root,
     preview_files,
     slot_problem,
+    target_problem,
 )
+from photosort.plan import Move, Plan
 
-OUTSIDE = ("Pick a folder inside photos — moves stay inside the folder you opened, "
-           "so Undo can put them back.")
+APP_FOLDER = "Photo Sorter keeps its own records there. Pick another folder."
 
 
 def _write(path: Path, data: bytes) -> Path:
@@ -180,22 +184,308 @@ def test_move_never_overwrites(root):
     assert tree(root) == before
 
 
-def test_move_outside_root_refused(root, tmp_path):
+def test_move_outside_root_goes_there_absolute_and_undo_restores(root, tmp_path):
+    _write(root / "a.jpg", b"aaa")
+    other = tmp_path / "other"
+    other.mkdir()
+    before, before_other = tree(root), tree(other)
+    session = PreviewSession(root, False)
+    dst = session.move("a.jpg", other)
+    assert dst == (other / "a.jpg").as_posix()
+    assert (other / "a.jpg").read_bytes() == b"aaa"
+    assert session.moved == [("a.jpg", dst)]
+    assert session.counts() == (0, 1)
+    run_id = session.finish()
+    [run] = load_runs(root)
+    assert run.also_roots == (other,)
+    assert [(m.src, m.dst) for m in load_moves(root, run_id)] == [("a.jpg", dst)]
+    undo.undo_run(root, run_id)
+    assert tree(root) == before
+    assert tree(other) == before_other
+
+
+def test_move_through_a_link_to_outside_is_journalled_resolved(root, tmp_path):
     _write(root / "a.jpg", b"aaa")
     (tmp_path / "other").mkdir()
+    (root / "out").symlink_to(tmp_path / "other", target_is_directory=True)
+    session = PreviewSession(root, False)
+    assert session.move("a.jpg", root / "out") == (tmp_path / "other" / "a.jpg").as_posix()
+    run_id = session.finish()
+    assert load_runs(root)[0].also_roots == (tmp_path / "other",)
+    undo.undo_run(root, run_id)
+    assert (root / "a.jpg").read_bytes() == b"aaa"
+
+
+def test_target_problem(root, tmp_path, _app_data):
+    assert target_problem(root, None) == "Slot is empty"
+    assert target_problem(root, root) is None
+    assert target_problem(root, root / "Trips") is None  # missing inside: made on use
+    (tmp_path / "other").mkdir()
+    assert target_problem(root, tmp_path / "other") is None
+    assert target_problem(root, str(tmp_path / "other")) is None
+    assert target_problem(root, tmp_path / "gone") == (
+        "gone isn't there — is the drive plugged in?")
+    (root / ".photosort").mkdir()
+    assert target_problem(root, root / ".photosort") == APP_FOLDER
+    (tmp_path / "x" / ".photosort" / "y").mkdir(parents=True)
+    assert target_problem(root, tmp_path / "x" / ".photosort" / "y") == APP_FOLDER
+    (_app_data / "runs").mkdir(parents=True, exist_ok=True)
+    assert target_problem(root, _app_data) == APP_FOLDER
+    assert target_problem(root, _app_data / "runs") == APP_FOLDER
+
+
+def test_move_refuses_a_missing_outside_folder_and_app_folders(root, tmp_path, _app_data):
+    _write(root / "a.jpg", b"aaa")
     before = tree(tmp_path)
     session = PreviewSession(root, False)
-    with pytest.raises(ValueError) as caught:
-        session.move("a.jpg", tmp_path / "other")
-    assert str(caught.value) == OUTSIDE
-    (root / "out").symlink_to(tmp_path / "other", target_is_directory=True)
-    with pytest.raises(ValueError):
-        session.move("a.jpg", root / "out")
-    (root / "out").unlink()
+    with pytest.raises(FileNotFoundError) as caught:
+        session.move("a.jpg", tmp_path / "Drive" / "Trips")
+    assert str(caught.value) == "Trips isn't there — is the drive plugged in?"
+    assert not (tmp_path / "Drive").exists()
+    with pytest.raises(ValueError, match="keeps its own records"):
+        session.move("a.jpg", _app_data)
+    (tmp_path / "x" / ".photosort").mkdir(parents=True)
+    with pytest.raises(ValueError, match="keeps its own records"):
+        session.move("a.jpg", tmp_path / "x" / ".photosort")
+    (tmp_path / "x" / ".photosort").rmdir()
+    (tmp_path / "x").rmdir()
     assert tree(tmp_path) == before
     assert session.moved == []
     assert session.finish() is None
     assert load_runs(root) == []
+
+
+# ----- moving anywhere: the review focus ------------------------------------------------------
+
+def _date_run(root: Path, moves) -> str:
+    plan = Plan("date", [Move(s, d) for s, d in moves], [])
+    journal = RunJournal.create(root, "date", False, len(moves))
+    execute(root, plan, journal)
+    return journal.run_id
+
+
+def _undone(run_id: str) -> bool:
+    return next(r for r in load_all_runs() if r.run_id == run_id).undone
+
+
+def test_later_sort_in_the_outside_target_blocks_preview_undo(root, tmp_path):
+    _write(root / "a.jpg", b"aaa")
+    _write(root / "b.jpg", b"bbb")
+    target = tmp_path / "Archive"
+    _write(target / "mine.jpg", b"mine")
+    before, before_target = tree(root), tree(target)
+    session = PreviewSession(root, False)
+    session.move("a.jpg", target)
+    session.move("b.jpg", root / NOT_NEEDED)
+    preview_run = session.finish()
+    later = _date_run(target, [("a.jpg", "2024/a.jpg")])  # moves the file Preview placed
+    expected = [undo.BlockingRun(later, str(target))]
+    assert undo.blocking_runs(root, preview_run) == expected
+    with pytest.raises(undo.UndoBlocked) as caught:
+        undo.undo_run(root, preview_run)
+    assert caught.value.blocking == expected
+    assert not _undone(preview_run)
+    assert (target / "2024" / "a.jpg").read_bytes() == b"aaa"
+    assert (root / NOT_NEEDED / "b.jpg").read_bytes() == b"bbb"  # nothing moved
+    undo.undo_run(target, later)
+    assert undo.blocking_runs(root, preview_run) == []
+    undo.undo_run(root, preview_run)
+    assert tree(root) == before
+    assert tree(target) == before_target
+    assert _undone(preview_run)
+
+
+def test_a_later_sort_of_a_folder_around_the_target_blocks_too(root, tmp_path):
+    _write(root / "a.jpg", b"aaa")
+    target = tmp_path / "Disk" / "Archive"
+    target.mkdir(parents=True)
+    session = PreviewSession(root, False)
+    session.move("a.jpg", target)
+    preview_run = session.finish()
+    later = Plan("date", [Move("Archive/a.jpg", "x/a.jpg")], [])
+    journal = RunJournal.create(tmp_path / "Disk", "date", True, 1)
+    execute(tmp_path / "Disk", later, journal)
+    assert [b.run_id for b in undo.blocking_runs(root, preview_run)] == [journal.run_id]
+    # Older runs of the target's folders never block.
+    assert undo.blocking_runs(tmp_path / "Disk", journal.run_id) == []
+
+
+def _other_drive(monkeypatch, drive: Path) -> list:
+    """os.rename fails with EXDEV between drive and anywhere else, as across drives."""
+    real = os.rename
+    drive = os.path.abspath(drive)
+    crossed = []
+
+    def on(path) -> bool:
+        path = os.path.abspath(path)
+        return path == drive or path.startswith(drive + os.sep)
+
+    def rename(src, dst, *args, **kwargs):
+        if on(src) != on(dst):
+            crossed.append((str(src), str(dst)))
+            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), str(src))
+        return real(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", rename)
+    return crossed
+
+
+def test_cross_drive_move_and_undo_restore_byte_for_byte(root, tmp_path, monkeypatch):
+    data = os.urandom(300_000)
+    _write(root / "sub" / "big.mov", data)
+    _write(root / "c.jpg", b"ccc")
+    drive = tmp_path / "usb"
+    target = drive / "Videos"
+    target.mkdir(parents=True)
+    crossed = _other_drive(monkeypatch, drive)
+    before, before_drive = tree(root), tree(drive)
+    session = PreviewSession(root, True)
+    dst = session.move("sub/big.mov", target)
+    assert crossed  # it really went the cross-drive way
+    assert not (root / "sub" / "big.mov").exists()
+    assert (target / "big.mov").read_bytes() == data
+    assert not [p for p in target.iterdir() if p.name != "big.mov"]  # no temp left
+    session.move("c.jpg", target)
+    assert session.put_back() == "c.jpg"  # back across too
+    run_id = session.finish()
+    assert dst == (target / "big.mov").as_posix()
+    n = len(crossed)
+    undo.undo_run(root, run_id)
+    assert len(crossed) > n
+    assert tree(root) == before
+    assert tree(drive) == before_drive
+
+
+def test_cross_drive_copy_that_does_not_verify_keeps_the_original(root, tmp_path, monkeypatch):
+    from photosort import executor
+
+    _write(root / "a.jpg", b"original")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    _other_drive(monkeypatch, drive)
+
+    def bad_copy(src, dst, *args, **kwargs):
+        Path(dst).write_bytes(b"garbled!")
+
+    monkeypatch.setattr(executor.shutil, "copy2", bad_copy)
+    before, before_drive = tree(root), tree(drive)
+    session = PreviewSession(root, False)
+    with pytest.raises(OSError, match="does not match"):
+        session.move("a.jpg", drive)
+    assert tree(root) == before  # the original stays
+    assert tree(drive) == before_drive  # no copy, no temp file
+    assert session.moved == []
+    run_id = session.finish()
+    undo.undo_run(root, run_id)
+    assert tree(root) == before
+
+
+def test_missing_target_drive_at_undo_refuses_and_moves_nothing(root, tmp_path):
+    _write(root / "a.jpg", b"aaa")
+    _write(root / "b.jpg", b"bbb")
+    drive = tmp_path / "usb"
+    target = drive / "Keep"
+    target.mkdir(parents=True)
+    session = PreviewSession(root, False)
+    session.move("a.jpg", target)
+    session.move("b.jpg", root / "Trips")  # an inside move: must not go back alone
+    run_id = session.finish()
+    os.rename(drive, tmp_path / "unplugged")  # the drive is gone
+    before = tree(root)
+    with pytest.raises(undo.FolderMissing) as caught:
+        undo.undo_run(root, run_id)
+    assert str(caught.value) == f"{target} isn't there — is the drive plugged in?"
+    assert tree(root) == before
+    assert not drive.exists()
+    assert not _undone(run_id)
+    os.rename(tmp_path / "unplugged", drive)  # plugged back in
+    undo.undo_run(root, run_id)
+    assert (root / "a.jpg").read_bytes() == b"aaa"
+    assert (root / "b.jpg").read_bytes() == b"bbb"
+    assert not (root / "Trips").exists()
+    assert list(target.iterdir()) == []
+    assert _undone(run_id)
+
+
+def test_an_empty_mount_point_for_the_target_refuses_too(root, tmp_path):
+    _write(root / "a.jpg", b"aaa")
+    _write(root / "b.jpg", b"bbb")
+    target = tmp_path / "usb"
+    target.mkdir()
+    session = PreviewSession(root, False)
+    session.move("a.jpg", target)
+    session.move("b.jpg", root / "Trips")
+    run_id = session.finish()
+    os.rename(target / "a.jpg", tmp_path / "away.jpg")  # unplugged: the mount point is left
+    before = tree(root)
+    with pytest.raises(undo.FolderMissing) as caught:
+        undo.undo_run(root, run_id)
+    assert str(caught.value) == f"{target} isn't there — is the drive plugged in?"
+    assert tree(root) == before
+    assert list(target.iterdir()) == []
+    assert not _undone(run_id)
+
+
+def test_mixed_inside_and_outside_moves_with_put_backs_undo(root, tmp_path):
+    _write(root / "a.jpg", b"aaa")
+    _write(root / "sub" / "a.jpg", b"sub a")
+    _write(root / "b.jpg", b"bbb")
+    _write(root / "c.jpg", b"ccc")
+    one, two = tmp_path / "One", tmp_path / "Two"
+    one.mkdir()
+    two.mkdir()
+    before = tree(tmp_path)
+    session = PreviewSession(root, True)
+    assert session.move("a.jpg", one) == (one / "a.jpg").as_posix()
+    assert session.move("sub/a.jpg", one) == (one / "a (1).jpg").as_posix()
+    assert session.move("b.jpg", root / NOT_NEEDED) == "Not needed/b.jpg"
+    assert session.move("c.jpg", two) == (two / "c.jpg").as_posix()
+    assert session.put_back() == "c.jpg"
+    assert session.move("c.jpg", one) == (one / "c.jpg").as_posix()
+    assert session.put_back() == "c.jpg"
+    assert session.put_back() == "b.jpg"
+    assert session.move("b.jpg", two) == (two / "b.jpg").as_posix()
+    assert session.put_back() == "b.jpg"
+    assert session.put_back() == "sub/a.jpg"
+    assert session.move("b.jpg", one) == (one / "b.jpg").as_posix()
+    # The name freed by the put-back is taken again.
+    assert session.move("sub/a.jpg", one) == (one / "a (1).jpg").as_posix()
+    assert session.counts() == (0, 3)
+    run_id = session.finish()
+    assert set(load_runs(root)[0].also_roots) == {one, two}
+    undo.undo_run(root, run_id)
+    assert tree(tmp_path) == before
+
+
+def test_name_clash_in_the_outside_target_never_overwrites(root, tmp_path):
+    _write(root / "a.jpg", b"new")
+    target = tmp_path / "Other"
+    _write(target / "a.jpg", b"there")
+    _write(target / "A (1).JPG", b"there too")
+    before, before_target = tree(root), tree(target)
+    session = PreviewSession(root, False)
+    assert session.move("a.jpg", target) == (target / "a (2).jpg").as_posix()
+    assert (target / "a.jpg").read_bytes() == b"there"
+    assert (target / "A (1).JPG").read_bytes() == b"there too"
+    assert (target / "a (2).jpg").read_bytes() == b"new"
+    run_id = session.finish()
+    undo.undo_run(root, run_id)
+    assert tree(root) == before
+    assert tree(target) == before_target
+
+
+def test_undo_puts_an_outside_file_back_beside_a_new_one(root, tmp_path):
+    _write(root / "a.jpg", b"mine")
+    target = tmp_path / "Other"
+    target.mkdir()
+    session = PreviewSession(root, False)
+    session.move("a.jpg", target)
+    run_id = session.finish()
+    _write(root / "a.jpg", b"a new one")  # the place is taken meanwhile
+    result = undo.undo_run(root, run_id)
+    assert result.renamed == [("a.jpg", "a (1).jpg")]
+    assert (root / "a.jpg").read_bytes() == b"a new one"
+    assert (root / "a (1).jpg").read_bytes() == b"mine"
 
 
 def test_move_into_its_own_folder_does_nothing(root):

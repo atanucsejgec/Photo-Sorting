@@ -483,3 +483,42 @@ def test_forget_runs_sets_a_corrupt_list_aside(tmp_path, caplog):
     assert (runs / "forgotten.json.broken-2").read_bytes() == b"[{broken"
     assert forgotten_keys() == {(j.run_id, started, str(tmp_path))}
     assert "forgotten.json.broken-2" in caplog.text
+
+
+# ----- paths outside the root (Preview moves anywhere) ------------------------
+
+def test_abs_path_relative_and_absolute(tmp_path):
+    assert journal.abs_path(tmp_path, "a/b.jpg") == tmp_path / "a" / "b.jpg"
+    assert journal.abs_path(tmp_path, "/mnt/usb/b.jpg") == Path("/mnt/usb/b.jpg")
+    assert journal.abs_path(Path("/x"), "") == Path("/x")
+    assert isinstance(journal.abs_path(tmp_path, "/y"), Path)
+
+
+def test_also_roots_kept_in_the_meta(tmp_path):
+    other = tmp_path / "other"
+    other.mkdir()
+    (tmp_path / "link").symlink_to(other, target_is_directory=True)
+    j = RunJournal.create(tmp_path / "root", "preview", False, 0)
+    (run,) = load_all_runs()
+    assert run.also_roots == ()
+    assert "also_roots" not in _meta(j.run_id)  # an inside-only run looks as before
+    j.add_also_root(tmp_path / "link")
+    j.add_also_root(other)  # the same folder: listed once
+    assert _meta(j.run_id)["also_roots"] == [str(other)]
+    assert _meta(j.run_id)["status"] == "running"
+    j.add_also_root(tmp_path / "second")
+    j.finish("done")
+    meta = _meta(j.run_id)
+    assert meta["also_roots"] == [str(other), str(tmp_path / "second")]
+    assert meta["status"] == "done"
+    (run,) = load_all_runs()
+    assert run.also_roots == (other, tmp_path / "second")
+
+
+def test_old_meta_without_also_roots_reads_as_none(tmp_path):
+    j = RunJournal.create(tmp_path, "date", False, 0)
+    j.finish("done")
+    meta = _meta(j.run_id)
+    assert "also_roots" not in meta
+    (run,) = load_runs(tmp_path)
+    assert run.also_roots == ()

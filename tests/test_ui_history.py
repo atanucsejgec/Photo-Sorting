@@ -1081,3 +1081,81 @@ def test_keyboard_only_history(qtbot, make_window, tmp_path, asked, shown):
     _key(qtbot, Qt.Key.Key_Escape)
     assert QApplication.focusWidget() is w.sidebar.items["history"]
     assert shown == []
+
+
+# ----- Preview runs that moved files outside their folder ---------------------
+
+def _preview_to(root: Path, moves) -> str:
+    from photosort.modes.preview import PreviewSession
+
+    session = PreviewSession(root, True)
+    for rel, target in moves:
+        session.move(rel, target)
+    return session.finish()
+
+
+def test_history_folder_found_with_outside_moves(tmp_path):
+    root, target = tmp_path / "pics", tmp_path / "Archive"
+    _write(root / "a.jpg", b"a")
+    target.mkdir()
+    run_id = _preview_to(root, [("a.jpg", target)])
+    every = load_all_runs()
+    assert history_page.folder_found(root, every)
+    # Moved by a later run of the target: the root is still there.
+    _run(target, [("a.jpg", "x/a.jpg")])
+    every = load_all_runs()
+    assert history_page.folder_found(root, every)
+    # An outside file proves nothing about another folder picked.
+    picked = tmp_path / "picked"
+    picked.mkdir()
+    assert not history_page.looks_like(root, run_id, picked)
+    root.rmdir()
+    assert not history_page.folder_found(root, load_all_runs())
+
+
+def test_history_folder_found_of_a_mixed_run_needs_an_inside_file(tmp_path):
+    root, target = tmp_path / "pics", tmp_path / "Archive"
+    _write(root / "a.jpg", b"a")
+    _write(root / "b.jpg", b"b")
+    target.mkdir()
+    run_id = _preview_to(root, [("a.jpg", target), ("b.jpg", root / "Kept")])
+    assert history_page.folder_found(root, load_all_runs())
+    moved = tmp_path / "moved"
+    os.rename(root, moved)
+    root.mkdir()  # an empty mount point where the drive was
+    assert not history_page.folder_found(root, load_all_runs())
+    assert history_page.looks_like(root, run_id, moved)  # the inside file is there
+    assert not history_page.looks_like(root, run_id, root)
+
+
+def test_bring_in_for_undo_covers_the_runs_outside_folders(tmp_path):
+    from photosort import migrate
+
+    root, target = tmp_path / "pics", tmp_path / "Archive"
+    _write(root / "a.jpg", b"a")
+    target.mkdir()
+    _preview_to(root, [("a.jpg", target)])
+    history_page.bring_in_for_undo(root)  # nothing old anywhere
+    old = target / ".photosort" / "runs"
+    old.mkdir(parents=True)
+    (old / "20240101-120000-date.json").write_text("not json")  # an old run unread
+    (old / "20240101-120000-date.jsonl").write_text("")
+    with pytest.raises(migrate.MigrationIncomplete):
+        history_page.bring_in_for_undo(root)
+    with pytest.raises(migrate.MigrationIncomplete):
+        history_page.undo_many([r.run_id for r in load_all_runs()])
+    assert (target / "a.jpg").read_bytes() == b"a"
+    assert not load_all_runs()[0].undone
+
+
+def test_undo_many_says_plug_in_for_a_missing_outside_folder(tmp_path):
+    root, target = tmp_path / "pics", tmp_path / "usb" / "Archive"
+    _write(root / "a.jpg", b"a")
+    target.mkdir(parents=True)
+    run_id = _preview_to(root, [("a.jpg", target)])
+    os.rename(tmp_path / "usb", tmp_path / "away")
+    outcome = history_page.undo_many([run_id])
+    assert outcome.undone == []
+    assert outcome.stopped == (
+        run_id, f"Could not undo: {target} isn't there — is the drive plugged in?", None)
+    assert not load_all_runs()[0].undone

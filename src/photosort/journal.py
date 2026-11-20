@@ -12,7 +12,12 @@ The metadata's "root" is the sorted folder's absolute path, symlinks
 resolved: every root enters the store through norm_root. A run belongs to
 the folder whose path equals it.
 Move paths are POSIX strings relative to root, so a moved folder only needs
-its root re-pointed (relocate_root). JSON is written ASCII-escaped, so Linux
+its root re-pointed (relocate_root). The one exception is a Preview move into
+a folder outside root: its path there is absolute (and so are folders made or
+removed outside root), and the folder is listed in the metadata's
+"also_roots" (norm_root, absolute; missing on older runs). Every reader joins
+a recorded path to root through abs_path, which leaves an absolute one as it
+is. Relocation re-points root only, never those absolute paths. JSON is written ASCII-escaped, so Linux
 names that are not valid UTF-8 (lone surrogates in Python) round-trip
 unchanged.
 
@@ -74,6 +79,13 @@ def norm_root(path) -> Path:
         return Path(path).resolve()
     except (OSError, RuntimeError):
         return Path(os.path.abspath(path))
+
+
+def abs_path(root: Path, p: str) -> Path:
+    """Where a recorded path p (a move's src or dst, a made or removed
+    folder) is: p itself when it is absolute (outside root), else root / p."""
+    path = Path(p)
+    return path if path.is_absolute() else Path(root) / path
 
 
 def root_key(root) -> tuple[str, ...]:
@@ -182,6 +194,16 @@ class RunJournal:
         self._append({"op": "done", "i": i})
         self._done.add(i)
 
+    def add_also_root(self, folder: Path) -> None:
+        """List folder (outside root; norm_root) in the run's "also_roots",
+        once, before any move into it is recorded: an undo then checks it is
+        there, and that no newer run there moved what this one placed."""
+        folder = str(norm_root(folder))
+        also = self._meta.setdefault("also_roots", [])
+        if folder not in also:
+            also.append(folder)
+            _write_meta(self._meta_path, self._meta)
+
     def record_dir_created(self, rel: str) -> None:
         self._append({"op": "mkdir", "path": rel})
 
@@ -204,6 +226,8 @@ class RunInfo:
     moved: int
     undone: bool
     root: Path
+    # The folders outside root that the run moved files into (Preview).
+    also_roots: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -244,9 +268,20 @@ def _run_info(meta: dict) -> RunInfo | None:
             moved=int(meta["moved"]),
             undone=bool(meta["undone"]),
             root=Path(str(meta["root"])),
+            also_roots=_also_roots(meta),
         )
     except (ValueError, KeyError, TypeError):
         return None
+
+
+def _also_roots(meta: dict) -> tuple[Path, ...]:
+    """The run's "also_roots" ([] when missing, as on every older run).
+    TypeError when it is there but not a list of absolute paths."""
+    also = meta.get("also_roots", [])
+    if not isinstance(also, list) or not all(
+            isinstance(a, str) and Path(a).is_absolute() for a in also):
+        raise TypeError("also_roots is not a list of absolute paths")
+    return tuple(Path(a) for a in also)
 
 
 def load_all_runs() -> list[RunInfo]:

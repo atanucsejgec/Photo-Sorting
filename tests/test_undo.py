@@ -7,7 +7,7 @@ import pytest
 
 from photosort import undo
 from photosort.executor import execute
-from photosort.journal import RunJournal, load_all_runs, load_runs
+from photosort.journal import RunJournal, load_all_runs, load_moves, load_runs
 from photosort.modes.date_mode import prepare_date_plan
 from photosort.plan import Move, Plan
 from photosort.undo import (
@@ -691,3 +691,92 @@ def test_undo_with_none_of_the_files_there_refuses_and_stays_undoable(tmp_path):
         undo_run(root, j.run_id)
     assert not _undone(root, j.run_id)
     assert list(root.iterdir()) == []  # nothing made in the empty mount point
+
+
+# ----- Preview moves anywhere: absolute paths outside the root ------------------
+
+def _preview_to(root: Path, rel: str, target: Path) -> str:
+    """A Preview run of root that moved rel into target (any folder)."""
+    from photosort.modes.preview import PreviewSession
+
+    session = PreviewSession(root, True)
+    session.move(rel, target)
+    return session.finish()
+
+
+def test_old_runs_unchanged(tmp_path):
+    from fstree import old_layout_run, tree
+    from photosort import migrate
+
+    root = tmp_path / "pics"
+    _write(root / "a.jpg", b"a")
+    _write(root / "sub" / "b.jpg", b"b")
+    before = tree(root)
+    old_layout_run(root, [("a.jpg", "2020/a.jpg"), ("sub/b.jpg", "2020/b.jpg")])
+    migrate.bring_in(root, strict=True)
+    (old,) = load_runs(root)
+    assert old.also_roots == ()
+    newer = _run(root, [("2020/b.jpg", "x/b.jpg")])
+    assert blocking_runs(root, old.run_id) == [BlockingRun(newer, "")]
+    assert dependents(root, newer) == [old]
+    with pytest.raises(UndoBlocked):
+        undo_run(root, old.run_id)
+    undo_run(root, newer)
+    result = undo_run(root, old.run_id)
+    assert (result.restored, result.missing, result.renamed, result.failed) == (2, [], [], [])
+    assert tree(root) == before
+
+
+def test_dependents_sees_outside_placed_files(tmp_path):
+    root, target = tmp_path / "pics", tmp_path / "Archive"
+    _write(root / "a.jpg", b"a")
+    target.mkdir()
+    preview_run = _preview_to(root, "a.jpg", target)
+    other = _run(target, [])  # an unrelated run of the target: blocks nothing
+    later = _run(target, [("a.jpg", "x/a.jpg")])
+    (info,) = [r for r in load_all_runs() if r.run_id == preview_run]
+    assert dependents(target, later) == [info]
+    assert dependents(target, other) == []
+    assert dependents(root, preview_run) == []
+    undo_run(target, later)
+    assert dependents(target, later) == []  # undone runs don't depend on anything
+
+
+def test_root_present_is_not_fooled_by_files_outside_the_root(tmp_path):
+    root, target = tmp_path / "drive", tmp_path / "Archive"
+    _write(root / "a.jpg", b"a")
+    _write(root / "b.jpg", b"b")
+    target.mkdir()
+    from photosort.modes.preview import PreviewSession
+
+    session = PreviewSession(root, False)
+    session.move("a.jpg", target)
+    session.move("b.jpg", root / "Kept")
+    run_id = session.finish()
+    (run,) = load_runs(root)
+    assert undo.root_present(run)
+    assert not undo.files_in(tmp_path / "elsewhere", load_moves(root, run_id))
+    (root / "Kept" / "b.jpg").unlink()
+    (root / "Kept").rmdir()  # an empty mount point: only the outside file is there
+    assert not undo.root_present(run)
+    with pytest.raises(undo.FolderMissing):
+        undo_run(root, run_id)
+    assert (target / "a.jpg").read_bytes() == b"a"  # not moved into the empty mount point
+    assert list(root.iterdir()) == []
+    assert not _undone(root, run_id)
+
+
+def test_undo_of_an_outside_only_run_needs_its_root(tmp_path):
+    root, target = tmp_path / "drive", tmp_path / "Archive"
+    _write(root / "a.jpg", b"a")
+    target.mkdir()
+    run_id = _preview_to(root, "a.jpg", target)
+    (run,) = load_runs(root)
+    assert undo.root_present(run)
+    root.rmdir()  # the drive is unplugged, its mount point gone
+    assert not undo.root_present(run)
+    with pytest.raises(undo.FolderMissing):
+        undo_run(root, run_id)
+    assert not root.exists()  # nothing made where the drive was
+    assert (target / "a.jpg").read_bytes() == b"a"
+

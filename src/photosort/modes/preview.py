@@ -5,8 +5,12 @@ kind each one is (for its viewer), and the session that moves them, puts them
 back (last first) and journals every move, so that the run can be undone
 from Done or History like any sort.
 
-Moves stay inside the root, because the journal keeps paths relative to it.
-A file is never overwritten (a taken name gets " (n)", as in a sort) and
+A file may go to any folder: inside the root (journalled relative to it, a
+missing folder made again) or outside it, even on another drive (journalled
+absolute, the folder listed in the run's also_roots; executor.move_file
+copies, verifies and only then removes the original across drives). A
+folder outside the root that is missing is never made: it is most likely an
+unplugged drive. App folders are refused. A file is never overwritten (a taken name gets " (n)", as in a sort) and
 never deleted. A put-back is journalled as a reverse move in the same run;
 undo goes through a run's moves in reverse, so undoing the run afterwards is
 still right.
@@ -20,9 +24,9 @@ import threading
 from pathlib import Path
 from typing import Literal
 
-from photosort import media
+from photosort import appdata, media
 from photosort.executor import PHOTOSORT_DIR, make_parents, move_file, remove_if_empty
-from photosort.journal import RunJournal
+from photosort.journal import RunJournal, abs_path, norm_root
 from photosort.naming import TargetAllocator
 from photosort.scanner import walk_all_files
 from photosort.settings import PREVIEW_SLOTS
@@ -88,6 +92,38 @@ def slot_problem(root: Path, folder: str | None) -> str | None:
         return "Slot is empty"
     if not inside_root(root, Path(folder)):
         return f"{Path(folder).name} isn't inside this folder"
+    return None
+
+
+APP_FOLDER = "Photo Sorter keeps its own records there. Pick another folder."
+
+
+def missing_message(folder: Path) -> str:
+    """What the owner is told when a folder outside the root is not there."""
+    return f"{Path(folder).name or folder} isn't there — is the drive plugged in?"
+
+
+def _in_app_folder(folder: Path) -> bool:
+    """Whether folder (resolved) is in a .photosort folder or in the app's
+    data folder (its undo records)."""
+    folder = norm_root(folder)
+    if any(part.casefold() == PHOTOSORT_DIR for part in folder.parts):
+        return True
+    data = norm_root(appdata.data_dir())
+    return folder == data or data in folder.parents
+
+
+def target_problem(root: Path, folder) -> str | None:
+    """Why folder can't take a file from root, for the owner; None if it
+    can. Any folder can, but one in an app folder; and one outside root
+    must be there (a missing one inside root is made again by the move)."""
+    if folder is None:
+        return "Slot is empty"
+    folder = Path(folder)
+    if _in_app_folder(folder):
+        return APP_FOLDER
+    if not inside_root(root, folder) and not folder.is_dir():
+        return missing_message(folder)
     return None
 
 
@@ -165,34 +201,44 @@ class PreviewSession:
         self._lock = threading.Lock()
 
     def move(self, rel: str, target_folder: Path) -> str:
-        """Move the file rel into target_folder; return where it went (relative
-        to root; a taken name gets " (n)").
+        """Move the file rel into target_folder; return where it went (a taken
+        name gets " (n)"): relative to root inside it, an absolute POSIX
+        path outside it.
 
-        Raises ValueError if target_folder or the file is not inside root, and
-        FileNotFoundError if the file is gone; nothing is moved then. Missing
-        folders on the way are made, journalled. A file already in
-        target_folder stays where it is (rel is returned, nothing recorded).
+        Raises ValueError if target_folder is in an app folder or the file is
+        not inside root, and FileNotFoundError if the file is gone or
+        target_folder is outside root and missing (missing_message); nothing
+        is moved then. Missing folders on the way inside root are made,
+        journalled. A file already in target_folder stays where it is (rel
+        is returned, nothing recorded).
         """
         with self._lock:
             self._check_open()
             target_folder = Path(target_folder)
-            if not inside_root(self.root, target_folder):
-                raise ValueError(outside_message(self.root))
-            folder = _rel_in(self.root, target_folder)
-            if folder.split("/")[0].casefold() == PHOTOSORT_DIR:
-                raise ValueError("Photo Sorter keeps its own records there. "
-                                 "Pick another folder.")
+            if _in_app_folder(target_folder):
+                raise ValueError(APP_FOLDER)
+            inside = inside_root(self.root, target_folder)
             src = self.root / rel
             # The file itself may be a link (it is moved, never followed); the
             # folder it is in must be inside root, as every path journalled is.
             if not inside_root(self.root, src.parent):
                 raise ValueError(f"{rel} isn't inside {self.root.name}")
+            if not inside and not target_folder.is_dir():
+                raise FileNotFoundError(missing_message(target_folder))
             if not os.path.lexists(src):
                 raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(src))
-            if _same_folder(src.parent, self.root / folder):
-                return rel
             name = rel.rpartition("/")[2]
-            dst = TargetAllocator(self.root).allocate(f"{folder}/{name}" if folder else name)
+            if inside:
+                folder = _rel_in(self.root, target_folder)
+                if _same_folder(src.parent, self.root / folder):
+                    return rel
+                dst = TargetAllocator(self.root).allocate(
+                    f"{folder}/{name}" if folder else name)
+            else:
+                outside = norm_root(target_folder)
+                if _same_folder(src.parent, outside):
+                    return rel
+                dst = (outside / TargetAllocator(outside).allocate(name)).as_posix()
             self._move(rel, dst)
             self.moved.append((rel, dst))
             return dst
@@ -211,9 +257,9 @@ class PreviewSession:
             if not self.moved:
                 return None
             src, dst = self.moved.pop()
-            if not os.path.lexists(self.root / dst):
+            if not os.path.lexists(abs_path(self.root, dst)):
                 raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT),
-                                        str(self.root / dst))
+                                        str(abs_path(self.root, dst)))
             back = TargetAllocator(self.root).allocate(src)
             try:
                 self._move(dst, back)
@@ -249,12 +295,17 @@ class PreviewSession:
             raise RuntimeError("This Preview has ended")
 
     def _move(self, src: str, dst: str) -> None:
-        """Move src to dst (both relative to root), journalled as in a sort."""
+        """Move src to dst (each relative to root, or absolute outside it),
+        journalled as in a sort. A folder outside root is listed in the run's
+        also_roots before the move is recorded; none is ever made there."""
         if self._journal is None:
             self._journal = RunJournal.create(self.root, MODE, self.include_subfolders, 0)
-        self._made += make_parents(self.root, dst, self._journal)
+        if Path(dst).is_absolute():
+            self._journal.add_also_root(Path(dst).parent)
+        else:
+            self._made += make_parents(self.root, dst, self._journal)
         i = self._journal.record_intent(src, dst)
-        move_file(self.root / src, self.root / dst)
+        move_file(abs_path(self.root, src), abs_path(self.root, dst))
         self._journal.record_done(i)
 
 
