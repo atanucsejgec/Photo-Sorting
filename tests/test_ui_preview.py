@@ -26,7 +26,8 @@ from keys import (
     settings_path,  # noqa: F401
 )
 from PIL import Image
-from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QThreadPool
+from PySide6.QtGui import QKeyEvent, QPainter, QPdfWriter
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QPushButton
 
@@ -115,6 +116,10 @@ def _showing(qtbot, page, text: str) -> None:
 def _idle(qtbot, page) -> None:
     """Every move queued is done."""
     qtbot.waitUntil(lambda: page._running is None and not page._queue, timeout=WAIT_MS)
+
+
+def _key_event(key: Qt.Key) -> QKeyEvent:
+    return QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier, "")
 
 
 # ----- the tile ----------------------------------------------------------------------------
@@ -746,6 +751,50 @@ def test_closing_the_window_does_the_queued_moves_and_finishes(qtbot, make_windo
     [run] = load_runs(three)
     assert (run.status, run.moved) == ("done", 2)
     assert page.session is None
+    assert errors == []
+
+
+def test_closing_the_window_lets_go_of_the_pdf_before_waiting_for_the_pool(
+        qtbot, make_window, root, monkeypatch, errors):
+    writer = QPdfWriter(str(root / "a.pdf"))
+    painter = QPainter(writer)
+    for n in range(20):
+        if n:
+            writer.newPage()
+        painter.drawText(100, 100, f"page {n + 1}")
+    painter.end()
+    w = make_window()
+    page = _open(qtbot, w, root)
+    viewer = page._box.viewer
+    assert isinstance(viewer, pv.PdfViewer)
+    qtbot.waitUntil(lambda: 1 in viewer.rendered_pages(), timeout=WAIT_MS)
+    events = []
+    real_release, real_wait = pv.PdfViewer.release, QThreadPool.waitForDone
+    real_render = pv.PdfiumFile.render
+
+    def release(self):
+        events.append("release")
+        real_release(self)
+
+    def wait(self, *a):
+        events.append("wait")
+        return real_wait(self, *a)
+
+    def render(self, *a, **k):
+        drawn = real_render(self, *a, **k)
+        events.append("drawn" if drawn is not None else "skipped")
+        return drawn
+
+    monkeypatch.setattr(pv.PdfViewer, "release", release)
+    monkeypatch.setattr(QThreadPool, "waitForDone", wait)
+    monkeypatch.setattr(pv.PdfiumFile, "render", render)
+    viewer.handle_key(_key_event(Qt.Key.Key_PageDown))  # renders ahead get queued...
+    viewer._update_pages()
+    w.close()  # ...and are let go before the window waits for the pool
+    assert "release" in events and "wait" in events
+    assert events.index("release") < events.index("wait")
+    assert "drawn" not in events[events.index("release"):]
+    assert viewer._file is None
     assert errors == []
 
 

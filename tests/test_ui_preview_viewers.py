@@ -9,6 +9,7 @@ import logging
 import shutil
 import subprocess
 import threading
+import time
 import wave
 from pathlib import Path
 
@@ -39,6 +40,9 @@ def _shown(qtbot, viewer, size=(800, 600)):
 def _jpeg(path: Path, size=(400, 300)) -> Path:
     Image.new("RGB", size, "red").save(path, "JPEG")
     return path
+
+
+A6_PT = (297.0, 420.0)  # QPageSize A6 in points, as _pdf makes it
 
 
 def _pdf(path: Path, pages: int = 2) -> Path:
@@ -237,6 +241,45 @@ def test_pdf_viewer_release_drops_results(qtbot, tmp_path):
     assert viewer.page_count() == 0
     assert viewer.page_text() == ""
     assert failures == []  # a load stopped on purpose is not a failure
+
+
+def test_pdf_open_of_2000_pages_is_quick(tmp_path, monkeypatch):
+    """Opening reads the page sizes without loading each page (that took
+    seconds on a real 2000-page PDF, under the lock every PDF shares, and
+    could not be stopped)."""
+    path = _pdf(tmp_path / "long.pdf", 2000)
+    loaded = []
+    real_get_page = pv.pdfium.PdfDocument.get_page
+    monkeypatch.setattr(pv.pdfium.PdfDocument, "get_page",
+                        lambda self, n: loaded.append(n) or real_get_page(self, n))
+    file = pv.PdfiumFile(path)
+    started = time.monotonic()
+    sizes = file.open(threading.Event())
+    took = time.monotonic() - started
+    file.close()
+    assert isinstance(sizes, list) and len(sizes) == 2000
+    assert sizes[0] == pytest.approx((A6_PT[0], A6_PT[1]), abs=1)
+    assert took < 1.0
+    assert loaded == []  # no page was loaded just to read its size
+
+
+def test_pdf_open_stops_when_cancelled_part_way(tmp_path, monkeypatch):
+    path = _pdf(tmp_path / "long.pdf", 300)
+    cancel = threading.Event()
+    real = pv.pdfium.PdfDocument.get_page_size
+    asked = []
+
+    def spy(self, n):
+        asked.append(n)
+        if n == 150:
+            cancel.set()
+        return real(self, n)
+
+    monkeypatch.setattr(pv.pdfium.PdfDocument, "get_page_size", spy)
+    file = pv.PdfiumFile(path)
+    assert file.open(cancel) is None
+    assert len(asked) <= 200  # stopped at the next check, not after all 300
+    file.close()
 
 
 def test_pdf_release_closes_document(qtbot, tmp_path, monkeypatch):

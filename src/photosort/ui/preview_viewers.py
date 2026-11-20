@@ -70,8 +70,12 @@ else:
 _log = logging.getLogger("photosort")
 
 # pdfium is not thread-safe: every pdfium call in the process is made holding this.
-# It is held only on pool threads, and garbage (whose finalizers may take it) is
-# collected only on the GUI thread (gc_guard), so it need not be re-entrant.
+# It is not re-entrant, and need not be: the only code that takes it from outside
+# a PdfiumFile method is the finalizer of a PdfiumFile dropped without close(),
+# and weakref.finalize runs on whichever thread drops the last reference. No
+# thread drops a PdfiumFile while holding the lock (each method's `with` ends
+# before its frame lets go of self), and gc_guard collects cycles only on the GUI
+# thread, which never holds the lock; so the finalizer never waits on itself.
 _PDFIUM_LOCK = threading.Lock()
 
 ZOOM_MIN = 0.1
@@ -81,6 +85,7 @@ IMAGE_MAX_PX = 4096  # a photo is first decoded at most this many pixels on its 
 FULL_MAX_PX = 12000  # zoomed in, it is decoded again in full, at most this
 PDF_MAX_DPI = 400.0
 PDF_MAX_PIXELS = 40_000_000  # a page drawn bigger than this is drawn at a lower scale
+PDF_SIZES_CHECK = 100  # opening checks whether it is still wanted every this many pages
 PDF_SCROLL_DELAY_MS = 30  # scroll steps closer together than this draw the pages once
 PDF_ZOOM_DELAY_MS = 150  # zoom steps closer together than this draw the pages once
 PDF_PAGE_GAP = 12  # px between pages
@@ -436,9 +441,11 @@ class PdfiumFile:
     _PDFIUM_LOCK. The document is opened once, on the pool, kept for that
     load's renders and closed by close(), after which nothing is drawn.
 
-    If the file is dropped without close(), it is still closed under the
-    lock (on the garbage collector's thread, the GUI thread), never by
-    pdfium's own finalizer without the lock.
+    If the file is dropped without close(), its finalizer still closes the
+    document under the lock (never pdfium's own finalizer, without it). That
+    runs on whichever thread drops the last reference: a pool thread after
+    its open or render, or the GUI thread when a viewer is destroyed without
+    release(), which can then stall the GUI for at most one page's render.
     """
 
     def __init__(self, path: Path) -> None:
@@ -462,13 +469,13 @@ class PdfiumFile:
             self.document = document
             self._finalizer = weakref.finalize(self, _close_document, document)
             try:
+                # Read from the page tree, without loading each page (that took
+                # seconds for 2000 pages, holding the lock every PDF shares).
                 sizes = []
                 for n in range(len(document)):
-                    page = document[n]
-                    try:
-                        sizes.append(page.get_size())
-                    finally:
-                        page.close()
+                    if n % PDF_SIZES_CHECK == 0 and cancel is not None and cancel.is_set():
+                        return None  # the document is closed by close(), as always
+                    sizes.append(document.get_page_size(n))
             except Exception as exc:
                 return f"pdfium: {str(exc) or type(exc).__name__}"
             return sizes or "pdfium: no pages"
@@ -540,6 +547,7 @@ class _PdfPage(QWidget):
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)  # paintEvent fills it all
         self._pixmap: QPixmap | None = None
 
     def setPixmap(self, pixmap: QPixmap) -> None:
