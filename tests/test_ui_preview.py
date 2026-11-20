@@ -1363,6 +1363,14 @@ def test_closing_the_window_lets_go_of_the_pdf_before_waiting_for_the_pool(
     viewer = page._box.viewer
     assert isinstance(viewer, pv.PdfViewer)
     qtbot.waitUntil(lambda: 1 in viewer.rendered_pages(), timeout=WAIT_MS)
+    # Hold the PDF pool's one thread, once the work already there is done,
+    # so the renders ahead are surely queued (not under way: one under way
+    # can't be stopped, by design) when the window closes; let it go at the
+    # viewer's release. Whatever order the tests run in, the same happens.
+    held, gate = threading.Event(), threading.Event()
+    pv.pdf_pool().start(lambda: (held.set(), gate.wait(WAIT_MS / 1000)))
+    assert held.wait(WAIT_MS / 1000)
+    pv.image_pool()  # made, if no photo was shown yet: its wait is checked below
     events, waited = [], []
     real_release, real_wait = pv.PdfViewer.release, QThreadPool.waitForDone
     real_render = pv.PdfiumFile.render
@@ -1370,6 +1378,8 @@ def test_closing_the_window_lets_go_of_the_pdf_before_waiting_for_the_pool(
     def release(self):
         events.append("release")
         real_release(self)
+        if self is viewer:
+            gate.set()  # the renders queued behind the gate run now: let go
 
     def wait(self, *a):
         events.append("wait")
@@ -1386,10 +1396,12 @@ def test_closing_the_window_lets_go_of_the_pdf_before_waiting_for_the_pool(
     monkeypatch.setattr(pv.PdfiumFile, "render", render)
     viewer.handle_key(_key_event(Qt.Key.Key_PageDown))  # renders ahead get queued...
     viewer._update_pages()
+    assert viewer._pending  # queued behind the gate
     w.close()  # ...and are let go before the window waits for the pool
     assert "release" in events and "wait" in events
     assert events.index("release") < events.index("wait")
-    assert "drawn" not in events[events.index("release"):]
+    assert "skipped" in events  # the queued renders ran, and drew nothing
+    assert "drawn" not in events
     assert viewer._file is None
     # the viewers' own pools are waited for too (the PDF is closed on its pool)
     assert any(pool is pv.pdf_pool() for pool in waited)
