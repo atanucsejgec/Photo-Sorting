@@ -18,7 +18,6 @@ from photosort.modes.preview import (
     file_kind,
     inside_root,
     preview_files,
-    slot_problem,
     target_problem,
 )
 from photosort.plan import Move, Plan
@@ -91,11 +90,7 @@ def test_preview_files_natural_order(root):
 
 # ----- slots ---------------------------------------------------------------------------------
 
-def test_slot_problem_and_inside_root(root, tmp_path):
-    assert slot_problem(root, None) == "Slot is empty"
-    assert slot_problem(root, str(root / "Trips")) is None  # missing is fine: made on use
-    assert slot_problem(root, str(root)) is None
-    assert slot_problem(root, str(tmp_path / "Trips")) == "Trips isn't inside this folder"
+def test_inside_root(root, tmp_path):
     assert inside_root(root, root)
     assert inside_root(root, root / "a" / "b")
     assert not inside_root(root, tmp_path)
@@ -537,7 +532,7 @@ def test_slot_folder_deleted_is_recreated(root):
     (root / "Trips").rmdir()  # listed as a slot, deleted since
     before = tree(root)
     session = PreviewSession(root, False)
-    assert slot_problem(root, str(root / "Trips")) is None
+    assert target_problem(root, str(root / "Trips")) is None
     assert session.move("a.jpg", root / "Trips") == "Trips/a.jpg"
     assert (root / "Trips" / "a.jpg").read_bytes() == b"aaa"
     run_id = session.finish()

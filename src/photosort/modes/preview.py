@@ -84,17 +84,6 @@ def inside_root(root: Path, folder: Path) -> bool:
     return folder == root or root in folder.parents
 
 
-def slot_problem(root: Path, folder: str | None) -> str | None:
-    """Why a slot can't take a file from root, for the owner (the caller puts
-    the slot number in front); None if it can. A folder inside root that is
-    missing is fine: a move makes it again."""
-    if folder is None:
-        return "Slot is empty"
-    if not inside_root(root, Path(folder)):
-        return f"{Path(folder).name} isn't inside this folder"
-    return None
-
-
 APP_FOLDER = "Photo Sorter keeps its own records there. Pick another folder."
 
 
@@ -125,12 +114,6 @@ def target_problem(root: Path, folder) -> str | None:
     if not inside_root(root, folder) and not folder.is_dir():
         return missing_message(folder)
     return None
-
-
-def outside_message(root: Path) -> str:
-    """What the owner is told when a folder picked is not inside root."""
-    return (f"Pick a folder inside {Path(root).resolve().name} — moves stay inside "
-            "the folder you opened, so Undo can put them back.")
 
 
 def _rel_in(root: Path, folder: Path) -> str:

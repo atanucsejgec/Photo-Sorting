@@ -8,12 +8,14 @@ PDF, "page 3 of 12". The file is shown by the viewer of its kind
 (ui.preview_viewers), made the first time a file of that kind comes up and
 kept; a viewer that can't show its file hands over to the info card, with
 the reason. Beside it, the folder slots: their keys and names (the path
-inside the root; a slot outside the root, or empty, is greyed).
+inside the root, the folder's name outside it); a slot that is empty, or
+whose folder is not there now, is greyed.
 
 Keys: ←/→ the file before or after (a fresh → past the last file ends the
 Preview; a held one's repeats stop there); N moves the file to <root>/Not needed; M opens the folder
 overlay, where 1…9 and 0 move it to that slot, Enter (or "Other folder…")
-picks another folder inside the root, and Esc closes it; L edits the slots
+picks another folder (anywhere: see modes.preview.target_problem for the
+ones refused), and Esc closes it; L edits the slots
 (SlotEditor); Ctrl+Z puts back the last file moved, and shows it again;
 Esc asks whether to leave. The viewer's own keys (Space, Shift+←/→, S,
 +/−, F, ↑/↓, PgUp/PgDn, O) are offered to it first: each viewer sits in a
@@ -22,9 +24,12 @@ the page's shortcuts (a viewer never takes those), then ←/→ to the page.
 
 Moves (and put-backs, and the finish) run one at a time, in order, on pool
 threads: the next file shows at once. The viewer lets go of a file before
-its move is queued. A move that fails puts the file back in the list where
-it was, and says "Couldn't move <name>: <error>"; the session goes on.
-What the queue comes back with is added under the message line's text, so
+its move is queued. A move (or put-back) that takes over MOVING_AFTER_MS
+(a copy to another drive) says "Moving <name> to <folder>…" on the
+message line until it is done (an owner's later note keeps it); closing
+the window says it while it waits. A move that fails puts the file back in
+the list where it was, and says "Couldn't move <name>: <error>"; the
+session goes on. What the queue comes back with is added under the message line's text, so
 a failure is not wiped by a later note ("Nothing to put back"); the line
 keeps the last MESSAGE_LINES of them.
 
@@ -48,22 +53,23 @@ went.
 """
 
 import logging
+import os
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QThreadPool, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QKeyEvent
+from PySide6.QtCore import QEvent, QObject, QThreadPool, QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QListWidget,
+    QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 from shiboken6 import isValid
 
 from photosort.modes.preview import (
-    NOT_NEEDED, SLOTS, PreviewSession, file_kind, inside_root, outside_message, slot_problem,
+    NOT_NEEDED, SLOTS, PreviewSession, file_kind, inside_root, target_problem,
 )
 from photosort.ui import dialogs, shortcuts
 from photosort.ui import preview_viewers as pv
@@ -92,6 +98,10 @@ EDITOR_TITLE = "Preview folders"
 OTHER_BUTTON = "Other folder… (Enter)"
 EDIT_BUTTON = "Edit folders (L)"
 EMPTY_SLOT = "—"
+PATH_PLACEHOLDER = "Paste or type a folder path"
+FOLDER_NOT_FOUND = "Folder not found"
+PATH_LIST_FULL = "The list is full"
+MOVING_AFTER_MS = 500  # a move taking longer says "Moving <name> to <folder>…"
 SIDE_WIDTH = 220
 OVERLAY_MAX_WIDTH = 720
 
@@ -115,7 +125,31 @@ def slot_name(root: Path, folder: str | None) -> str:
 
 
 def _usable(root: Path, folder: str | None) -> bool:
-    return folder is not None and slot_problem(root, folder) is None
+    """Whether a slot is shown plain: a folder that is there now, and can
+    take files (greyed otherwise; one missing inside root still works)."""
+    return (folder is not None and target_problem(root, folder) is None
+            and Path(folder).is_dir())
+
+
+def moving_text(name: str, root: Path, folder: Path) -> str:
+    return f"Moving {name} to {slot_name(root, str(folder))}…"
+
+
+def folder_from_text(root: Path, text: str) -> Path | None:
+    """The folder a pasted or typed path names: spaces and quotes around it
+    are dropped, a file:// URL is made a path, ~ is expanded, and a relative
+    path is taken inside root. None if nothing is left."""
+    text = text.strip()
+    while len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
+    if text.casefold().startswith("file:"):
+        text = QUrl(text).toLocalFile()
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = Path(root) / path
+    return Path(os.path.normpath(path))
 
 
 def _same(a: Path, b: Path) -> bool:
@@ -278,8 +312,12 @@ class PreviewPage(QWidget):
         self._facts: tuple[int | None, float | None] = (None, None)
         self._stat_tasks: set[Task] = set()
         self._moved: list[str] = []  # each live move's file (as it was), last last
-        self._queue: deque[tuple[Callable[[], object], Callable, Callable]] = deque()
+        # (job, done, failed, status): see _enqueue
+        self._queue: deque[tuple[Callable[[], object], Callable, Callable,
+                                 Callable[[], str | None] | None]] = deque()
         self._running: Task | None = None
+        self._running_status: Callable[[], str | None] | None = None  # what it says if slow
+        self._status: str | None = None  # "Moving …", said while a slow move runs
         self._finished_task: Task | None = None  # kept alive until its thread lets go
         self._generation = 0  # bumped when a session is let go: its late results are dropped
         self._ending = False
@@ -419,12 +457,23 @@ class PreviewPage(QWidget):
         self.overlay.hide()
         self._generation += 1  # the running job's result, when it comes, is dropped
         if self._running is not None:
+            self._show_status(self._running_status)
             QThreadPool.globalInstance().waitForDone()  # it ends before those after it
         while self._queue:
-            job, _done, _failed = self._queue.popleft()
+            job, _done, _failed, status = self._queue.popleft()
+            if status != self._putting_back_text:  # self._moved is behind now
+                self._show_status(status)
             _run_job(job)
         _run_job(partial(_finish, session))  # safe if it was queued already
         self.clear()
+
+    def _show_status(self, status: Callable[[], str | None] | None) -> None:
+        """Say status() now, painted at once: the window is closing, and this
+        thread waits for the move (shutdown)."""
+        text = status() if status is not None else None
+        if text is not None and isValid(self) and self.isVisible():
+            self._say(text)
+            self.repaint()
 
     def clear(self) -> None:
         """Let the session go (it is over) and every viewer's file."""
@@ -433,6 +482,8 @@ class PreviewPage(QWidget):
         self._generation += 1
         self._queue.clear()
         self._running = None
+        self._running_status = None
+        self._status = None
         self.session = None
         self.files = []
         self._order = {}
@@ -596,7 +647,10 @@ class PreviewPage(QWidget):
 
     def _say(self, text: str) -> None:
         """A problem or a note, under the top lines, in place of what was
-        there (the owner has acted since); hidden while there is none."""
+        there (the owner has acted since), but for a slow move's status,
+        kept until the move is done; hidden while there is none."""
+        if self._status is not None and self._status not in text.split("\n"):
+            text = f"{text}\n{self._status}" if text else self._status
         self.message_label.setText(text)
         self.message_label.setVisible(bool(text))
 
@@ -607,6 +661,13 @@ class PreviewPage(QWidget):
         if text not in lines:
             lines.append(text)
         self._say("\n".join(lines[-MESSAGE_LINES:]))
+
+    def _untell(self, text: str) -> None:
+        """Take text (a slow move's status, over now) off the message line."""
+        lines = [line for line in self.message_label.text().split("\n") if line]
+        if text in lines:
+            lines.remove(text)
+            self._say("\n".join(lines))
 
     def message(self) -> str:
         return self.message_label.text()
@@ -698,7 +759,7 @@ class PreviewPage(QWidget):
         if folder is None:
             self._say(f"Slot {slot_key(n)} is empty")
             return
-        problem = slot_problem(self.root, folder)
+        problem = target_problem(self.root, folder)
         if problem is not None:
             self._say(problem)
             return
@@ -711,15 +772,16 @@ class PreviewPage(QWidget):
         self._other_folder(rel)
 
     def _other_folder(self, rel: str | None) -> None:
-        """Pick a folder inside root and move rel (the file shown when M
-        was pressed) there, adding the folder to the slots."""
+        """Pick a folder (the picker starts at root) and move rel (the file
+        shown when M was pressed) there, adding the folder to the slots."""
         if not self._still_shown(rel):
             return
         picked = choose_folder(self, PICK_TITLE, self.root)
         if picked is None or not self._active():
             return
-        if not inside_root(self.root, picked):
-            self._say(outside_message(self.root))
+        problem = target_problem(self.root, picked)
+        if problem is not None:
+            self._say(problem)
             return
         if not self._still_shown(rel):  # a put-back landed while the picker was open
             return
@@ -752,7 +814,8 @@ class PreviewPage(QWidget):
         self._release()  # before the move: nothing holds the file
         del self.files[self._index]
         self._enqueue(partial(self.session.move, rel, Path(target)),
-                      partial(self._moved_ok, rel), partial(self._move_failed, rel))
+                      partial(self._moved_ok, rel), partial(self._move_failed, rel),
+                      partial(moving_text, name, self.root, Path(target)))
         self._go_on()
         return True
 
@@ -792,7 +855,16 @@ class PreviewPage(QWidget):
     def _put_back(self) -> None:
         if not self._active():
             return  # what is said stays: a failure is not wiped by Ctrl+Z
-        self._enqueue(self.session.put_back, self._put_back_ok, self._put_back_failed)
+        self._enqueue(self.session.put_back, self._put_back_ok, self._put_back_failed,
+                      self._putting_back_text)
+
+    def _putting_back_text(self) -> str | None:
+        """What a slow put-back says, asked while it runs: every job before it
+        is done then, so the last live move is the one going back."""
+        if not self._moved:
+            return None
+        rel = self._moved[-1]
+        return moving_text(rel.rpartition("/")[2], self.root, (self.root / rel).parent)
 
     def _put_back_ok(self, back: str | None) -> None:
         if back is None:
@@ -843,23 +915,34 @@ class PreviewPage(QWidget):
     # ----- the queue ----------------------------------------------------------------------------
 
     def _enqueue(self, job: Callable[[], object], done: Callable[[object], None],
-                 failed: Callable[[object], None]) -> None:
+                 failed: Callable[[object], None],
+                 status: Callable[[], str | None] | None = None) -> None:
         """Run job after those queued before it, on the pool; then done(its
-        result) or failed(its exception), here."""
-        self._queue.append((job, done, failed))
+        result) or failed(its exception), here. If it takes over
+        MOVING_AFTER_MS, status() (asked then) is said until it ends."""
+        self._queue.append((job, done, failed, status))
         self._pump()
 
     def _pump(self) -> None:
         if self._running is not None or not self._queue:
             return
-        job, done, failed = self._queue.popleft()
+        job, done, failed, status = self._queue.popleft()
         task = Task(_run_job, job, cancellable=False)
         generation = self._generation
+
+        def slow(task=task):
+            if (isValid(self) and generation == self._generation and self._running is task
+                    and (text := status()) is not None):
+                self._status = text
+                self._tell(text)
 
         def ended(result, task=task):
             if not isValid(self) or generation != self._generation:
                 return  # the session was let go meanwhile
             self._finished_task, self._running = task, None
+            if self._status is not None:
+                text, self._status = self._status, None
+                self._untell(text)
             ok, value = result
             (done if ok else failed)(value)
             self._pump()
@@ -867,7 +950,10 @@ class PreviewPage(QWidget):
         task.signals.result.connect(ended)
         task.signals.error.connect(lambda message: ended((False, RuntimeError(message))))
         self._running = task
+        self._running_status = status
         task.start()
+        if status is not None:
+            QTimer.singleShot(MOVING_AFTER_MS, slow)
 
     # ----- ending -------------------------------------------------------------------------------
 
@@ -904,16 +990,45 @@ class PreviewPage(QWidget):
 
 # ----- the slot editor ---------------------------------------------------------------------------
 
+class _PathEdit(QLineEdit):
+    """The editor's path box. Ctrl+V of a folder copied in a file manager
+    (a file:// URL on the clipboard) puts in its path."""
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.matches(QKeySequence.StandardKey.Paste) and not self.isReadOnly():
+            mime = QGuiApplication.clipboard().mimeData()
+            if mime is None:
+                text = ""
+            else:
+                urls = [url for url in mime.urls() if url.isLocalFile()]
+                text = urls[0].toLocalFile() if urls else mime.text()
+            text = text.strip()
+            if text.casefold().startswith("file:"):
+                text = QUrl(text).toLocalFile() or text
+            if text:
+                self.insert(text)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class SlotEditor(QDialog):
     """Edits a copy of the slots; slots() is the list as it now stands.
 
-    Add… picks a folder inside root (the picker can make one) and puts it in
-    the chosen slot if that is empty, else in the first empty one. Remove
+    The path box at the top takes a pasted or typed folder path (see
+    folder_from_text): Enter puts it in the first empty slot, if it is an
+    existing folder ("Folder not found"), not listed ("Already in the list
+    (slot N)"), and there is room ("The list is full").
+
+    Add… picks a folder (the picker starts at root, can go anywhere and can
+    make one) and puts it in the chosen slot if that is empty, else in the
+    first empty one. Remove
     takes the chosen folder out, and the ones after it move up a place;
     Move up and Move down swap it with its neighbour. Either way the slots
     are numbered afresh: 1…9, then 0.
 
-    Keys: ↑↓ choose, Insert or A add, Delete remove, Alt+↑ and Alt+↓ move,
+    Keys: ↑↓ choose, Insert or A add, Delete remove, Alt+↑ and Alt+↓ move
+    (off while the path box has the focus: its Enter adds its path),
     Enter saves (Save) and Esc cancels (Enter presses a button Tab has reached
     instead: widgets.ButtonKeys).
     """
@@ -924,6 +1039,9 @@ class SlotEditor(QDialog):
         self.root = Path(root)
         self._slots = (list(slots) + [None] * SLOTS)[:SLOTS]
         self.setWindowTitle(EDITOR_TITLE)
+        self.path_edit = _PathEdit()
+        self.path_edit.setPlaceholderText(PATH_PLACEHOLDER)
+        self.path_edit.setClearButtonEnabled(True)
         self.list_widget = QListWidget()
         self.list_widget.setObjectName("rowList")  # see theme
         self.list_widget.setMinimumWidth(260)
@@ -960,11 +1078,12 @@ class SlotEditor(QDialog):
         layout.setSpacing(12)
         layout.addWidget(heading(EDITOR_TITLE))
         hint = QLabel("N sends a file to Not needed; M then a number sends it to that "
-                      f"folder. Folders outside {self.root.resolve().name} are greyed.")
+                      "folder. Folders that aren't there now are greyed.")
         hint.setObjectName("muted")
         hint.setWordWrap(True)
         hint.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(hint)
+        layout.addWidget(self.path_edit)
         layout.addLayout(row, 1)
         layout.addWidget(self.message_label)
         layout.addWidget(ButtonBar([], [buttons]))
@@ -990,11 +1109,15 @@ class SlotEditor(QDialog):
                 ("Delete", "Del", "remove", self.remove_button, False),
                 ("Alt+Up", "Alt+↑", "move up", self.up_button, True),
                 ("Alt+Down", "Alt+↓", "move down", self.down_button, True))]
+        shortcuts.bind(self.path_edit, "Return", "Enter", "add", self._add_typed, repeat=False)
+        shortcuts.pause_while_focused(self.path_edit, [key for key, _ in self._keys],
+                                      resume=self._update_buttons)
         shortcuts.describe(self, "Esc", "cancel")
         shortcuts.describe_tab(self)
         self.strip = ShortcutStrip(self)
         layout.addWidget(self.strip)
         self.strip.show_for(self)
+        self.setTabOrder(self.path_edit, self.list_widget)
         self._fill(0)
         self.list_widget.setFocus()
 
@@ -1035,8 +1158,9 @@ class SlotEditor(QDialog):
         picked = choose_folder(self, ADD_TITLE, self.root)
         if picked is None:
             return
-        if not inside_root(self.root, picked):
-            self._message(outside_message(self.root))
+        problem = target_problem(self.root, picked)
+        if problem is not None:
+            self._message(problem)
             return
         if any(f is not None and _same(Path(f), picked) for f in self._slots):
             self._message(f"{slot_name(self.root, str(picked))} is listed already")
@@ -1046,6 +1170,33 @@ class SlotEditor(QDialog):
         if not (0 <= row < SLOTS and self._slots[row] is None):
             row = self._slots.index(None)
         self._slots[row] = str(picked)
+        self._fill(row)
+
+    def _add_typed(self) -> None:
+        """Put the folder in the path box in the first empty slot, and empty
+        the box; or say why not (the box keeps it, to be put right)."""
+        folder = folder_from_text(self.root, self.path_edit.text())
+        if folder is None:
+            self._message("")
+            return
+        if not folder.is_dir():
+            self._message(FOLDER_NOT_FOUND)
+            return
+        problem = target_problem(self.root, folder)
+        if problem is not None:
+            self._message(problem)
+            return
+        for n, listed in enumerate(self._slots):
+            if listed is not None and _same(Path(listed), folder):
+                self._message(f"Already in the list (slot {slot_key(n)})")
+                return
+        if None not in self._slots:
+            self._message(PATH_LIST_FULL)
+            return
+        self._message("")
+        row = self._slots.index(None)
+        self._slots[row] = str(folder)
+        self.path_edit.clear()
         self._fill(row)
 
     def _remove(self) -> None:

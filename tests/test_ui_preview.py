@@ -7,6 +7,8 @@ folder picker is patched (preview_page.choose_folder); the app's own dialogs
 are real where a test is marked real_dialogs, answered by keys.
 """
 
+import errno
+import os
 import shutil
 import subprocess
 import threading
@@ -32,12 +34,13 @@ from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QThreadPool
 from PySide6.QtGui import QKeyEvent, QPainter, QPdfWriter
 from PySide6.QtMultimedia import QMediaPlayer
-from PySide6.QtWidgets import QPushButton
+from PySide6.QtWidgets import QApplication, QPushButton
 
 from fstree import tree
 from photosort.journal import load_runs
 from photosort.modes import preview as preview_mode
-from photosort.modes.preview import NOT_NEEDED, outside_message
+from photosort import executor
+from photosort.modes.preview import NOT_NEEDED
 from photosort.settings import Settings, load_settings
 from photosort.ui import icons
 from photosort.ui import preview_page as pp
@@ -170,6 +173,7 @@ def test_m_then_digit_moves_to_slot(qtbot, make_window, three, errors):
         "1  Trips", "2  —", "3  Family/Kids", "4  —"]
     assert page.slot_labels[0].objectName() == ""
     assert page.slot_labels[1].objectName() == "muted"
+    assert page.slot_labels[2].objectName() == "muted"  # missing (made again on use)
     _key(qtbot, Qt.Key.Key_M)
     assert page.overlay.isVisible()
     assert _focused() is page.overlay
@@ -190,20 +194,18 @@ def test_m_then_digit_moves_to_slot(qtbot, make_window, three, errors):
     assert errors == []
 
 
-def test_m_empty_slot_and_outside_slot_messages(qtbot, make_window, three, tmp_path, errors):
+def test_m_empty_slot_messages(qtbot, make_window, three, tmp_path, errors):
     elsewhere = tmp_path / "Elsewhere"
     elsewhere.mkdir()
     w = make_window(_settings(three / "Trips", elsewhere))
     page = _open(qtbot, w, three)
     before = tree(three)
-    assert page.slot_labels[1].objectName() == "muted"  # greyed: outside the root
+    assert page.slot_labels[1].objectName() == ""  # outside the root, there: not greyed
     assert page.slot_labels[1].text() == "2  Elsewhere"
     _key(qtbot, Qt.Key.Key_M)
     _key(qtbot, Qt.Key.Key_4)
     assert page.message() == "Slot 4 is empty"
     assert page.overlay.isVisible()
-    _key(qtbot, Qt.Key.Key_2)
-    assert page.message() == "Elsewhere isn't inside this folder"
     _key(qtbot, Qt.Key.Key_0)
     assert page.message() == "Slot 0 is empty"
     _key(qtbot, Qt.Key.Key_Escape)  # closes the overlay; no move, no leaving
@@ -268,25 +270,151 @@ def test_other_folder_with_the_list_full_moves_and_says_so(qtbot, make_window, t
     assert errors == []
 
 
-def test_other_folder_outside_root_refused(qtbot, make_window, three, tmp_path, monkeypatch,
-                                           errors):
+def test_other_folder_outside_root_now_allowed(qtbot, make_window, three, tmp_path,
+                                              settings_path, monkeypatch, errors):
     out = tmp_path / "out"
     out.mkdir()
-    monkeypatch.setattr(pp, "choose_folder", lambda parent, title, start: out)
+    asked = []
+
+    def pick(parent, title, start):
+        asked.append(Path(start))
+        return out
+
+    monkeypatch.setattr(pp, "choose_folder", pick)
     w = make_window()
     page = _open(qtbot, w, three)
-    before = tree(three)
     _key(qtbot, Qt.Key.Key_M)
     _key(qtbot, Qt.Key.Key_Return)
-    assert page.message() == outside_message(three)
-    assert page.message() == ("Pick a folder inside photos — moves stay inside the folder "
-                              "you opened, so Undo can put them back.")
-    assert page.current() == "a.jpg"
+    assert asked == [three]  # the picker starts at the root, and can go anywhere
+    assert page.current() == "b.jpg"
+    _idle(qtbot, page)
+    assert page.message() == ""
+    assert (out / "a.jpg").is_file()
+    assert not (three / "a.jpg").exists()
+    assert page.slots()[:2] == [str(out), None]
+    assert page.slot_labels[0].text() == "1  out"
+    assert page.slot_labels[0].objectName() == ""
+    assert load_settings(settings_path).preview_folders[0] == str(out)
     assert _focused() is page._box
+    assert errors == []
+
+
+def test_other_folder_in_an_app_folder_refused(qtbot, make_window, three, monkeypatch, errors):
+    records = three / ".photosort" / "x"
+    records.mkdir(parents=True)
+    monkeypatch.setattr(pp, "choose_folder", lambda parent, title, start: records)
+    w = make_window()
+    page = _open(qtbot, w, three)
+    _key(qtbot, Qt.Key.Key_M)
+    _key(qtbot, Qt.Key.Key_Return)
+    assert page.message() == preview_mode.APP_FOLDER
+    assert page.current() == "a.jpg"
+    qtbot.wait(50)
+    assert list(records.iterdir()) == []
+    assert page.slots() == [None] * 10
+    assert errors == []
+
+
+def test_missing_outside_slot_says_plug_in(qtbot, make_window, three, tmp_path, errors):
+    gone = tmp_path / "Drive" / "Trips"  # its drive is not plugged in
+    w = make_window(_settings(gone))
+    page = _open(qtbot, w, three)
+    before = tree(three)
+    assert page.slot_labels[0].objectName() == "muted"
+    assert page.slot_labels[0].text() == "1  Trips"
+    _key(qtbot, Qt.Key.Key_M)
+    _key(qtbot, Qt.Key.Key_1)
+    assert page.message() == "Trips isn't there — is the drive plugged in?"
+    assert page.overlay.isVisible()
+    assert page.current() == "a.jpg"
+    _key(qtbot, Qt.Key.Key_Escape)
     qtbot.wait(50)
     assert tree(three) == before
-    assert list(out.iterdir()) == []
-    assert page.slots() == [None] * 10
+    assert not (tmp_path / "Drive").exists()
+    assert page.session.moved == []
+    assert errors == []
+
+
+@pytest.mark.real_dialogs
+def test_m_digit_outside_root_moves_and_undo_restores(qtbot, make_window, three, tmp_path,
+                                                      errors):
+    elsewhere = tmp_path / "Elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "a.jpg").write_bytes(b"already here")  # a name clash: never overwritten
+    before, before_elsewhere = tree(three), tree(elsewhere)
+    w = make_window(_settings(elsewhere))
+    page = _open(qtbot, w, three)
+    _key(qtbot, Qt.Key.Key_M)
+    _key(qtbot, Qt.Key.Key_1)  # a
+    _key(qtbot, Qt.Key.Key_M)
+    _key(qtbot, Qt.Key.Key_1)  # b
+    _showing(qtbot, page, "1 of 1 · c.jpg")
+    _idle(qtbot, page)
+    assert (elsewhere / "a.jpg").read_bytes() == b"already here"
+    assert (elsewhere / "a (1).jpg").read_bytes() == before["a.jpg"]
+    assert (elsewhere / "b.jpg").read_bytes() == before["b.jpg"]
+    assert page.message() == ""
+
+    _in_dialog(qtbot, lambda dialog: _key(qtbot, Qt.Key.Key_Return))  # Leave
+    _key(qtbot, Qt.Key.Key_Escape)
+    _activate(qtbot, w)
+    qtbot.waitUntil(lambda: w.current_page() is w.done_page, timeout=WAIT_MS)
+    assert w.done_label.text() == "Moved 2 files: 0 to Not needed, 2 to folders"
+
+    def answer_undo(dialog):
+        qtbot.waitUntil(lambda: _focused() is not None and _focused().window() is dialog)
+        _key(qtbot, Qt.Key.Key_Right)
+        _key(qtbot, Qt.Key.Key_Return)
+
+    qtbot.waitUntil(lambda: _focused() is w.home_button)
+    _in_dialog(qtbot, answer_undo)
+    _key(qtbot, Qt.Key.Key_U)
+    qtbot.waitUntil(lambda: "Undo complete" in w.undo_label.text(), timeout=WAIT_MS)
+    assert tree(three) == before
+    assert tree(elsewhere) == before_elsewhere
+    assert errors == []
+
+
+def test_cross_drive_move_shows_moving_status(qtbot, make_window, three, tmp_path,
+                                              monkeypatch, errors):
+    usb = tmp_path / "usb"  # "another drive": a rename into it fails with EXDEV
+    usb.mkdir()
+    data = (three / "a.jpg").read_bytes()
+    real_rename, real_copy = os.rename, shutil.copy2
+    gate, copying = threading.Event(), threading.Event()
+
+    def rename(src, dst, *args, **kwargs):
+        if (Path(src).parent == usb) != (Path(dst).parent == usb):
+            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), str(src), str(dst))
+        return real_rename(src, dst, *args, **kwargs)
+
+    def slow_copy(src, dst, *args, **kwargs):
+        copying.set()
+        gate.wait(5)  # a slow drive
+        return real_copy(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", rename)
+    monkeypatch.setattr(shutil, "copy2", slow_copy)
+    w = make_window(_settings(usb))
+    page = _open(qtbot, w, three)
+    _key(qtbot, Qt.Key.Key_M)
+    _key(qtbot, Qt.Key.Key_1)
+    assert page.current() == "b.jpg"  # the next file shows at once
+    assert page.message() == ""
+    qtbot.waitUntil(copying.is_set, timeout=WAIT_MS)
+    qtbot.waitUntil(lambda: page.message() == "Moving a.jpg to usb…", timeout=WAIT_MS)
+    assert executor.move_file is preview_mode.move_file  # the real cross-drive move
+    gate.set()
+    _idle(qtbot, page)
+    assert page.message() == ""
+    assert (usb / "a.jpg").read_bytes() == data
+    assert not (three / "a.jpg").exists()
+    assert [p.name for p in usb.iterdir()] == ["a.jpg"]  # no temp copy left behind
+    # A quick move says nothing.
+    _key(qtbot, Qt.Key.Key_N)
+    _idle(qtbot, page)
+    qtbot.wait(700)
+    assert page.message() == ""
     assert errors == []
 
 
@@ -297,7 +425,7 @@ def test_slot_editor_add_remove_reorder_renumbers_and_saves(qtbot, make_window, 
                                                             settings_path, tmp_path,
                                                             monkeypatch, errors):
     a, b, c, d = (three / name for name in ("A", "B", "C", "D"))
-    elsewhere = tmp_path / "Elsewhere"
+    elsewhere = tmp_path / "Elsewhere"  # a drive that is not plugged in
     picks = [elsewhere, d]
     monkeypatch.setattr(pp, "choose_folder", lambda parent, title, start: picks.pop(0))
     w = make_window(_settings(a, b, c))
@@ -315,7 +443,7 @@ def test_slot_editor_add_remove_reorder_renumbers_and_saves(qtbot, make_window, 
         _key(qtbot, Qt.Key.Key_Down)  # A, now 2
         _key(qtbot, Qt.Key.Key_Delete)  # C and the rest move up
         assert rows() == ["1  B", "2  C", "3  —", "4  —"]
-        _key(qtbot, Qt.Key.Key_A)  # Elsewhere: refused
+        _key(qtbot, Qt.Key.Key_A)  # Elsewhere, outside and not there: refused
         seen["refused"] = dialog.message_label.text()
         _key(qtbot, Qt.Key.Key_A)  # D, into the first empty slot (2 is taken)
         assert rows() == ["1  B", "2  C", "3  D", "4  —"]
@@ -324,7 +452,7 @@ def test_slot_editor_add_remove_reorder_renumbers_and_saves(qtbot, make_window, 
 
     _in_dialog(qtbot, act)
     _key(qtbot, Qt.Key.Key_L)
-    assert seen["refused"] == outside_message(three)
+    assert seen["refused"] == "Elsewhere isn't there — is the drive plugged in?"
     assert seen["strip"] == ("↑↓ choose · Enter save · Insert/A add · Del remove · "
                              "Alt+↓ move down · Esc cancel · Tab/Shift+Tab area")
     assert "Alt+↑ move up" in seen["live"]
@@ -352,6 +480,156 @@ def test_slot_editor_cancel_changes_nothing(qtbot, make_window, three, settings_
     assert page.slots()[0] == str(a)
     assert not settings_path.exists() or load_settings(settings_path).preview_folders[0] in (
         str(a), None)
+    assert errors == []
+
+
+def _rows(dialog, n: int = 10) -> list[str]:
+    return [dialog.list_widget.item(i).text() for i in range(n)]
+
+
+def _enter_path(qtbot, dialog, text: str) -> None:
+    """Put text in the path box, as typed or pasted, and press Enter there."""
+    dialog.path_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+    qtbot.waitUntil(lambda: _focused() is dialog.path_edit)
+    dialog.path_edit.setText(text)
+    _key(qtbot, Qt.Key.Key_Return)
+
+
+def test_folder_from_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = tmp_path / "photos"
+    assert pp.folder_from_text(root, "  /a/b/  ") == Path("/a/b")
+    assert pp.folder_from_text(root, ' "/a/b c" ') == Path("/a/b c")
+    assert pp.folder_from_text(root, "'/a/b'") == Path("/a/b")
+    assert pp.folder_from_text(root, "file:///a/b%20c/") == Path("/a/b c")
+    assert pp.folder_from_text(root, "~/Pictures") == tmp_path / "home" / "Pictures"
+    assert pp.folder_from_text(root, "Trips/../Kids") == root / "Kids"  # inside the root
+    assert pp.folder_from_text(root, "  ") is None
+    assert pp.folder_from_text(root, '""') is None
+
+
+@pytest.mark.real_dialogs
+def test_paste_path_adds_to_first_free_slot(qtbot, make_window, three, tmp_path, settings_path,
+                                            monkeypatch, errors):
+    a, c = three / "A", three / "C"
+    two = tmp_path / "Elsewhere Two"
+    two.mkdir()
+    home = tmp_path / "home"
+    (home / "Pictures" / "Kids").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    w = make_window(_settings(a, None, c))
+    page = _open(qtbot, w, three)
+    seen = {}
+
+    def act(dialog):
+        qtbot.waitUntil(lambda: _focused() is dialog.list_widget)
+        seen["placeholder"] = dialog.path_edit.placeholderText()
+        _key(qtbot, Qt.Key.Key_Down)
+        _key(qtbot, Qt.Key.Key_Down)  # C chosen: Enter in the box still fills slot 2
+        dialog.path_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+        qtbot.waitUntil(lambda: _focused() is dialog.path_edit)
+        seen["strip"] = dialog.findChild(ShortcutStrip).text()
+        QApplication.clipboard().setText(f"  {two.as_uri()}\n")  # a file manager's copy
+        _key(qtbot, Qt.Key.Key_V, CTRL)
+        seen["pasted"] = dialog.path_edit.text()
+        _key(qtbot, Qt.Key.Key_Return)
+        seen["after"] = (dialog.isVisible(), dialog.path_edit.text(), _focused() is
+                         dialog.path_edit, dialog.message_label.text())
+        _key(qtbot, Qt.Key.Key_A)  # typing: a letter goes in the box, it adds nothing
+        seen["typed"] = (dialog.path_edit.text(), _rows(dialog, 4))
+        _enter_path(qtbot, dialog, '  "~/Pictures/Kids/"  ')  # quoted, with ~
+        seen["rows"] = _rows(dialog, 5)
+        dialog.list_widget.setFocus(Qt.FocusReason.OtherFocusReason)
+        _key(qtbot, Qt.Key.Key_Return)  # Save
+
+    _in_dialog(qtbot, act)
+    _key(qtbot, Qt.Key.Key_L)
+    assert seen["placeholder"] == "Paste or type a folder path"
+    assert seen["strip"].startswith("Enter add · Esc cancel")
+    assert seen["pasted"] == str(two)
+    assert seen["after"] == (True, "", True, "")
+    assert seen["typed"] == ("a", ["1  A", "2  Elsewhere Two", "3  C", "4  —"])
+    assert seen["rows"] == ["1  A", "2  Elsewhere Two", "3  C", "4  Kids", "5  —"]
+    expected = [str(a), str(two), str(c), str(home / "Pictures" / "Kids")] + [None] * 6
+    assert page.slots() == expected
+    assert load_settings(settings_path).preview_folders == expected
+    assert page.slot_labels[1].objectName() == ""  # outside the root, there: not greyed
+    _activate(qtbot, w)
+    assert errors == []
+
+
+@pytest.mark.real_dialogs
+def test_paste_missing_path_says_folder_not_found(qtbot, make_window, three, tmp_path,
+                                                  settings_path, errors):
+    a = three / "A"
+    (tmp_path / "file.txt").write_text("not a folder")
+    w = make_window(_settings(a))
+    page = _open(qtbot, w, three)
+    seen = []
+
+    def act(dialog):
+        qtbot.waitUntil(lambda: _focused() is dialog.list_widget)
+        for text in (str(tmp_path / "nope"), str(tmp_path / "file.txt"),
+                     (tmp_path / "gone dir").as_uri()):
+            _enter_path(qtbot, dialog, text)
+            seen.append((dialog.message_label.text(), dialog.path_edit.text(),
+                         _rows(dialog, 2), dialog.isVisible()))
+        _enter_path(qtbot, dialog, "   ")  # nothing in it: nothing said
+        seen.append(dialog.message_label.text())
+        _key(qtbot, Qt.Key.Key_Escape)
+
+    _in_dialog(qtbot, act)
+    _key(qtbot, Qt.Key.Key_L)
+    assert seen[:3] == [
+        ("Folder not found", str(tmp_path / "nope"), ["1  A", "2  —"], True),
+        ("Folder not found", str(tmp_path / "file.txt"), ["1  A", "2  —"], True),
+        ("Folder not found", (tmp_path / "gone dir").as_uri(), ["1  A", "2  —"], True)]
+    assert seen[3] == ""
+    assert page.slots() == [str(a)] + [None] * 9
+    _activate(qtbot, w)
+    assert errors == []
+
+
+@pytest.mark.real_dialogs
+def test_paste_duplicate_and_full(qtbot, make_window, three, tmp_path, errors):
+    full = [three / f"S{n}" for n in range(9)] + [tmp_path / "Ten"]
+    (tmp_path / "Ten").mkdir()
+    (three / "S2").mkdir()
+    (tmp_path / "New").mkdir()
+    w = make_window(_settings(*full[:3]))
+    page = _open(qtbot, w, three)
+    seen = []
+
+    def duplicate(dialog):
+        qtbot.waitUntil(lambda: _focused() is dialog.list_widget)
+        _enter_path(qtbot, dialog, str(three / "S2"))
+        seen.append(dialog.message_label.text())
+        _enter_path(qtbot, dialog, str(three / "x" / ".." / "S2") + "/")  # the same one
+        seen.append(dialog.message_label.text())
+        seen.append(_rows(dialog, 4))
+        _key(qtbot, Qt.Key.Key_Escape)
+
+    _in_dialog(qtbot, duplicate)
+    _key(qtbot, Qt.Key.Key_L)
+    assert seen == ["Already in the list (slot 3)", "Already in the list (slot 3)",
+                    ["1  S0", "2  S1", "3  S2", "4  —"]]
+    _activate(qtbot, w)
+    page.set_slots([str(f) for f in full])
+    seen.clear()
+
+    def when_full(dialog):
+        qtbot.waitUntil(lambda: _focused() is dialog.list_widget)
+        _enter_path(qtbot, dialog, str(tmp_path / "Ten"))
+        seen.append(dialog.message_label.text())
+        _enter_path(qtbot, dialog, str(tmp_path / "New"))
+        seen.append((dialog.message_label.text(), dialog.path_edit.text()))
+        _key(qtbot, Qt.Key.Key_Escape)
+
+    _in_dialog(qtbot, when_full)
+    _key(qtbot, Qt.Key.Key_L)
+    assert seen == ["Already in the list (slot 0)", ("The list is full", str(tmp_path / "New"))]
+    assert page.slots() == [str(f) for f in full]
+    _activate(qtbot, w)
     assert errors == []
 
 
