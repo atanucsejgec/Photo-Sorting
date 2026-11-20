@@ -14,6 +14,7 @@ dependencies = [
     "reverse-geocode==1.6.6",
     "tokenizers>=0.23.3",
     "pyside6-addons==6.12.0",
+    "pypdfium2>=4.30",
 ]
 
 [project.scripts]

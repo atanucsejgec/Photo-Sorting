@@ -20,19 +20,25 @@ reading a text file, and the info card's size, date and type. A result for
 a file that is no longer the one loaded is dropped (each load gets a new
 generation number).
 
-PDFs are drawn by poppler's pdfinfo and pdftoppm, run as subprocesses: the
-Linux PySide6 wheel has no QtPdf. One still running when its page is no
-longer wanted (or the viewer is released) is killed at once.
+PDFs are drawn with pypdfium2 (the Linux PySide6 wheel has no QtPdf). pdfium
+is not thread-safe, so every pdfium call in the process holds one lock
+(_PDFIUM_LOCK). A load opens its document once, on the pool, and keeps it
+for its renders; release() (or the next load) closes it on the pool, after
+any render under way. A render no longer wanted is skipped before it starts;
+one page can't be stopped part-way, so a page is never drawn bigger than
+PDF_MAX_PIXELS.
 """
 
 import logging
-import shutil
-import subprocess
-import time
+import math
+import threading
+import weakref
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QMimeDatabase, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import (
+    QMimeDatabase, QRect, QRectF, QSize, Qt, QThreadPool, QTimer, QUrl, Signal,
+)
 from PySide6.QtGui import (
     QColor, QDesktopServices, QFont, QFontDatabase, QImage, QKeyEvent, QPainter, QPixmap,
     QTransform,
@@ -53,7 +59,20 @@ from photosort.ui.qimage import pil_to_qimage
 from photosort.ui.theme import COLORS
 from photosort.ui.worker import Task
 
+try:
+    import pypdfium2 as pdfium
+except Exception as _exc:  # not installed, or its pdfium library won't load
+    pdfium = None
+    _PDFIUM_PROBLEM = f"pypdfium2 can't be loaded: {_exc}"
+else:
+    _PDFIUM_PROBLEM = ""
+
 _log = logging.getLogger("photosort")
+
+# pdfium is not thread-safe: every pdfium call in the process is made holding this.
+# It is held only on pool threads, and garbage (whose finalizers may take it) is
+# collected only on the GUI thread (gc_guard), so it need not be re-entrant.
+_PDFIUM_LOCK = threading.Lock()
 
 ZOOM_MIN = 0.1
 ZOOM_MAX = 8.0
@@ -61,11 +80,9 @@ ZOOM_STEP = 1.25
 IMAGE_MAX_PX = 4096  # a photo is first decoded at most this many pixels on its longest side
 FULL_MAX_PX = 12000  # zoomed in, it is decoded again in full, at most this
 PDF_MAX_DPI = 400.0
-PDF_TIMEOUT_S = 30
-POLL_S = 0.05  # how often a running pdfinfo/pdftoppm checks whether it is still wanted
+PDF_MAX_PIXELS = 40_000_000  # a page drawn bigger than this is drawn at a lower scale
 PDF_SCROLL_DELAY_MS = 30  # scroll steps closer together than this draw the pages once
 PDF_ZOOM_DELAY_MS = 150  # zoom steps closer together than this draw the pages once
-PDFINFO, PDFTOPPM = "pdfinfo", "pdftoppm"
 PDF_PAGE_GAP = 12  # px between pages
 PDF_MARGIN = 16  # px round the pages
 MAX_TEXT_BYTES = 1024 * 1024
@@ -413,87 +430,137 @@ class ImageViewer(Viewer):
 
 # ----- PDF ---------------------------------------------------------------------------
 
-def _poppler_missing() -> bool:
-    return shutil.which(PDFINFO) is None or shutil.which(PDFTOPPM) is None
+class PdfiumFile:
+    """One load's PDF document. pdfium is not thread-safe, so every pdfium
+    call (opening, reading sizes, drawing, closing) is made holding
+    _PDFIUM_LOCK. The document is opened once, on the pool, kept for that
+    load's renders and closed by close(), after which nothing is drawn.
 
-
-def _run(command: list[str], cancel) -> tuple[int, bytes, str] | None:
-    """Run command; (returncode, stdout, stderr), or None if cancel was set
-    while it ran. It is killed at once when cancelled, and after
-    PDF_TIMEOUT_S (returncode -1), so it never holds a pool thread long."""
-    try:
-        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except OSError as exc:
-        return -1, b"", str(exc)
-    deadline = time.monotonic() + PDF_TIMEOUT_S
-    while True:
-        try:
-            out, err = proc.communicate(timeout=POLL_S)
-        except subprocess.TimeoutExpired:
-            stopped = cancel is not None and cancel.is_set()
-            if stopped or time.monotonic() > deadline:
-                proc.kill()
-                proc.communicate()
-                return None if stopped else (-1, b"", f"took over {PDF_TIMEOUT_S} s")
-        else:
-            return proc.returncode, out, err.decode("utf-8", "replace").strip()
-
-
-def _pdf_pages(generation: int, path: Path, progress=None, cancel=None):
-    """(generation, pages) on a pool thread. pages is [(width, height) in
-    points, one per page], a str saying why it can't be read (a broken or
-    locked file: expected, so not raised), or None if cancelled.
-
-    A page turned by 90° or 270° has its width and height swapped, as
-    pdftoppm draws it.
+    If the file is dropped without close(), it is still closed under the
+    lock (on the garbage collector's thread, the GUI thread), never by
+    pdfium's own finalizer without the lock.
     """
-    ran = _run([PDFINFO, "-f", "1", "-l", "1000000", str(path)], cancel)
-    if ran is None:
-        return generation, None
-    code, out, err = ran
-    count = 0
-    sizes: dict[int, tuple[float, float]] = {}
-    turned: set[int] = set()
-    for line in out.decode("utf-8", "replace").splitlines():
-        head, _, value = line.partition(":")
-        words = head.split()
-        try:
-            if words == ["Pages"]:
-                count = int(value.strip())
-            elif len(words) == 3 and words[0] == "Page" and words[2] in ("size", "rot"):
-                page = int(words[1])
-                if words[2] == "size":
-                    w, _, h = value.split()[:3]
-                    sizes[page] = (float(w), float(h))
-                elif int(value.strip() or 0) % 180 == 90:
-                    turned.add(page)
-        except ValueError:
-            continue  # a line not as expected: its page takes the first page's size
-    if code != 0 or count <= 0:
-        return generation, f"pdfinfo: {err or 'no pages'}"
-    first = sizes.get(1, (612.0, 792.0))
-    pages = []
-    for page in range(1, count + 1):
-        w, h = sizes.get(page, first)
-        pages.append((h, w) if page in turned else (w, h))
-    return generation, pages
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.document = None
+        self._closed = False
+        self._finalizer = None
+
+    def open(self, cancel) -> list[tuple[float, float]] | str | None:
+        """[(width, height) in points, one per page, as drawn (a turned page
+        has them swapped)], a str saying why the file can't be read (a
+        broken or locked file: expected, so not raised), or None if
+        cancelled or closed first."""
+        with _PDFIUM_LOCK:
+            if self._closed or (cancel is not None and cancel.is_set()):
+                return None
+            try:
+                document = pdfium.PdfDocument(self.path)
+            except Exception as exc:  # broken, locked with a password, gone
+                return f"pdfium: {str(exc) or type(exc).__name__}"
+            self.document = document
+            self._finalizer = weakref.finalize(self, _close_document, document)
+            try:
+                sizes = []
+                for n in range(len(document)):
+                    page = document[n]
+                    try:
+                        sizes.append(page.get_size())
+                    finally:
+                        page.close()
+            except Exception as exc:
+                return f"pdfium: {str(exc) or type(exc).__name__}"
+            return sizes or "pdfium: no pages"
+
+    def render(self, page: int, scale: float, cancel) -> QImage | str | None:
+        """Page (from 1) drawn at scale pixels per point, lowered so the
+        picture is at most PDF_MAX_PIXELS; a str saying why it can't be
+        drawn, or None if cancelled or closed first."""
+        with _PDFIUM_LOCK:
+            if self._closed or self.document is None or (cancel is not None
+                                                           and cancel.is_set()):
+                return None
+            try:
+                pdf_page = self.document[page - 1]
+                try:
+                    w, h = pdf_page.get_size()
+                    if w * h * scale * scale > PDF_MAX_PIXELS:
+                        # each side a pixel short, so rounding it up stays within the cap
+                        scale = math.sqrt(PDF_MAX_PIXELS / (w * h)) - 1 / min(w, h)
+                    bitmap = pdf_page.render(scale=scale)
+                    try:
+                        return pil_to_qimage(bitmap.to_pil())
+                    finally:
+                        bitmap.close()
+                finally:
+                    pdf_page.close()
+            except Exception as exc:
+                return f"pdfium, page {page}: {str(exc) or type(exc).__name__}"
+
+    def close(self) -> None:
+        """Close the document (once the render under way, if any, is done)."""
+        with _PDFIUM_LOCK:
+            self._closed = True
+            self.document = None
+            finalizer, self._finalizer = self._finalizer, None
+            held = finalizer.detach() if finalizer is not None else None
+            if held is not None:
+                _, _, (document,), _ = held
+                document.close()
+
+    def close_on_pool(self) -> None:
+        """close() on a pool thread, so the GUI thread never waits for a render."""
+        self._closed = True  # nothing new starts; the lock-holding close follows
+        QThreadPool.globalInstance().start(self.close)
 
 
-def _pdf_render(generation: int, page: int, dpi: int, path: Path, progress=None,
+def _close_document(document) -> None:
+    """Close a document dropped without PdfiumFile.close(), holding _PDFIUM_LOCK."""
+    with _PDFIUM_LOCK:
+        document.close()
+
+
+def _pdf_open(generation: int, file: PdfiumFile, progress=None, cancel=None):
+    """(generation, pages) on a pool thread; see PdfiumFile.open."""
+    return generation, file.open(cancel)
+
+
+def _pdf_render(generation: int, page: int, dpi: int, file: PdfiumFile, progress=None,
                 cancel=None):
     """(generation, page, dpi, picture) on a pool thread. picture is a
     QImage, a str saying why the page can't be drawn, or None if cancelled."""
-    if cancel is not None and cancel.is_set():
-        return generation, page, dpi, None
-    ran = _run([PDFTOPPM, "-png", "-r", str(dpi), "-f", str(page), "-l", str(page), str(path)],
-               cancel)
-    if ran is None:
-        return generation, page, dpi, None
-    code, out, err = ran
-    image = QImage.fromData(out, "PNG")
-    if code != 0 or image.isNull():
-        return generation, page, dpi, f"pdftoppm, page {page}: {err or 'no picture'}"
-    return generation, page, dpi, image
+    return generation, page, dpi, file.render(page, dpi / 72, cancel)
+
+
+class _PdfPage(QWidget):
+    """One page's box: its picture scaled to the box, drawn only where it is
+    exposed. (A QLabel with scaled contents keeps a copy scaled to the whole
+    box: a 5000 pt page at zoom 8 would be 40000 px square, 6.4 GB.)"""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self._pixmap: QPixmap | None = None
+
+    def setPixmap(self, pixmap: QPixmap) -> None:
+        self._pixmap = pixmap
+        self.update()
+
+    def pixmap(self) -> QPixmap | None:
+        return self._pixmap
+
+    def clear(self) -> None:
+        self._pixmap = None
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(event.rect(), QColor(COLORS["thumb_bg"]))
+        if self._pixmap is not None:
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            painter.drawPixmap(QRectF(self.rect()), self._pixmap,
+                               QRectF(0, 0, self._pixmap.width(), self._pixmap.height()))
+        painter.end()
 
 
 class _PdfScroll(QScrollArea):
@@ -530,8 +597,9 @@ class PdfViewer(Viewer):
         super().__init__(parent)
         self._tasks = _Tasks(self)
         self._path: Path | None = None
+        self._file: PdfiumFile | None = None
         self._pages: list[tuple[float, float]] = []
-        self._labels: list[QLabel] = []
+        self._labels: list[_PdfPage] = []
         self._drawn: dict[int, int] = {}  # page -> dpi of the picture shown
         self._pending: dict[int, Task] = {}  # page -> its render, for the current dpi
         self._pending_dpi: dict[int, int] = {}
@@ -570,14 +638,15 @@ class PdfViewer(Viewer):
     def load(self, path: Path) -> None:
         self.release()
         self._path = Path(path)
-        if _poppler_missing():
-            self._fail()
+        if pdfium is None:
+            self._fail(reason=_PDFIUM_PROBLEM or "pypdfium2 can't be loaded")
             return
+        self._file = PdfiumFile(self._path)  # opened on the pool, closed by release()
         generation = self._tasks.generation
-        self._tasks.start(_pdf_pages, generation, self._path, on_result=self._got_pages,
+        self._tasks.start(_pdf_open, generation, self._file, on_result=self._got_pages,
                           on_error=lambda m, g=generation: self._fail(g, m))
 
-    def _fail(self, generation: int | None = None, reason: str = "poppler is missing") -> None:
+    def _fail(self, generation: int | None = None, reason: str = "") -> None:
         """Say once, for this load, that the PDF can't be shown."""
         if generation is not None and generation != self._tasks.generation:
             return
@@ -595,15 +664,15 @@ class PdfViewer(Viewer):
             return
         self._pages = pages
         for _ in pages:
-            label = QLabel(self._sheet)
-            label.setScaledContents(True)
-            label.setObjectName("thumb")
-            self._labels.append(label)
+            self._labels.append(_PdfPage(self._sheet))
         self.fit()
 
     def release(self) -> None:
         self._tasks.new_generation()
         self._timer.stop()
+        if self._file is not None:
+            self._file.close_on_pool()  # after a render under way, never during it
+            self._file = None
         for label in self._labels:
             label.deleteLater()
         self._labels = []
@@ -662,7 +731,7 @@ class PdfViewer(Viewer):
             self._timer.start(PDF_SCROLL_DELAY_MS)
 
     def _update_pages(self) -> None:
-        if not self._pages or self._path is None:
+        if not self._pages or self._file is None:
             return
         visible = self._visible() or [1]
         wanted = set(visible)
@@ -685,7 +754,7 @@ class PdfViewer(Viewer):
             generation = self._tasks.generation
             self._pending_dpi[page] = dpi
             self._pending[page] = self._tasks.start(
-                _pdf_render, generation, page, dpi, self._path, on_result=self._rendered,
+                _pdf_render, generation, page, dpi, self._file, on_result=self._rendered,
                 on_error=lambda m, g=generation: self._fail(g, m))
         self._update_page_text()
 

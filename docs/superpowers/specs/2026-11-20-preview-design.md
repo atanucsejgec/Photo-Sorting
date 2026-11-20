@@ -36,12 +36,13 @@ After all the sorts, some files are left over. The owner wants to go through the
   - +/−/Ctrl+wheel zoom about the cursor or centre, from 10 % to 800 %;
   - F fits again;
   - when zoomed, drag pans and ↑/↓ scroll.
-- **PDF** (my call: there's no QtPdf in the Linux wheel, and a new library was not approved, so the system's poppler tools are used):
-  - `pdfinfo` gives the page count, and `pdftoppm -png -r <dpi> -f n -l n` renders pages on a pool thread;
+- **PDF: pypdfium2 (owner approved)**, since there's no QtPdf in the Linux wheel:
+  - the document is opened once per file on a pool thread, which gives the page count; pages are rendered on pool threads at the zoom's dpi, at most 40 megapixels a page;
+  - pdfium is not thread-safe, so every pdfium call in the app holds one lock, and the document is closed when the file is let go;
   - only the pages in view, plus one ahead, are rendered;
   - zoom changes the dpi (+/−/Ctrl+wheel, F fits the width);
   - ↑/↓/PgUp/PgDn scroll, and the top line shows "page 3 of 12".
-  - If poppler is missing or a page fails, the info card is shown with "Can't show this PDF".
+  - If pypdfium2 can't be loaded, or the file is broken or locked with a password, or a page fails, the info card is shown with "Can't show this PDF".
 - **Video** (`media.kind == "video"`, plus anything QMediaPlayer opens):
   - QMediaPlayer and QVideoWidget, with a position slider and time "0:12 / 3:40";
   - Space plays and pauses, Shift+←/→ jump ±10 s, and S or the speed buttons set 1×/2×/4× (the speed is kept for the next file);
@@ -84,11 +85,11 @@ After all the sorts, some files are left over. The owner wants to go through the
 - Never delete; never overwrite; never touch `/run/media/atanu-linux/New Volume/` in tests.
 - Keyboard-only use works at 1024×600 and 11 pt, with a help strip in the app's style listing the keys that apply to the current file kind.
 - The window never freezes: decoding, PDF rendering and moves run off the GUI thread.
-- No downloads beyond PySide6-Addons. Tests make their media themselves:
+- No downloads beyond PySide6-Addons and pypdfium2 (owner approved). Tests make their media themselves:
   - a WAV with the `wave` module;
   - a PDF with QPdfWriter;
   - a video with `/usr/bin/ffmpeg` when it's present, otherwise the test is skipped;
-  - poppler-dependent tests are skipped when `pdftoppm` is missing.
+  - the PDF tests always run (pypdfium2 is a dependency).
 
 ## Left to the builder
 Widget structure, the exact overlay look, and the name of the zoom-about-cursor helper.
