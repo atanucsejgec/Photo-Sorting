@@ -14,21 +14,25 @@ swap them freely:
   InfoCard with this message.
 
 None of a viewer's children takes the keyboard focus, so every key reaches
-the page. Decoding a photo, reading a PDF's pages and rendering them run on
-pool threads (ui.worker.Task); a result for a file that is no longer the one
-loaded is dropped (each load gets a new generation number).
+the page. Everything that touches the disk runs on pool threads
+(ui.worker.Task): decoding a photo, reading a PDF's pages and drawing them,
+reading a text file, and the info card's size, date and type. A result for
+a file that is no longer the one loaded is dropped (each load gets a new
+generation number).
 
 PDFs are drawn by poppler's pdfinfo and pdftoppm, run as subprocesses: the
-Linux PySide6 wheel has no QtPdf.
+Linux PySide6 wheel has no QtPdf. One still running when its page is no
+longer wanted (or the viewer is released) is killed at once.
 """
 
 import logging
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QMimeDatabase, QRect, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QMimeDatabase, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor, QDesktopServices, QFont, QFontDatabase, QImage, QKeyEvent, QPainter, QPixmap,
     QTransform,
@@ -38,11 +42,11 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QAbstractSlider, QButtonGroup, QFrame, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView,
     QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea, QSlider,
-    QVBoxLayout, QWidget,
+    QStyle, QStyleOptionSlider, QVBoxLayout, QWidget,
 )
 from shiboken6 import isValid
 
-from photosort.imageinfo import UnreadableImage, open_image
+from photosort.imageinfo import UnreadableImage, image_size, open_image
 from photosort.ui import icons
 from photosort.ui.labels import literal
 from photosort.ui.qimage import pil_to_qimage
@@ -54,15 +58,21 @@ _log = logging.getLogger("photosort")
 ZOOM_MIN = 0.1
 ZOOM_MAX = 8.0
 ZOOM_STEP = 1.25
-IMAGE_MAX_PX = 4096  # a photo is decoded at most this many pixels on its longest side
+IMAGE_MAX_PX = 4096  # a photo is first decoded at most this many pixels on its longest side
+FULL_MAX_PX = 12000  # zoomed in, it is decoded again in full, at most this
 PDF_MAX_DPI = 400.0
 PDF_TIMEOUT_S = 30
+POLL_S = 0.05  # how often a running pdfinfo/pdftoppm checks whether it is still wanted
+PDF_SCROLL_DELAY_MS = 30  # scroll steps closer together than this draw the pages once
+PDF_ZOOM_DELAY_MS = 150  # zoom steps closer together than this draw the pages once
+PDFINFO, PDFTOPPM = "pdfinfo", "pdftoppm"
 PDF_PAGE_GAP = 12  # px between pages
 PDF_MARGIN = 16  # px round the pages
 MAX_TEXT_BYTES = 1024 * 1024
 TEXT_FONT_MIN, TEXT_FONT_MAX = 6.0, 48.0
 WRAP_MAX_LINE = 10_000  # characters; a file with a longer line is not wrapped
 SEEK_MS = 10_000
+SLIDER_STEP_MS = 1_000
 SPEEDS = (1.0, 2.0, 4.0)
 
 CANT_SHOW_IMAGE = "Can't show this photo"
@@ -185,14 +195,28 @@ class _Tasks:
 
 # ----- image -------------------------------------------------------------------------
 
-def _decode(generation: int, path: Path, progress=None, cancel=None):
-    """(generation, QImage, or CANT_SHOW_IMAGE, or None if cancelled first). On a pool thread."""
+def _decode(generation: int, path: Path, max_px: int, progress=None, cancel=None):
+    """(generation, picture, original size) on a pool thread.
+
+    picture is a QImage at most max_px on its longest side, CANT_SHOW_IMAGE,
+    or None if cancelled first. original is the photo's own (width, height),
+    the right way up; percentages of zoom are of those pixels.
+    """
     if cancel is not None and cancel.is_set():
-        return generation, None
+        return generation, None, None
     try:
-        return generation, pil_to_qimage(open_image(path, IMAGE_MAX_PX))
+        img = open_image(path, max_px)
     except UnreadableImage:
-        return generation, CANT_SHOW_IMAGE
+        return generation, CANT_SHOW_IMAGE, None
+    try:
+        original = image_size(path)
+    except UnreadableImage:
+        original = img.size
+    # A size that disagrees with the picture's shape is not trusted.
+    if (original[0] < img.width or original[1] < img.height
+            or abs(original[0] / original[1] - img.width / img.height) > 0.02):
+        original = img.size
+    return generation, pil_to_qimage(img), original
 
 
 class _ImageView(QGraphicsView):
@@ -219,7 +243,13 @@ class _ImageView(QGraphicsView):
 
 
 class ImageViewer(Viewer):
-    """A photo, fitted to the window at first; zoom 10 %–800 % of its pixels."""
+    """A photo, fitted to the window at first (never enlarged past its own
+    size); zoom 10 %–800 % of the original's pixels.
+
+    It is first decoded at most IMAGE_MAX_PX on its longest side. Zoomed
+    past 100 % of that copy, the original is decoded again in full (at most
+    FULL_MAX_PX) and swapped in, so zooming shows the real detail.
+    """
 
     KEYS = (("+−", "zoom"), ("F", "fit"), ("↑↓", "scroll"))
 
@@ -229,6 +259,9 @@ class ImageViewer(Viewer):
         self._zoom = 1.0
         self._fitted = True  # follows the window's size until zoomed
         self._item: QGraphicsPixmapItem | None = None
+        self._path: Path | None = None
+        self._original: tuple[int, int] | None = None
+        self._full_asked = False
         self.scene = QGraphicsScene(self)
         self.view = _ImageView(self.scene)
         _no_focus(self, self.view)
@@ -236,6 +269,7 @@ class ImageViewer(Viewer):
         self.view.setFrameShape(QFrame.Shape.NoFrame)
         self.view.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.view.wheel_zoom.connect(
@@ -247,32 +281,65 @@ class ImageViewer(Viewer):
 
     def load(self, path: Path) -> None:
         self.release()
+        self._path = Path(path)
         generation = self._tasks.generation
-        self._tasks.start(_decode, generation, Path(path),
+        self._tasks.start(_decode, generation, self._path, IMAGE_MAX_PX,
                           on_result=self._decoded, on_error=lambda _m, g=generation:
                           self._decode_failed(g))
 
-    def _decoded(self, result: tuple[int, QImage | str | None]) -> None:
-        generation, image = result
+    def _decoded(self, result) -> None:
+        generation, image, original = result
         if generation != self._tasks.generation or image is None:
             return
         if not isinstance(image, QImage):
             self.failed.emit(image)
             return
-        self._item = QGraphicsPixmapItem(QPixmap.fromImage(image))
+        self._original = original
+        self._item = QGraphicsPixmapItem()
         self._item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+        self._put(image)
         self.scene.addItem(self._item)
-        self.scene.setSceneRect(self._item.boundingRect())
+        self.scene.setSceneRect(QRectF(0, 0, *original))
         self.fit()
+
+    def _put(self, image: QImage) -> None:
+        """Show image, scaled so the scene is in the original's pixels."""
+        self._item.setPixmap(QPixmap.fromImage(image))
+        self._item.setScale(self._original[0] / image.width())
 
     def _decode_failed(self, generation: int) -> None:
         if generation == self._tasks.generation:
             self.failed.emit(CANT_SHOW_IMAGE)
 
+    def _want_full(self) -> None:
+        """Past 100 % of the copy shown, decode the original in full, once."""
+        if self._item is None or self._full_asked:
+            return
+        decoded = self._item.pixmap().width()
+        whole = min(FULL_MAX_PX, max(self._original))
+        if self._zoom * self._original[0] / decoded <= 1.0 or max(self.decoded_size()) >= whole:
+            return
+        self._full_asked = True
+        generation = self._tasks.generation
+        self._tasks.start(_decode, generation, self._path, whole,
+                          on_result=self._full_decoded, on_error=lambda _m: None)
+
+    def _full_decoded(self, result) -> None:
+        generation, image, _original = result
+        if generation != self._tasks.generation or not isinstance(image, QImage) \
+                or self._item is None:
+            return
+        centre = self.view.mapToScene(self.view.viewport().rect().center())
+        self._put(image)
+        self.view.centerOn(centre)
+
     def release(self) -> None:
         self._tasks.new_generation()
         self.scene.clear()
         self._item = None
+        self._path = None
+        self._original = None
+        self._full_asked = False
         self._zoom = 1.0
         self._fitted = True
         self.view.resetTransform()
@@ -281,24 +348,29 @@ class ImageViewer(Viewer):
         return self._item is not None
 
     def image_size(self) -> tuple[int, int] | None:
-        """The decoded picture's size in pixels, or None before it arrives."""
+        """The original photo's size in pixels (the right way up), or None before it arrives."""
+        return self._original
+
+    def decoded_size(self) -> tuple[int, int] | None:
+        """The size of the copy on screen, or None before it arrives."""
         if self._item is None:
             return None
         pixmap = self._item.pixmap()
         return pixmap.width(), pixmap.height()
 
     def zoom(self) -> float:
-        """Screen pixels per decoded pixel: 1.0 is 100 %."""
+        """Screen pixels per pixel of the original: 1.0 is 100 %."""
         return self._zoom
 
     def _fit_zoom(self) -> float:
-        size = self.image_size()
         viewport = self.view.viewport()
-        if size is None or viewport.width() <= 0 or viewport.height() <= 0:
+        if self._original is None or viewport.width() <= 0 or viewport.height() <= 0:
             return 1.0
-        return min(viewport.width() / size[0], viewport.height() / size[1])
+        return min(viewport.width() / self._original[0],
+                   viewport.height() / self._original[1], 1.0)
 
     def fit(self) -> None:
+        """The whole photo in view; a small one at its real size, centred."""
         self._set_zoom(self._fit_zoom())
         self._fitted = True
 
@@ -312,6 +384,7 @@ class ImageViewer(Viewer):
             else QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.view.setTransform(QTransform.fromScale(zoom, zoom))
         self._zoom = zoom
+        self._want_full()
 
     def _resized(self) -> None:
         if self._fitted:
@@ -341,35 +414,63 @@ class ImageViewer(Viewer):
 # ----- PDF ---------------------------------------------------------------------------
 
 def _poppler_missing() -> bool:
-    return shutil.which("pdfinfo") is None or shutil.which("pdftoppm") is None
+    return shutil.which(PDFINFO) is None or shutil.which(PDFTOPPM) is None
+
+
+def _run(command: list[str], cancel) -> tuple[int, bytes, str] | None:
+    """Run command; (returncode, stdout, stderr), or None if cancel was set
+    while it ran. It is killed at once when cancelled, and after
+    PDF_TIMEOUT_S (returncode -1), so it never holds a pool thread long."""
+    try:
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as exc:
+        return -1, b"", str(exc)
+    deadline = time.monotonic() + PDF_TIMEOUT_S
+    while True:
+        try:
+            out, err = proc.communicate(timeout=POLL_S)
+        except subprocess.TimeoutExpired:
+            stopped = cancel is not None and cancel.is_set()
+            if stopped or time.monotonic() > deadline:
+                proc.kill()
+                proc.communicate()
+                return None if stopped else (-1, b"", f"took over {PDF_TIMEOUT_S} s")
+        else:
+            return proc.returncode, out, err.decode("utf-8", "replace").strip()
 
 
 def _pdf_pages(generation: int, path: Path, progress=None, cancel=None):
-    """(generation, [(width, height) in points, one per page]). On a pool thread.
+    """(generation, pages) on a pool thread. pages is [(width, height) in
+    points, one per page], a str saying why it can't be read (a broken or
+    locked file: expected, so not raised), or None if cancelled.
 
     A page turned by 90° or 270° has its width and height swapped, as
     pdftoppm draws it.
     """
-    run = subprocess.run(["pdfinfo", "-f", "1", "-l", "1000000", str(path)],
-                         capture_output=True, text=True, errors="replace",
-                         timeout=PDF_TIMEOUT_S)
+    ran = _run([PDFINFO, "-f", "1", "-l", "1000000", str(path)], cancel)
+    if ran is None:
+        return generation, None
+    code, out, err = ran
     count = 0
     sizes: dict[int, tuple[float, float]] = {}
     turned: set[int] = set()
-    for line in run.stdout.splitlines():
+    for line in out.decode("utf-8", "replace").splitlines():
         head, _, value = line.partition(":")
         words = head.split()
-        if words == ["Pages"]:
-            count = int(value.strip())
-        elif len(words) == 3 and words[0] == "Page" and words[2] in ("size", "rot"):
-            page = int(words[1])
-            if words[2] == "size":
-                w, _, h = value.split()[:3]
-                sizes[page] = (float(w), float(h))
-            elif int(value.strip() or 0) % 180 == 90:
-                turned.add(page)
-    if run.returncode != 0 or count <= 0:
-        raise RuntimeError(f"pdfinfo could not read {path}: {run.stderr.strip()}")
+        try:
+            if words == ["Pages"]:
+                count = int(value.strip())
+            elif len(words) == 3 and words[0] == "Page" and words[2] in ("size", "rot"):
+                page = int(words[1])
+                if words[2] == "size":
+                    w, _, h = value.split()[:3]
+                    sizes[page] = (float(w), float(h))
+                elif int(value.strip() or 0) % 180 == 90:
+                    turned.add(page)
+        except ValueError:
+            continue  # a line not as expected: its page takes the first page's size
+    if code != 0 or count <= 0:
+        return generation, f"pdfinfo: {err or 'no pages'}"
     first = sizes.get(1, (612.0, 792.0))
     pages = []
     for page in range(1, count + 1):
@@ -380,14 +481,18 @@ def _pdf_pages(generation: int, path: Path, progress=None, cancel=None):
 
 def _pdf_render(generation: int, page: int, dpi: int, path: Path, progress=None,
                 cancel=None):
-    """(generation, page, dpi, QImage or None if cancelled first). On a pool thread."""
+    """(generation, page, dpi, picture) on a pool thread. picture is a
+    QImage, a str saying why the page can't be drawn, or None if cancelled."""
     if cancel is not None and cancel.is_set():
         return generation, page, dpi, None
-    run = subprocess.run(["pdftoppm", "-png", "-r", str(dpi), "-f", str(page), "-l", str(page),
-                          str(path)], capture_output=True, timeout=PDF_TIMEOUT_S)
-    image = QImage.fromData(run.stdout, "PNG")
-    if run.returncode != 0 or image.isNull():
-        raise RuntimeError(f"pdftoppm could not draw page {page} of {path}")
+    ran = _run([PDFTOPPM, "-png", "-r", str(dpi), "-f", str(page), "-l", str(page), str(path)],
+               cancel)
+    if ran is None:
+        return generation, page, dpi, None
+    code, out, err = ran
+    image = QImage.fromData(out, "PNG")
+    if code != 0 or image.isNull():
+        return generation, page, dpi, f"pdftoppm, page {page}: {err or 'no picture'}"
     return generation, page, dpi, image
 
 
@@ -454,7 +559,6 @@ class PdfViewer(Viewer):
 
         self._timer = QTimer(self)  # gathers scrolls and resizes into one update
         self._timer.setSingleShot(True)
-        self._timer.setInterval(30)
         self._timer.timeout.connect(self._update_pages)
 
         layout = QVBoxLayout(self)
@@ -471,18 +575,23 @@ class PdfViewer(Viewer):
             return
         generation = self._tasks.generation
         self._tasks.start(_pdf_pages, generation, self._path, on_result=self._got_pages,
-                          on_error=lambda _m, g=generation: self._fail(g))
+                          on_error=lambda m, g=generation: self._fail(g, m))
 
-    def _fail(self, generation: int | None = None) -> None:
+    def _fail(self, generation: int | None = None, reason: str = "poppler is missing") -> None:
+        """Say once, for this load, that the PDF can't be shown."""
         if generation is not None and generation != self._tasks.generation:
             return
         if not self._failed:
             self._failed = True
+            _log.warning("Preview can't show %s: %s", self._path, reason)
             self.failed.emit(CANT_SHOW_PDF)
 
     def _got_pages(self, result) -> None:
         generation, pages = result
-        if generation != self._tasks.generation:
+        if generation != self._tasks.generation or pages is None:
+            return
+        if isinstance(pages, str):
+            self._fail(generation, pages)
             return
         self._pages = pages
         for _ in pages:
@@ -548,8 +657,9 @@ class PdfViewer(Viewer):
                 if label.geometry().bottom() >= top and label.geometry().top() <= bottom]
 
     def _schedule(self) -> None:
+        """Update the pages soon (a scroll); a wait already running is kept."""
         if self._pages and not self._timer.isActive():
-            self._timer.start()
+            self._timer.start(PDF_SCROLL_DELAY_MS)
 
     def _update_pages(self) -> None:
         if not self._pages or self._path is None:
@@ -576,12 +686,15 @@ class PdfViewer(Viewer):
             self._pending_dpi[page] = dpi
             self._pending[page] = self._tasks.start(
                 _pdf_render, generation, page, dpi, self._path, on_result=self._rendered,
-                on_error=lambda _m, g=generation: self._fail(g))
+                on_error=lambda m, g=generation: self._fail(g, m))
         self._update_page_text()
 
     def _rendered(self, result) -> None:
         generation, page, dpi, image = result
         if generation != self._tasks.generation or image is None:
+            return
+        if isinstance(image, str):
+            self._fail(generation, image)
             return
         if self._pending_dpi.get(page) == dpi:
             self._pending.pop(page, None)
@@ -637,7 +750,9 @@ class PdfViewer(Viewer):
         self._layout_pages()
         # the same spot stays in the middle of the view; a new file starts at its top
         bar.setValue(0 if middle is None else round(middle * self._sheet.height() - half))
-        self._update_pages()
+        self._update_page_text()
+        # Pages are drawn once the zooming stops: each step restarts the wait.
+        self._timer.start(PDF_ZOOM_DELAY_MS)
 
     def _resized(self) -> None:
         if self._fitted:
@@ -668,6 +783,34 @@ class PdfViewer(Viewer):
 
 
 # ----- video and audio ---------------------------------------------------------------
+
+class _SeekSlider(QSlider):
+    """A position slider where a left click on the track jumps there (the
+    Fusion style would only take a page step) and the handle can then be
+    dragged on from the same press."""
+
+    jumped = Signal(int)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self.maximum() > self.minimum():
+            option = QStyleOptionSlider()
+            self.initStyleOption(option)
+            style = self.style()
+            handle = style.subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                          QStyle.SubControl.SC_SliderHandle, self)
+            point = event.position().toPoint()
+            if not handle.contains(point):
+                groove = style.subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                              QStyle.SubControl.SC_SliderGroove, self)
+                span = max(1, groove.width() - handle.width())
+                x = point.x() - groove.x() - handle.width() // 2
+                value = QStyle.sliderValueFromPosition(self.minimum(), self.maximum(),
+                                                       min(max(x, 0), span), span,
+                                                       option.upsideDown)
+                self.setValue(value)
+                self.jumped.emit(value)
+        super().mousePressEvent(event)  # the handle is under the pointer now: a drag starts
+
 
 class MediaViewer(Viewer):
     """A video (video=True) or a sound, paused at the start: it never plays by
@@ -714,8 +857,11 @@ class MediaViewer(Viewer):
 
         self.play_button = QPushButton("Play")
         self.play_button.clicked.connect(self.play_pause)
-        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider = _SeekSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 0)
+        self.slider.setSingleStep(SLIDER_STEP_MS)  # the wheel over it
+        self.slider.setPageStep(SEEK_MS)
+        self.slider.jumped.connect(self.player.setPosition)
         self.slider.actionTriggered.connect(self._slider_action)
         self.slider.sliderMoved.connect(self.player.setPosition)
         self.time_label = QLabel(self.time_text())
@@ -828,7 +974,7 @@ class MediaViewer(Viewer):
         self.time_label.setText(self.time_text())
 
     def _slider_action(self, action: int) -> None:
-        """A click on the track (not a drag) jumps there."""
+        """A wheel step over the slider moves the player too."""
         if action in (QAbstractSlider.SliderAction.SliderPageStepAdd,
                       QAbstractSlider.SliderAction.SliderPageStepSub,
                       QAbstractSlider.SliderAction.SliderSingleStepAdd,
@@ -857,13 +1003,34 @@ class MediaViewer(Viewer):
 
 # ----- text --------------------------------------------------------------------------
 
+def _read_text(generation: int, path: Path, progress=None, cancel=None):
+    """(generation, (text, wrap)), or (generation, None) if it can't be read.
+    On a pool thread. At most MAX_TEXT_BYTES are read, as UTF-8 with
+    replacement characters."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read(MAX_TEXT_BYTES + 1)
+    except OSError as exc:
+        _log.info("Preview can't read %s: %s", path, exc)
+        return generation, None
+    text = data[:MAX_TEXT_BYTES].decode("utf-8", errors="replace")
+    if len(data) > MAX_TEXT_BYTES:
+        text += TEXT_CUT
+    # Wrapping one very long line (minified JSON, say) takes Qt most of a
+    # minute for 1 MB; such a file is shown unwrapped instead.
+    longest = max(map(len, text.splitlines()), default=0)
+    return generation, (text, longest <= WRAP_MAX_LINE)
+
+
 class TextViewer(Viewer):
-    """A text file, read-only and monospaced; at most MAX_TEXT_BYTES are read."""
+    """A text file, read-only and monospaced; at most MAX_TEXT_BYTES are read
+    (on the pool)."""
 
     KEYS = (("+−", "text size"), ("↑↓", "scroll"), ("PgUp/PgDn", "page"))
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._tasks = _Tasks(self)
         self.edit = QPlainTextEdit()
         self.edit.setReadOnly(True)
         self.edit.setFrameShape(QFrame.Shape.NoFrame)
@@ -878,24 +1045,23 @@ class TextViewer(Viewer):
 
     def load(self, path: Path) -> None:
         self.release()
-        try:
-            with open(path, "rb") as f:
-                data = f.read(MAX_TEXT_BYTES + 1)
-        except OSError:
-            _log.info("Preview can't read %s", path, exc_info=True)
+        self._tasks.start(_read_text, self._tasks.generation, Path(path),
+                          on_result=self._read, on_error=lambda _m: None)
+
+    def _read(self, result) -> None:
+        generation, read = result
+        if generation != self._tasks.generation:
+            return
+        if read is None:
             self.failed.emit(CANT_SHOW_TEXT)
             return
-        text = data[:MAX_TEXT_BYTES].decode("utf-8", errors="replace")
-        if len(data) > MAX_TEXT_BYTES:
-            text += TEXT_CUT
-        # Wrapping one very long line (minified JSON, say) takes Qt most of a
-        # minute for 1 MB; such a file is shown unwrapped instead.
-        longest = max(map(len, text.splitlines()), default=0)
-        self.edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap if longest > WRAP_MAX_LINE
-                                  else QPlainTextEdit.LineWrapMode.WidgetWidth)
+        text, wrap = read
+        self.edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth if wrap
+                                  else QPlainTextEdit.LineWrapMode.NoWrap)
         self.edit.setPlainText(text)
 
     def release(self) -> None:
+        self._tasks.new_generation()
         self.edit.clear()
 
     def _font_by(self, step: int) -> None:
@@ -922,6 +1088,18 @@ class TextViewer(Viewer):
 
 # ----- anything else -----------------------------------------------------------------
 
+def _file_facts(generation: int, path: Path, progress=None, cancel=None):
+    """(generation, type, size or None, modified time or None). On a pool thread."""
+    kind = QMimeDatabase().mimeTypeForFile(str(path)).comment()
+    if not kind:
+        kind = f"{path.suffix[1:].upper()} file" if path.suffix else "File"
+    try:
+        stat = path.stat()
+    except OSError:
+        return generation, kind, None, None
+    return generation, kind, stat.st_size, stat.st_mtime
+
+
 class InfoCard(Viewer):
     """A file's name, type, size, modified date and full path, and a button
     that opens it in the system's app. set_message() shows why it is here
@@ -931,6 +1109,7 @@ class InfoCard(Viewer):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._tasks = _Tasks(self)
         self._path: Path | None = None
         self.message_label = QLabel()
         self.message_label.setObjectName("error")
@@ -978,23 +1157,22 @@ class InfoCard(Viewer):
         path = Path(path)
         self._path = path
         self.name_label.setText(path.name)
-        kind = QMimeDatabase().mimeTypeForFile(str(path)).comment()
-        if not kind:
-            kind = f"{path.suffix[1:].upper()} file" if path.suffix else "File"
-        self._values["Type"].setText(kind)
-        try:
-            stat = path.stat()
-        except OSError:
-            size, modified = "—", "—"
-        else:
-            size = size_text(stat.st_size)
-            modified = (f"{date_text(stat.st_mtime)} "
-                        f"{datetime.fromtimestamp(stat.st_mtime):%H:%M}")
-        self._values["Size"].setText(size)
-        self._values["Modified"].setText(modified)
         self._values["Path"].setText(str(path))
+        self._tasks.start(_file_facts, self._tasks.generation, path,
+                          on_result=self._got_facts, on_error=lambda _m: None)
+
+    def _got_facts(self, result) -> None:
+        generation, kind, size, modified = result
+        if generation != self._tasks.generation:
+            return
+        self._values["Type"].setText(kind)
+        self._values["Size"].setText("—" if size is None else size_text(size))
+        self._values["Modified"].setText(
+            "—" if modified is None
+            else f"{date_text(modified)} {datetime.fromtimestamp(modified):%H:%M}")
 
     def release(self) -> None:
+        self._tasks.new_generation()
         self._path = None
         self.set_message("")
         self.name_label.clear()
