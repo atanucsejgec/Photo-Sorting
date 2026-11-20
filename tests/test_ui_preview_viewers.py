@@ -6,7 +6,6 @@ null sink offscreen, so the player's state is checked, never the sound.
 """
 
 import logging
-import os
 import shutil
 import subprocess
 import threading
@@ -15,7 +14,7 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, QSizeF, Qt
 from PySide6.QtGui import QImage, QKeyEvent, QPageSize, QPainter, QPdfWriter, QWheelEvent
 from PySide6.QtMultimedia import QMediaPlayer
 
@@ -174,12 +173,6 @@ def test_image_viewer_newest_load_wins_and_bad_file_fails(qtbot, tmp_path):
 
 # ----- PDF ---------------------------------------------------------------------------
 
-needs_poppler = pytest.mark.skipif(
-    shutil.which("pdftoppm") is None or shutil.which("pdfinfo") is None,
-    reason="poppler's pdftoppm/pdfinfo not installed")
-
-
-@needs_poppler
 def test_pdf_viewer_page_count_and_render(qtbot, tmp_path):
     viewer = _shown(qtbot, pv.PdfViewer(), (600, 400))
     viewer.load(_pdf(tmp_path / "doc.pdf", 2))
@@ -204,7 +197,6 @@ def test_pdf_viewer_page_count_and_render(qtbot, tmp_path):
     assert viewer.page_text() == "page 2 of 2"
 
 
-@needs_poppler
 def test_pdf_viewer_renders_only_pages_in_view_and_one_ahead(qtbot, tmp_path):
     viewer = _shown(qtbot, pv.PdfViewer(), (600, 300))
     viewer.load(_pdf(tmp_path / "long.pdf", 8))
@@ -213,43 +205,66 @@ def test_pdf_viewer_renders_only_pages_in_view_and_one_ahead(qtbot, tmp_path):
     assert viewer.rendered_pages() == {1, 2}
 
 
-def _slow_pdftoppm(tmp_path: Path) -> tuple[Path, Path]:
-    """A stand-in pdftoppm that writes its pid, then sleeps for a minute."""
-    pid_file = tmp_path / "pid"
-    script = tmp_path / "slow-pdftoppm"
-    script.write_text(f"#!/bin/sh\necho $$ > '{pid_file}'\nexec sleep 60\n")
-    script.chmod(0o755)
-    return script, pid_file
+def test_pdf_renders_off_gui_thread(qtbot, tmp_path, monkeypatch):
+    threads = []
+    real_open, real_render = pv.PdfiumFile.open, pv.PdfiumFile.render
+
+    def spy_open(self, *a, **k):
+        threads.append(threading.current_thread())
+        return real_open(self, *a, **k)
+
+    def spy_render(self, *a, **k):
+        threads.append(threading.current_thread())
+        return real_render(self, *a, **k)
+
+    monkeypatch.setattr(pv.PdfiumFile, "open", spy_open)
+    monkeypatch.setattr(pv.PdfiumFile, "render", spy_render)
+    viewer = _shown(qtbot, pv.PdfViewer(), (600, 300))
+    viewer.load(_pdf(tmp_path / "doc.pdf", 2))
+    qtbot.waitUntil(lambda: viewer.rendered_pages() == {1, 2}, timeout=WAIT_MS)
+    assert len(threads) >= 3  # the open and both pages
+    assert threading.main_thread() not in threads
 
 
-def _gone(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    return False
-
-
-@needs_poppler
-def test_pdf_viewer_release_kills_pdftoppm_and_drops_results(qtbot, tmp_path, monkeypatch):
-    script, pid_file = _slow_pdftoppm(tmp_path)
-    monkeypatch.setattr(pv, "PDFTOPPM", str(script))
+def test_pdf_viewer_release_drops_results(qtbot, tmp_path):
     viewer = _shown(qtbot, pv.PdfViewer(), (600, 300))
     failures = []
     viewer.failed.connect(failures.append)
     viewer.load(_pdf(tmp_path / "doc.pdf", 2))
-    qtbot.waitUntil(lambda: pid_file.exists() and bool(pid_file.read_text().strip()),
-                    timeout=WAIT_MS)
-    pid = int(pid_file.read_text())
-    viewer.release()
-    qtbot.waitUntil(lambda: _gone(pid), timeout=3000)  # killed, not left for 30 s
-    qtbot.wait(300)
+    viewer.release()  # the open and any render still on the pool are dropped
+    qtbot.wait(500)
     assert viewer.rendered_pages() == set()
     assert viewer.page_count() == 0
-    assert failures == []  # a render stopped on purpose is not a failure
+    assert viewer.page_text() == ""
+    assert failures == []  # a load stopped on purpose is not a failure
 
 
-@needs_poppler
+def test_pdf_release_closes_document(qtbot, tmp_path, monkeypatch):
+    closed = []
+    real_close = pv.pdfium.PdfDocument.close
+
+    def spy_close(self, *a, **k):
+        # every pdfium call is made holding the one lock
+        closed.append((self, pv._PDFIUM_LOCK.locked()))
+        return real_close(self, *a, **k)
+
+    monkeypatch.setattr(pv.pdfium.PdfDocument, "close", spy_close)
+    viewer = _shown(qtbot, pv.PdfViewer(), (600, 300))
+    viewer.load(_pdf(tmp_path / "first.pdf", 2))
+    qtbot.waitUntil(lambda: viewer.rendered_pages() == {1, 2}, timeout=WAIT_MS)
+    first = viewer._file
+    assert first.document is not None and closed == []
+    viewer.load(_pdf(tmp_path / "second.pdf", 1))  # a new load closes the old file
+    qtbot.waitUntil(lambda: first.document is None, timeout=WAIT_MS)
+    qtbot.waitUntil(lambda: viewer.rendered_pages() == {1}, timeout=WAIT_MS)
+    second = viewer._file
+    viewer.release()
+    qtbot.waitUntil(lambda: second.document is None, timeout=WAIT_MS)
+    assert len(closed) == 2 and all(locked for _, locked in closed)
+    # a render asked of a closed file does nothing
+    assert second.render(1, 1.0, threading.Event()) is None
+
+
 def test_pdf_viewer_ignores_results_of_an_earlier_load(qtbot, tmp_path):
     viewer = _shown(qtbot, pv.PdfViewer(), (600, 300))
     viewer.load(_pdf(tmp_path / "first.pdf", 3))
@@ -265,7 +280,6 @@ def test_pdf_viewer_ignores_results_of_an_earlier_load(qtbot, tmp_path):
     assert viewer.page_text() == "page 1 of 1"
 
 
-@needs_poppler
 def test_pdf_zoom_is_debounced(qtbot, tmp_path, monkeypatch):
     viewer = _shown(qtbot, pv.PdfViewer(), (600, 300))
     viewer.load(_pdf(tmp_path / "doc.pdf", 2))
@@ -282,20 +296,48 @@ def test_pdf_zoom_is_debounced(qtbot, tmp_path, monkeypatch):
     assert set(started) == {round(viewer.dpi())}  # only the final dpi was drawn
 
 
-@needs_poppler
-def test_pdf_expected_failure_is_not_logged_as_error(qtbot, tmp_path, caplog):
+def test_pdf_huge_page_capped_at_40mp(qtbot, tmp_path):
+    path = tmp_path / "huge.pdf"
+    writer = QPdfWriter(str(path))
+    writer.setPageSize(QPageSize(QSizeF(5000, 5000), QPageSize.Unit.Point))
+    painter = QPainter(writer)
+    painter.drawText(100, 100, "huge")
+    painter.end()
+    viewer = _shown(qtbot, pv.PdfViewer(), (600, 300))
+    viewer.load(path)
+    qtbot.waitUntil(lambda: viewer.rendered_pages() == {1}, timeout=WAIT_MS)
+    for _ in range(40):
+        viewer.handle_key(_key(Qt.Key.Key_Plus, "+"))
+    # 400 dpi would be 27778 px square, 771 MP
+    assert 72 * viewer.zoom() * viewer.devicePixelRatioF() >= 400
+    qtbot.waitUntil(lambda: viewer._drawn.get(1) == round(viewer.dpi()), timeout=30000)
+    pixmap = viewer._labels[0].pixmap()
+    assert pixmap.width() * pixmap.height() <= pv.PDF_MAX_PIXELS == 40_000_000
+    assert pixmap.width() * pixmap.height() > 0.95 * pv.PDF_MAX_PIXELS
+    assert pixmap.width() == pytest.approx(pixmap.height(), abs=1)
+    # the 40000 px square box is painted only where it shows, never scaled whole
+    assert not viewer.grab().isNull()
+
+
+def _bad_pdf(tmp_path: Path) -> Path:
     bad = tmp_path / "bad.pdf"
     bad.write_bytes(b"%PDF-1.4 nothing here")
+    return bad
+
+
+def test_pdf_expected_failure_is_not_logged_as_error(qtbot, tmp_path, caplog):
+    bad = _bad_pdf(tmp_path)
     viewer = _shown(qtbot, pv.PdfViewer())
     with qtbot.waitSignal(viewer.failed, timeout=WAIT_MS):
         viewer.load(bad)
     qtbot.wait(100)
     assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
-    assert len([r for r in caplog.records if "bad.pdf" in r.getMessage()]) == 1
+    records = [r for r in caplog.records if "bad.pdf" in r.getMessage()]
+    assert len(records) == 1 and records[0].levelno == logging.WARNING
 
 
-def test_pdf_viewer_missing_poppler_fails_to_info(qtbot, tmp_path, monkeypatch):
-    monkeypatch.setattr(pv.shutil, "which", lambda name: None)
+def test_pdf_viewer_without_pdfium_fails_to_info(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setattr(pv, "pdfium", None)  # the import failed
     viewer = _shown(qtbot, pv.PdfViewer())
     with qtbot.waitSignal(viewer.failed, timeout=WAIT_MS) as blocker:
         viewer.load(_pdf(tmp_path / "doc.pdf", 1))
@@ -303,13 +345,24 @@ def test_pdf_viewer_missing_poppler_fails_to_info(qtbot, tmp_path, monkeypatch):
     assert pv.CANT_SHOW_PDF == "Can't show this PDF"
 
 
-@needs_poppler
 def test_pdf_viewer_broken_pdf_fails(qtbot, tmp_path):
-    bad = tmp_path / "bad.pdf"
-    bad.write_bytes(b"%PDF-1.4 nothing here")
     viewer = _shown(qtbot, pv.PdfViewer())
-    with qtbot.waitSignal(viewer.failed, timeout=WAIT_MS):
-        viewer.load(bad)
+    with qtbot.waitSignal(viewer.failed, timeout=WAIT_MS) as blocker:
+        viewer.load(_bad_pdf(tmp_path))
+    assert blocker.args == [pv.CANT_SHOW_PDF]
+    assert viewer.page_count() == 0
+
+
+@pytest.mark.skipif(shutil.which("gs") is None, reason="ghostscript not installed")
+def test_pdf_locked_with_a_password_fails(qtbot, tmp_path):
+    locked = tmp_path / "locked.pdf"
+    subprocess.run(["gs", "-q", "-sDEVICE=pdfwrite", "-sOwnerPassword=own",
+                    "-sUserPassword=user", "-o", str(locked), str(_pdf(tmp_path / "doc.pdf", 1))],
+                   check=True, timeout=60)
+    viewer = _shown(qtbot, pv.PdfViewer())
+    with qtbot.waitSignal(viewer.failed, timeout=WAIT_MS) as blocker:
+        viewer.load(locked)
+    assert blocker.args == [pv.CANT_SHOW_PDF]
 
 
 # ----- video and audio ---------------------------------------------------------------
