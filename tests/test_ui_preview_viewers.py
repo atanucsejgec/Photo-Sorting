@@ -1,0 +1,345 @@
+"""Preview's viewers: image, PDF, video, audio, text and the info card.
+
+Media is made here: a JPEG with Pillow, a PDF with QPdfWriter, a WAV with
+wave, a video with ffmpeg (skipped without it). The audio output may be a
+null sink offscreen, so the player's state is checked, never the sound.
+"""
+
+import shutil
+import subprocess
+import threading
+import wave
+from pathlib import Path
+
+import pytest
+from PIL import Image
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QKeyEvent, QPageSize, QPainter, QPdfWriter, QWheelEvent
+from PySide6.QtMultimedia import QMediaPlayer
+
+from photosort.ui import preview_viewers as pv
+
+WAIT_MS = 10000
+
+
+def _key(key: Qt.Key, text: str = "",
+         mods: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier) -> QKeyEvent:
+    return QKeyEvent(QEvent.Type.KeyPress, key, mods, text)
+
+
+def _shown(qtbot, viewer, size=(800, 600)):
+    qtbot.addWidget(viewer)
+    viewer.resize(*size)
+    viewer.show()
+    qtbot.waitExposed(viewer)
+    return viewer
+
+
+def _jpeg(path: Path, size=(400, 300)) -> Path:
+    Image.new("RGB", size, "red").save(path, "JPEG")
+    return path
+
+
+def _pdf(path: Path, pages: int = 2) -> Path:
+    writer = QPdfWriter(str(path))
+    writer.setPageSize(QPageSize(QPageSize.PageSizeId.A6))
+    painter = QPainter(writer)
+    for n in range(pages):
+        if n:
+            writer.newPage()
+        painter.drawText(100, 100, f"page {n + 1}")
+    painter.end()
+    return path
+
+
+def _wav(path: Path, seconds: float = 3.0, rate: int = 8000) -> Path:
+    with wave.open(str(path), "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(rate)
+        f.writeframes(b"\0\0" * int(rate * seconds))
+    return path
+
+
+# ----- image -------------------------------------------------------------------------
+
+def test_image_viewer_zoom_fit_and_limits(qtbot, tmp_path):
+    viewer = _shown(qtbot, pv.ImageViewer())
+    viewer.load(_jpeg(tmp_path / "a.jpg"))
+    qtbot.waitUntil(viewer.is_loaded, timeout=WAIT_MS)
+    fit = viewer.zoom()
+    assert 0.1 <= fit <= 8.0
+    assert fit == pytest.approx(min(viewer.view.viewport().width() / 400,
+                                    viewer.view.viewport().height() / 300), rel=0.02)
+    for _ in range(40):
+        assert viewer.handle_key(_key(Qt.Key.Key_Plus, "+"))
+    assert viewer.zoom() == pytest.approx(8.0)
+    for _ in range(60):
+        assert viewer.handle_key(_key(Qt.Key.Key_Minus, "-"))
+    assert viewer.zoom() == pytest.approx(0.1)
+    assert viewer.handle_key(_key(Qt.Key.Key_F, "f"))
+    assert viewer.zoom() == pytest.approx(fit)
+    # Ctrl+wheel zooms in
+    centre = QPointF(viewer.view.viewport().rect().center())
+    wheel = QWheelEvent(centre, viewer.view.viewport().mapToGlobal(centre), QPoint(0, 0),
+                        QPoint(0, 120), Qt.MouseButton.NoButton,
+                        Qt.KeyboardModifier.ControlModifier, Qt.ScrollPhase.NoScrollPhase, False)
+    viewer.view.wheelEvent(wheel)
+    assert viewer.zoom() > fit
+    # ↑/↓ scroll a zoomed image; a key it doesn't use is left alone
+    for _ in range(10):
+        viewer.handle_key(_key(Qt.Key.Key_Plus, "+"))
+    bar = viewer.view.verticalScrollBar()
+    before = bar.value()
+    assert viewer.handle_key(_key(Qt.Key.Key_Down))
+    assert bar.value() > before
+    assert not viewer.handle_key(_key(Qt.Key.Key_Right))
+    assert ("F", "fit") in viewer.keys()
+
+
+def test_image_viewer_heic_or_jpg_loads_off_gui_thread(qtbot, tmp_path, monkeypatch):
+    threads = []
+    real = pv.open_image
+
+    def spy(path, max_px=None):
+        threads.append(threading.current_thread())
+        return real(path, max_px)
+
+    monkeypatch.setattr(pv, "open_image", spy)
+    viewer = _shown(qtbot, pv.ImageViewer())
+    viewer.load(_jpeg(tmp_path / "b.jpg", (64, 48)))
+    qtbot.waitUntil(viewer.is_loaded, timeout=WAIT_MS)
+    assert threads and threads[0] is not threading.main_thread()
+    assert viewer.image_size() == (64, 48)
+
+
+def test_image_viewer_newest_load_wins_and_bad_file_fails(qtbot, tmp_path):
+    viewer = _shown(qtbot, pv.ImageViewer())
+    viewer.load(_jpeg(tmp_path / "big.jpg", (300, 200)))
+    viewer.load(_jpeg(tmp_path / "small.jpg", (30, 20)))
+    qtbot.waitUntil(viewer.is_loaded, timeout=WAIT_MS)
+    qtbot.wait(200)  # the first load's result, if late, must not replace it
+    assert viewer.image_size() == (30, 20)
+    bad = tmp_path / "bad.jpg"
+    bad.write_bytes(b"not a jpeg")
+    with qtbot.waitSignal(viewer.failed, timeout=WAIT_MS):
+        viewer.load(bad)
+
+
+# ----- PDF ---------------------------------------------------------------------------
+
+needs_poppler = pytest.mark.skipif(
+    shutil.which("pdftoppm") is None or shutil.which("pdfinfo") is None,
+    reason="poppler's pdftoppm/pdfinfo not installed")
+
+
+@needs_poppler
+def test_pdf_viewer_page_count_and_render(qtbot, tmp_path):
+    viewer = _shown(qtbot, pv.PdfViewer(), (600, 400))
+    viewer.load(_pdf(tmp_path / "doc.pdf", 2))
+    qtbot.waitUntil(lambda: viewer.page_count() == 2, timeout=WAIT_MS)
+    assert viewer.page_text() == "page 1 of 2"
+    qtbot.waitUntil(lambda: 1 in viewer.rendered_pages(), timeout=WAIT_MS)
+    # page 1 is in view; page 2 is one ahead
+    qtbot.waitUntil(lambda: 2 in viewer.rendered_pages(), timeout=WAIT_MS)
+    zoom = viewer.zoom()
+    assert viewer.handle_key(_key(Qt.Key.Key_Plus, "+"))
+    assert viewer.zoom() > zoom
+    assert viewer.dpi() == pytest.approx(min(400.0, 72 * viewer.zoom()
+                                             * viewer.devicePixelRatioF()), abs=1)
+    for _ in range(40):
+        viewer.handle_key(_key(Qt.Key.Key_Plus, "+"))
+    assert viewer.dpi() <= 400
+    assert viewer.handle_key(_key(Qt.Key.Key_F, "f"))
+    assert viewer.zoom() == pytest.approx(zoom)
+    with qtbot.waitSignal(viewer.page_changed, timeout=WAIT_MS):
+        for _ in range(5):
+            viewer.handle_key(_key(Qt.Key.Key_PageDown))
+    assert viewer.page_text() == "page 2 of 2"
+
+
+@needs_poppler
+def test_pdf_viewer_renders_only_pages_in_view_and_one_ahead(qtbot, tmp_path):
+    viewer = _shown(qtbot, pv.PdfViewer(), (600, 300))
+    viewer.load(_pdf(tmp_path / "long.pdf", 8))
+    qtbot.waitUntil(lambda: 2 in viewer.rendered_pages(), timeout=WAIT_MS)
+    qtbot.wait(300)
+    assert viewer.rendered_pages() <= {1, 2}
+
+
+def test_pdf_viewer_missing_poppler_fails_to_info(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setattr(pv.shutil, "which", lambda name: None)
+    viewer = _shown(qtbot, pv.PdfViewer())
+    with qtbot.waitSignal(viewer.failed, timeout=WAIT_MS) as blocker:
+        viewer.load(_pdf(tmp_path / "doc.pdf", 1))
+    assert blocker.args == [pv.CANT_SHOW_PDF]
+    assert pv.CANT_SHOW_PDF == "Can't show this PDF"
+
+
+@needs_poppler
+def test_pdf_viewer_broken_pdf_fails(qtbot, tmp_path):
+    bad = tmp_path / "bad.pdf"
+    bad.write_bytes(b"%PDF-1.4 nothing here")
+    viewer = _shown(qtbot, pv.PdfViewer())
+    with qtbot.waitSignal(viewer.failed, timeout=WAIT_MS):
+        viewer.load(bad)
+
+
+# ----- video and audio ---------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _speed_back_to_one():
+    pv.MediaViewer.speed = 1.0
+    yield
+    pv.MediaViewer.speed = 1.0
+
+
+def test_media_viewer_audio_wav_seek_speed(qtbot, tmp_path):
+    viewer = _shown(qtbot, pv.MediaViewer(video=False))
+    viewer.load(_wav(tmp_path / "tone.wav", 3.0))
+    player = viewer.player
+    qtbot.waitUntil(lambda: player.duration() > 0, timeout=WAIT_MS)
+    assert player.playbackState() != QMediaPlayer.PlaybackState.PlayingState  # no autoplay
+    assert viewer.time_text() == "0:00 / 0:03"
+    viewer.seek(+10000)
+    qtbot.waitUntil(lambda: player.position() == player.duration(), timeout=WAIT_MS)
+    viewer.seek(-10000)
+    qtbot.waitUntil(lambda: player.position() == 0, timeout=WAIT_MS)
+    rates = []
+    for _ in range(3):
+        viewer.cycle_speed()
+        rates.append(player.playbackRate())
+    assert rates == [2.0, 4.0, 1.0]
+    viewer.set_speed(4.0)
+    assert player.playbackRate() == 4.0
+    assert [b.isChecked() for b in viewer.speed_buttons] == [False, False, True]
+    viewer.speed_buttons[1].click()
+    assert player.playbackRate() == 2.0
+    # keys
+    assert viewer.handle_key(_key(Qt.Key.Key_S, "s"))
+    assert player.playbackRate() == 4.0
+    assert viewer.handle_key(_key(Qt.Key.Key_Right, "", Qt.KeyboardModifier.ShiftModifier))
+    assert not viewer.handle_key(_key(Qt.Key.Key_Right))  # the page's: next file
+    viewer.play_pause()
+    qtbot.waitUntil(lambda: player.playbackState() == QMediaPlayer.PlaybackState.PlayingState,
+                    timeout=WAIT_MS)
+    assert viewer.handle_key(_key(Qt.Key.Key_Space, " "))
+    qtbot.waitUntil(lambda: player.playbackState() != QMediaPlayer.PlaybackState.PlayingState,
+                    timeout=WAIT_MS)
+    # the speed is kept for the next file
+    other = _shown(qtbot, pv.MediaViewer(video=False))
+    other.load(_wav(tmp_path / "two.wav", 1.0))
+    assert other.player.playbackRate() == 4.0
+    assert [b.isChecked() for b in other.speed_buttons] == [False, False, True]
+    viewer.release()
+    other.release()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_media_viewer_video_first_frame_paused(qtbot, tmp_path):
+    video = tmp_path / "clip.mp4"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+                    "-i", "testsrc=s=64x48:d=2", "-pix_fmt", "yuv420p", str(video)],
+                   check=True)
+    viewer = _shown(qtbot, pv.MediaViewer(video=True))
+    viewer.load(video)
+    sink = viewer.video_widget.videoSink()
+    qtbot.waitUntil(lambda: sink.videoFrame().isValid(), timeout=WAIT_MS)
+    assert viewer.player.playbackState() == QMediaPlayer.PlaybackState.PausedState
+    assert viewer.player.position() == 0
+    qtbot.wait(300)
+    assert viewer.player.position() == 0  # still not playing
+    viewer.release()
+
+
+def test_media_viewer_unplayable_fails(qtbot, tmp_path):
+    bad = tmp_path / "bad.mp3"
+    bad.write_bytes(b"not audio at all" * 10)
+    viewer = _shown(qtbot, pv.MediaViewer(video=False))
+    with qtbot.waitSignal(viewer.failed, timeout=WAIT_MS):
+        viewer.load(bad)
+    viewer.release()
+
+
+def test_release_clears_source(qtbot, tmp_path):
+    media = _shown(qtbot, pv.MediaViewer(video=False))
+    media.load(_wav(tmp_path / "a.wav", 1.0))
+    qtbot.waitUntil(lambda: media.player.duration() > 0, timeout=WAIT_MS)
+    media.play_pause()
+    media.release()
+    assert media.player.source().isEmpty()
+    assert media.player.playbackState() == QMediaPlayer.PlaybackState.StoppedState
+
+    image = _shown(qtbot, pv.ImageViewer())
+    image.load(_jpeg(tmp_path / "a.jpg"))
+    qtbot.waitUntil(image.is_loaded, timeout=WAIT_MS)
+    image.release()
+    assert not image.is_loaded()
+
+    text = _shown(qtbot, pv.TextViewer())
+    (tmp_path / "a.txt").write_text("hello")
+    text.load(tmp_path / "a.txt")
+    text.release()
+    assert text.edit.toPlainText() == ""
+
+
+# ----- text and info -----------------------------------------------------------------
+
+def test_text_viewer_reads_at_most_1mb(qtbot, tmp_path):
+    big = tmp_path / "big.log"
+    big.write_bytes(b"a" * (pv.MAX_TEXT_BYTES + 5000))
+    viewer = _shown(qtbot, pv.TextViewer())
+    viewer.load(big)
+    text = viewer.edit.toPlainText()
+    assert text.count("a") == pv.MAX_TEXT_BYTES
+    assert pv.MAX_TEXT_BYTES == 1024 * 1024
+    assert viewer.edit.isReadOnly()
+    # one 1 MB line is shown unwrapped (wrapping it would freeze the window)
+    assert viewer.edit.lineWrapMode() == viewer.edit.LineWrapMode.NoWrap
+    lines = tmp_path / "lines.txt"
+    lines.write_text("short line\n" * 100)
+    viewer.load(lines)
+    assert viewer.edit.lineWrapMode() == viewer.edit.LineWrapMode.WidgetWidth
+    # not UTF-8: shown with replacement characters, never an error
+    odd = tmp_path / "odd.txt"
+    odd.write_bytes(b"caf\xe9")
+    viewer.load(odd)
+    assert viewer.edit.toPlainText() == "caf�"
+    size = viewer.edit.font().pointSizeF()
+    assert viewer.handle_key(_key(Qt.Key.Key_Plus, "+"))
+    assert viewer.edit.font().pointSizeF() > size
+    assert viewer.handle_key(_key(Qt.Key.Key_Minus, "-"))
+    assert viewer.edit.font().pointSizeF() == size
+    assert viewer.edit.font().fixedPitch() or viewer.edit.font().styleHint() \
+        == viewer.edit.font().StyleHint.Monospace
+
+
+def test_info_card_shows_details(qtbot, tmp_path, monkeypatch):
+    path = tmp_path / "archive.zip"
+    path.write_bytes(b"PK\x03\x04" + b"\0" * 2044)
+    card = _shown(qtbot, pv.InfoCard())
+    card.load(path)
+    shown = card.text()
+    assert "archive.zip" in shown
+    assert "2.0 KB" in shown
+    assert str(path) in shown
+    assert pv.date_text(path.stat().st_mtime) in shown
+    assert card.open_button.text() == "Open with the system app (O)"
+    opened = []
+    monkeypatch.setattr(pv.QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
+    assert card.handle_key(_key(Qt.Key.Key_O, "o"))
+    card.open_button.click()
+    assert [u.toLocalFile() for u in opened] == [str(path), str(path)]
+    card.set_message("Can't show this PDF")
+    assert "Can't show this PDF" in card.text()
+    card.load(path)  # a new file starts without the message
+    assert "Can't show this PDF" not in card.text()
+    assert ("O", "open with the system app") in card.keys()
+
+
+def test_size_text():
+    assert pv.size_text(0) == "0 B"
+    assert pv.size_text(900) == "900 B"
+    assert pv.size_text(2048) == "2.0 KB"
+    assert pv.size_text(int(2.3 * 1024 * 1024)) == "2.3 MB"
+    assert pv.size_text(5 * 1024 ** 3) == "5.0 GB"
