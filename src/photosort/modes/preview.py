@@ -90,11 +90,14 @@ _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
 
 
 def file_day(path: Path) -> date | None:
-    """The day path was last modified, in local time; None if it can't be read."""
-    try:
-        return date.fromtimestamp(os.stat(path).st_mtime)
-    except (OSError, OverflowError, ValueError):
-        return None
+    """The day path was last modified, in local time: a link's file's, or a
+    broken link's own; None if neither can be read."""
+    for stat in (os.stat, os.lstat):
+        try:
+            return date.fromtimestamp(stat(path).st_mtime)
+        except (OSError, OverflowError, ValueError):
+            continue
+    return None
 
 
 def day_text(d: date) -> str:
@@ -218,7 +221,8 @@ class PreviewSession:
         name gets " (n)"): relative to root inside it, an absolute POSIX
         path outside it. Moves tagged with the same group, one after another,
         are put back together by put_back_group; with no group the move is a
-        group of its own.
+        group of its own. The caller gives each key press a fresh group id:
+        equal ids next to each other merge into one group.
 
         Raises ValueError if target_folder is in an app folder or the file is
         not inside root, and FileNotFoundError if the file is gone or
@@ -280,7 +284,8 @@ class PreviewSession:
 
         If one fails, the ones already back stay back, it and the rest of the
         group stay moved (one no longer where it was moved to is dropped, as
-        in put_back) and PutBackError is raised, listing those put back.
+        in put_back) and PutBackError is raised, listing those put back. An
+        interrupt (not an Exception) passes through as it is.
         """
         with self._lock:
             self._check_open()
@@ -291,7 +296,7 @@ class PreviewSession:
             while self.moved and self._groups[-1] == group:
                 try:
                     back.append(self._put_back_last())
-                except BaseException as error:
+                except Exception as error:
                     raise PutBackError(back, error) from error
             return back
 

@@ -675,6 +675,14 @@ def test_file_day_is_the_modified_date(root):
     assert file_day(root / "missing.jpg") is None
 
 
+def test_file_day_of_a_broken_link_is_its_own_date(root):
+    link = root / "broken.jpg"
+    link.symlink_to(root / "gone.jpg")
+    when = datetime(2024, 6, 3, 12, 0).timestamp()
+    os.utime(link, (when, when), follow_symlinks=False)
+    assert file_day(link) == date(2024, 6, 3)
+
+
 def test_day_text():
     assert day_text(date(2025, 2, 28)) == "Fri 28 Feb 2025"
     assert day_text(date(2026, 11, 21)) == "Sat 21 Nov 2026"
@@ -729,4 +737,42 @@ def test_put_back_group_partial_failure(root):
     assert session.put_back_group() == ["a.jpg"]
     assert (root / "a.jpg").read_bytes() == b"aaa"
     assert session.put_back_group() == []
+    session.finish()
+
+
+def test_put_back_group_failure_keeps_the_file_to_try_again(root):
+    _write(root / "sub" / "a.jpg", b"aaa")
+    _write(root / "b.jpg", b"bbb")
+    _write(root / "c.jpg", b"ccc")
+    session = PreviewSession(root, True)
+    for rel in ("sub/a.jpg", "b.jpg", "c.jpg"):
+        session.move(rel, root / NOT_NEEDED, group=7)
+    (root / "sub").chmod(0o555)  # a can't go back in, for now
+    try:
+        with pytest.raises(PutBackError) as failed:
+            session.put_back_group()
+    finally:
+        (root / "sub").chmod(0o755)
+    assert failed.value.back == ["c.jpg", "b.jpg"]
+    assert isinstance(failed.value.error, PermissionError)
+    assert session.moved == [("sub/a.jpg", "Not needed/a.jpg")]  # kept, to try again
+    assert session.put_back_group() == ["sub/a.jpg"]
+    assert (root / "sub" / "a.jpg").read_bytes() == b"aaa"
+    session.finish()
+
+
+def test_put_back_group_lets_an_interrupt_through(root, monkeypatch):
+    _write(root / "a.jpg", b"aaa")
+    session = PreviewSession(root, False)
+    session.move("a.jpg", root / NOT_NEEDED, group=1)
+
+    def interrupted(src, dst):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(session, "_move", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        session.put_back_group()
+    assert session.moved == [("a.jpg", "Not needed/a.jpg")]
+    monkeypatch.undo()
+    assert session.put_back_group() == ["a.jpg"]
     session.finish()
