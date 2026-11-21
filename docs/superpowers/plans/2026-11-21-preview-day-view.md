@@ -12,7 +12,7 @@
 
 ## Global Constraints
 - Day = local date of the file's modified time (`os.stat().st_mtime`; the link itself if it's a broken link via `os.lstat`). Nothing read from inside files.
-- Top line in the grid: `"{Sat 28 Feb 2025} · day {k} of {n} · {f} files · {t} ticked"` ("1 file" singular).
+- Top line in the grid: `"{Fri 28 Feb 2025} · day {k} of {n} · {f} files · {t} ticked"` ("1 file" singular).
 - "Nothing ticked" when N/M is pressed with no ticked file; "Finding the days…" while days are read.
 - Every file starts ticked when a day opens; files left after a move stay as they were (unticked).
 - Each file is moved and journalled one by one in the same run; a group is what one N/M moved; Ctrl+Z puts back the whole last group, everywhere.
@@ -35,7 +35,7 @@
 
 **Interfaces (produces):**
 - `file_day(path: Path) -> date | None` — the local date of the modified time; None if it can't be read.
-- `day_text(d: date) -> str` — `"Sat 28 Feb 2025"` (English short weekday and month, no leading zero).
+- `day_text(d: date) -> str` — `"Fri 28 Feb 2025"` (English short weekday and month, no leading zero).
 - `PreviewSession.move(rel, target_folder, group: int | None = None) -> str` — as now; `group` tags the move (None: a group of its own).
 - `class PutBackError(Exception)` with `.back: list[str]` (put back before the failure) and `.error: BaseException`.
 - `PreviewSession.put_back_group() -> list[str]` — puts back every live move of the last group, last first; returns where each is now, in put-back order; `[]` if nothing is left. On a failure: the ones already back stay back; the failed one and the rest stay live (a FileNotFoundError one is dropped as `put_back` does); raises `PutBackError`.

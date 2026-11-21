@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 from keys import (
+    _activate,
     _focused,
     _in_dialog,
     _key,
@@ -587,4 +588,168 @@ def test_one_at_a_time_from_an_empty_grid_goes_to_the_next_days_first(
     assert page.current() == "d.jpg"
     gate.set()
     _idle(qtbot, page)
+    assert errors == []
+
+
+# ----- final fix wave ------------------------------------------------------------------------
+
+def test_a_big_group_failing_comes_back_at_once(qtbot, make_window, root, monkeypatch, errors):
+    """300 failed moves come back into the grid in one go, ticked, each said."""
+    from photosort.modes import preview as preview_mode
+
+    for n in range(300):
+        _photo(root, f"p{n:03}.jpg", FRI.replace(minute=n % 60, second=n // 60))
+
+    def refuse(src, dst):
+        raise PermissionError(13, "Permission denied", str(dst))
+
+    monkeypatch.setattr(preview_mode, "move_file", refuse)
+    w = make_window()
+    page = _open(qtbot, w, root)
+    grid = _grid(qtbot, page)
+    took = []
+
+    def timed(name):
+        real = getattr(page, name)
+
+        def call(*args):
+            start = time.perf_counter()
+            real(*args)
+            took.append(time.perf_counter() - start)
+
+        monkeypatch.setattr(page, name, call)
+
+    timed("_move_failed")
+    timed("_flush_returns")
+    _key(qtbot, Qt.Key.Key_N)
+    _idle(qtbot, page)
+    assert len(grid.rels()) == 300
+    assert len(grid.ticked()) == 300
+    assert page.view() == "day"
+    assert page.message().split("\n") == [
+        f"Couldn't move p{n}.jpg: [Errno 13] Permission denied: "
+        f"'{root / NOT_NEEDED / f'p{n}.jpg'}'" for n in (179, 239, 299)]  # the last by time
+    assert sum(took) < 0.5, sum(took)
+    assert errors == []
+
+
+def test_pgup_pgdn_dont_repeat(qtbot, make_window, one_day):
+    w = make_window()
+    page = _open(qtbot, w, one_day)
+    keys = [key for key in page._day_keys if key.key().toString() in ("PgUp", "PgDown")]
+    assert len(keys) == 2
+    assert not any(key.autoRepeat() for key in keys)
+
+
+def _slow_days(monkeypatch):
+    """The days are read once the gate is set."""
+    import threading
+
+    from photosort.ui import preview_page as pp
+
+    gate = threading.Event()
+    real = pp._read_days
+
+    def slow(*args, **kwargs):
+        gate.wait(5)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pp, "_read_days", slow)
+    return gate
+
+
+def test_days_read_after_the_file_changed_dont_open_the_grid(qtbot, make_window, one_day,
+                                                             monkeypatch, errors):
+    gate = _slow_days(monkeypatch)
+    w = make_window()
+    page = _open(qtbot, w, one_day)
+    _key(qtbot, Qt.Key.Key_G)
+    assert page.message() == "Finding the days…"
+    _key(qtbot, Qt.Key.Key_Right)
+    _showing(qtbot, page, "2 of 4 · b.jpg")
+    gate.set()
+    qtbot.waitUntil(lambda: page._finding is None, timeout=WAIT_MS)
+    qtbot.wait(50)
+    assert page.view() == "one"
+    assert page.current() == "b.jpg"
+    assert page.message() == ""
+    _key(qtbot, Qt.Key.Key_G)  # kept: at once
+    assert page.view() == "day"
+    assert errors == []
+
+
+@pytest.mark.real_dialogs
+def test_days_read_behind_the_leave_question_dont_open_the_grid(qtbot, make_window, one_day,
+                                                                monkeypatch, errors):
+    gate = _slow_days(monkeypatch)
+    w = make_window()
+    page = _open(qtbot, w, one_day)
+    _key(qtbot, Qt.Key.Key_G)
+
+    def stay(dialog):
+        gate.set()
+        qtbot.waitUntil(lambda: page._finding is None, timeout=WAIT_MS)
+        assert page.view() == "one"
+        _key(qtbot, Qt.Key.Key_Escape)  # Stay
+
+    _in_dialog(qtbot, stay)
+    _key(qtbot, Qt.Key.Key_Escape)
+    _activate(qtbot, w)
+    assert page.view() == "one"
+    assert page.session is not None
+    qtbot.waitUntil(lambda: _focused() is page._box, timeout=WAIT_MS)
+    _key(qtbot, Qt.Key.Key_G)
+    assert page.view() == "day"
+    assert errors == []
+
+
+def test_a_failed_put_back_names_the_file(qtbot, make_window, one_day, errors):
+    w = make_window()
+    page = _open(qtbot, w, one_day)
+    _key(qtbot, Qt.Key.Key_N)  # a
+    _idle(qtbot, page)
+    (one_day / NOT_NEEDED / "a.jpg").unlink()
+    _key(qtbot, Qt.Key.Key_Z, CTRL)
+    qtbot.waitUntil(lambda: page.message().startswith("Couldn't put back a.jpg: "),
+                    timeout=WAIT_MS)
+    assert errors == []
+
+
+def test_a_move_failing_while_the_days_are_read_gets_its_day(qtbot, make_window, one_day,
+                                                             monkeypatch, errors):
+    from photosort.modes import preview as preview_mode
+
+    days_gate = _slow_days(monkeypatch)
+    move_gate = __import__("threading").Event()
+
+    def refuse(src, dst):
+        move_gate.wait(5)
+        raise PermissionError(13, "Permission denied", str(dst))
+
+    monkeypatch.setattr(preview_mode, "move_file", refuse)
+    w = make_window()
+    page = _open(qtbot, w, one_day)
+    _key(qtbot, Qt.Key.Key_N)  # a: held, then fails
+    _showing(qtbot, page, "1 of 3 · b.jpg")
+    _key(qtbot, Qt.Key.Key_G)  # the days of b, c, d
+    move_gate.set()
+    qtbot.waitUntil(lambda: "Couldn't move a.jpg" in page.message(), timeout=WAIT_MS)
+    days_gate.set()
+    qtbot.waitUntil(lambda: page.view() == "day", timeout=WAIT_MS)
+    assert page.day_grid.rels() == ["a.jpg", "b.jpg", "c.jpg"]
+    assert "a.jpg" in page._days
+    assert errors == []
+
+
+def test_the_days_task_is_kept_until_it_ends(qtbot, make_window, one_day, monkeypatch, errors):
+    gate = _slow_days(monkeypatch)
+    w = make_window()
+    page = _open(qtbot, w, one_day)
+    _key(qtbot, Qt.Key.Key_G)
+    task = page._finding
+    page._reset_day_view()
+    assert task in page._day_tasks
+    gate.set()
+    qtbot.waitUntil(lambda: not page._day_tasks, timeout=WAIT_MS)
+    assert page.view() == "one"
     assert errors == []

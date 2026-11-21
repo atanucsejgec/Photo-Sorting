@@ -92,8 +92,8 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QThreadPool, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
+    QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 from shiboken6 import isValid
 
@@ -437,6 +437,8 @@ class PreviewPage(QWidget):
         self._alone = False  # the one view shows a file opened from the grid
         self._days: dict[str, DayFacts] = {}  # each file's day, once read
         self._days_read = False  # G has read them (until then none are kept)
+        self._day_tasks: set[Task] = set()  # the days being read: kept alive until they end
+        self._returns: list[str] = []  # failed moves, back into the grid once the queue idles
         self._root_name = ""  # the grid's folder line
         self._finding: Task | None = None  # reading the days
         self._day: date | None = None  # the grid's day
@@ -554,9 +556,9 @@ class PreviewPage(QWidget):
         self._day_keys = [  # the grid
             *self.day_grid.keys,
             shortcuts.bind(self.day_grid, "PgUp", "PgUp/PgDn", "day before/after",
-                           partial(self._day_step, -1)),
+                           partial(self._day_step, -1), repeat=False),
             shortcuts.bind(self.day_grid, "PgDown", "PgUp/PgDn", "day before/after",
-                           partial(self._day_step, 1)),
+                           partial(self._day_step, 1), repeat=False),
             shortcuts.bind(self, ["G", "Escape"], "G/Esc", "one at a time",
                            self._one_at_a_time, repeat=False),
         ]
@@ -668,6 +670,7 @@ class PreviewPage(QWidget):
         self._alone = False
         self._days = {}
         self._days_read = False
+        self._returns = []
         self._finding = None
         self._day = None
         self._day_line = ""
@@ -979,19 +982,23 @@ class PreviewPage(QWidget):
             return
         missing = [other for other in self.files if other not in self._days]
         if missing:
-            self._find_days(missing)
+            self._find_days(missing, rel)
             return
         self._say("")
         self._show_day(self._day_of(rel), focus=rel)
 
-    def _find_days(self, rels: list[str]) -> None:
-        """Read the days of rels on the pool; then open the grid of the file
-        shown then (if the one view is still there to open it from)."""
+    def _find_days(self, rels: list[str], shown: str) -> None:
+        """Read the days of rels on the pool (then of any file that came back
+        into the list meanwhile, a failed move); then open the grid of shown,
+        the file G was pressed on, if it is still shown in the one view with
+        nothing over it (a dialog, the overlay). Else nothing is said: the
+        days are kept, and the next G opens at once."""
         self._say(FINDING_DAYS)
         task = Task(_read_days, self.root, rels)
         generation = self._generation
 
         def done(task: Task) -> bool:
+            self._day_tasks.discard(task)
             if not isValid(self) or self._finding is not task:
                 return False
             self._finding = None
@@ -999,12 +1006,18 @@ class PreviewPage(QWidget):
             return generation == self._generation
 
         def got(result: dict[str, DayFacts], task=task) -> None:
-            if done(task):
-                for rel, facts in result.items():
-                    self._days.setdefault(rel, facts)  # a put-back's is newer
-                self._days_read = True
-                if self._view == "one" and not self.overlay.isVisible():
-                    self._open_day()
+            if not done(task):
+                return
+            for rel, facts in result.items():
+                self._days.setdefault(rel, facts)  # a put-back's is newer
+            self._days_read = True
+            missing = [other for other in self.files if other not in self._days]
+            if missing:
+                self._find_days(missing, shown)
+            elif (self._active() and self._view == "one" and self.current() == shown
+                    and not self.overlay.isVisible()
+                    and QApplication.activeModalWidget() is None):
+                self._open_day()
 
         def failed(message: str, task=task) -> None:
             if done(task):
@@ -1013,6 +1026,7 @@ class PreviewPage(QWidget):
         task.signals.result.connect(got)
         task.signals.error.connect(failed)
         self._finding = task
+        self._day_tasks.add(task)
         task.start()
 
     def _show_day(self, day: date | None, ticked: set[str] | None = None,
@@ -1303,12 +1317,26 @@ class PreviewPage(QWidget):
             self._moved.append(rel)
 
     def _move_failed(self, rel: str, error: object) -> None:
+        """rel is back in the list; in the grid it comes back (ticked) once
+        the queue is idle, with the others that failed (_flush_returns)."""
         text = f"Couldn't move {rel.rpartition('/')[2]}: {_error_text(error)}"
         if self._ending:
             self._problems.append(text)
             return
-        self._reinsert(rel)
+        if self._view == "day":
+            self._reinsert(rel, show=False)
+            self._returns.append(rel)
+        else:
+            self._reinsert(rel)
         self._tell(text)
+
+    def _flush_returns(self) -> None:
+        """The failed moves come back into the grid, laid out once."""
+        returns, self._returns = self._returns, []
+        if returns and self._view == "day" and not self._ending:
+            self.day_grid.insert_many([rel for rel in returns
+                                       if rel in self.files and self._in_grid_day(rel)], True)
+            self._update_top()
 
     def _reinsert(self, rel: str, order: float | None = None, show: bool = True) -> int:
         """Put rel back in the list where it was; its place. In the grid, a
@@ -1385,9 +1413,11 @@ class PreviewPage(QWidget):
         self._show_current()
 
     def _put_back_failed(self, error: object) -> None:
+        name = self._moved[-1].rpartition("/")[2] if self._moved else ""  # the one that failed
         if isinstance(error, FileNotFoundError) and self._moved:
             self._moved.pop()  # the session let it go: the next Ctrl+Z goes on
-        text = f"Couldn't put back: {_error_text(error)}"
+        text = (f"Couldn't put back {name}: {_error_text(error)}" if name
+                else f"Couldn't put back: {_error_text(error)}")
         if self._ending:
             self._problems.append(text)
         else:
@@ -1451,6 +1481,7 @@ class PreviewPage(QWidget):
             ok, value = result
             (done if ok else failed)(value)
             if not self._queue:
+                self._flush_returns()
                 self._check_empty_grid()
             self._pump()
 

@@ -20,7 +20,7 @@ still able to open any one file big and zoom as before.
 - The grid holds that day's files that are still in the Preview list (other
   folders included when subfolders are on), ordered by modified time. Photos
   show a thumbnail; other files show their kind and name. Each card has a tick.
-- Top line: "Sat 28 Feb 2025 · day 3 of 41 · 9 files · 7 ticked".
+- Top line: "Fri 28 Feb 2025 · day 3 of 41 · 9 files · 7 ticked".
 - Keys in the grid:
   - arrows: move between cards;
   - Space or a click on the tick: tick or untick;
