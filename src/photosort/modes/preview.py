@@ -14,6 +14,10 @@ unplugged drive. App folders are refused. A file is never overwritten (a taken n
 never deleted. A put-back is journalled as a reverse move in the same run;
 undo goes through a run's moves in reverse, so undoing the run afterwards is
 still right.
+
+The files moved by one key press in the day grid form a group, put back
+together; a move with no group is a group of its own. Each file's day is the
+local date of its modified time.
 """
 
 import errno
@@ -21,6 +25,7 @@ import functools
 import os
 import re
 import threading
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -77,6 +82,34 @@ def file_kind(path: Path) -> FileKind:
     if ext in _image_exts():
         return "image"
     return "other"
+
+
+_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def file_day(path: Path) -> date | None:
+    """The day path was last modified, in local time; None if it can't be read."""
+    try:
+        return date.fromtimestamp(os.stat(path).st_mtime)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def day_text(d: date) -> str:
+    """d as the owner reads it, "Fri 28 Feb 2025", in English whatever the locale."""
+    return f"{_WEEKDAYS[d.weekday()]} {d.day} {_MONTHS[d.month - 1]} {d.year}"
+
+
+class PutBackError(Exception):
+    """A group put back part way: back lists where the files put back before
+    the failure are now (they stay back); error is what went wrong."""
+
+    def __init__(self, back: list[str], error: BaseException) -> None:
+        super().__init__(str(error))
+        self.back = back
+        self.error = error
 
 
 def inside_root(root: Path, folder: Path) -> bool:
@@ -174,15 +207,18 @@ class PreviewSession:
         self.root = Path(root)
         self.include_subfolders = include_subfolders
         self.moved: list[tuple[str, str]] = []  # the live moves (src, dst), in order
+        self._groups: list[object] = []  # the group of each live move, as in moved
         self._journal: RunJournal | None = None
         self._made: list[str] = []  # the folders the session made
         self._finished = False
         self._lock = threading.Lock()
 
-    def move(self, rel: str, target_folder: Path) -> str:
+    def move(self, rel: str, target_folder: Path, group: int | None = None) -> str:
         """Move the file rel into target_folder; return where it went (a taken
         name gets " (n)"): relative to root inside it, an absolute POSIX
-        path outside it.
+        path outside it. Moves tagged with the same group, one after another,
+        are put back together by put_back_group; with no group the move is a
+        group of its own.
 
         Raises ValueError if target_folder is in an app folder or the file is
         not inside root, and FileNotFoundError if the file is gone or
@@ -220,6 +256,7 @@ class PreviewSession:
                 dst = (outside / TargetAllocator(outside).allocate(name)).as_posix()
             self._move(rel, dst)
             self.moved.append((rel, dst))
+            self._groups.append(object() if group is None else group)
             return dst
 
     def put_back(self) -> str | None:
@@ -235,17 +272,44 @@ class PreviewSession:
             self._check_open()
             if not self.moved:
                 return None
-            src, dst = self.moved.pop()
-            if not os.path.lexists(abs_path(self.root, dst)):
-                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT),
-                                        str(abs_path(self.root, dst)))
-            back = TargetAllocator(self.root).allocate(src)
-            try:
-                self._move(dst, back)
-            except BaseException:
-                self.moved.append((src, dst))
-                raise
+            return self._put_back_last()
+
+    def put_back_group(self) -> list[str]:
+        """Put back every file of the last group, last first; return where
+        each is now, in that order ([] if nothing is left to put back).
+
+        If one fails, the ones already back stay back, it and the rest of the
+        group stay moved (one no longer where it was moved to is dropped, as
+        in put_back) and PutBackError is raised, listing those put back.
+        """
+        with self._lock:
+            self._check_open()
+            back: list[str] = []
+            if not self.moved:
+                return back
+            group = self._groups[-1]
+            while self.moved and self._groups[-1] == group:
+                try:
+                    back.append(self._put_back_last())
+                except BaseException as error:
+                    raise PutBackError(back, error) from error
             return back
+
+    def _put_back_last(self) -> str:
+        """put_back's work, with the lock held and a move left."""
+        src, dst = self.moved.pop()
+        group = self._groups.pop()
+        if not os.path.lexists(abs_path(self.root, dst)):
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT),
+                                    str(abs_path(self.root, dst)))
+        back = TargetAllocator(self.root).allocate(src)
+        try:
+            self._move(dst, back)
+        except BaseException:
+            self.moved.append((src, dst))
+            self._groups.append(group)
+            raise
+        return back
 
     def counts(self) -> tuple[int, int]:
         """(to Not needed, to other folders), counting the live moves."""

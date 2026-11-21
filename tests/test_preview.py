@@ -2,6 +2,7 @@
 
 import errno
 import os
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,9 @@ from photosort.modes.preview import (
     NOT_NEEDED,
     SLOTS,
     PreviewSession,
+    PutBackError,
+    day_text,
+    file_day,
     file_kind,
     inside_root,
     preview_files,
@@ -659,3 +663,70 @@ def test_move_refuses_a_file_through_a_link_out_of_the_root(root, tmp_path):
         session.move("link/x.jpg", root / NOT_NEEDED)
     assert (tmp_path / "elsewhere" / "x.jpg").read_bytes() == b"xxx"
     assert session.finish() is None
+
+
+# ----- days and groups -----------------------------------------------------------------------
+
+def test_file_day_is_the_modified_date(root):
+    path = _write(root / "a.jpg", b"aaa")
+    when = datetime(2025, 2, 28, 23, 30).timestamp()  # local time, late in the day
+    os.utime(path, (when, when))
+    assert file_day(path) == date(2025, 2, 28)
+    assert file_day(root / "missing.jpg") is None
+
+
+def test_day_text():
+    assert day_text(date(2025, 2, 28)) == "Fri 28 Feb 2025"
+    assert day_text(date(2026, 11, 21)) == "Sat 21 Nov 2026"
+    assert day_text(date(2024, 6, 3)) == "Mon 3 Jun 2024"
+
+
+def test_group_moves_put_back_together(root):
+    for name in ("a", "b", "c", "d"):
+        _write(root / f"{name}.jpg", name.encode() * 3)
+    before = tree(root)
+    session = PreviewSession(root, False)
+    for name in ("a", "b", "c"):
+        session.move(f"{name}.jpg", root / NOT_NEEDED, group=7)
+    session.move("d.jpg", root / "Trips", group=8)
+    assert session.put_back_group() == ["d.jpg"]
+    assert session.put_back_group() == ["c.jpg", "b.jpg", "a.jpg"]
+    assert session.put_back_group() == []
+    assert session.moved == []
+    run_id = session.finish()
+    assert tree(root) == before  # every file back, byte for byte; made folders tidied
+    undo.undo_run(root, run_id)
+    assert tree(root) == before
+
+
+def test_untagged_moves_are_groups_of_one(root):
+    for name in ("a", "b", "c"):
+        _write(root / f"{name}.jpg", name.encode())
+    session = PreviewSession(root, False)
+    session.move("a.jpg", root / NOT_NEEDED, group=1)
+    session.move("b.jpg", root / NOT_NEEDED)
+    session.move("c.jpg", root / NOT_NEEDED)
+    assert session.put_back_group() == ["c.jpg"]
+    assert session.put_back_group() == ["b.jpg"]
+    assert session.put_back() == "a.jpg"  # one file at a time still works
+    assert session.put_back_group() == []
+    session.finish()
+
+
+def test_put_back_group_partial_failure(root):
+    for name in ("a", "b", "c"):
+        _write(root / f"{name}.jpg", name.encode() * 3)
+    session = PreviewSession(root, False)
+    for name in ("a", "b", "c"):
+        session.move(f"{name}.jpg", root / NOT_NEEDED, group=7)
+    (root / NOT_NEEDED / "b.jpg").unlink()
+    with pytest.raises(PutBackError) as failed:
+        session.put_back_group()
+    assert failed.value.back == ["c.jpg"]
+    assert isinstance(failed.value.error, FileNotFoundError)
+    assert (root / "c.jpg").read_bytes() == b"ccc"  # already back, stays back
+    assert session.moved == [("a.jpg", "Not needed/a.jpg")]  # b dropped, a still live
+    assert session.put_back_group() == ["a.jpg"]
+    assert (root / "a.jpg").read_bytes() == b"aaa"
+    assert session.put_back_group() == []
+    session.finish()
