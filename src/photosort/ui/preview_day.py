@@ -16,6 +16,7 @@ double-click) asks for the focused file alone (open_file). changed says
 that the cards or their ticks changed.
 """
 
+import bisect
 from collections.abc import Callable
 from pathlib import Path
 
@@ -123,8 +124,7 @@ class DayGrid(QWidget):
         self.root = Path(root)
         cards = [self._card(rel, ticked is None or rel in ticked) for rel in rels]
         place = next((n for n, rel in enumerate(rels) if rel == focus), 0)
-        self.scroll.set_cards(cards)
-        self.scroll.navigator.set_cards(cards, place)
+        self.scroll.set_cards(cards, place=place)
         self.focus()
         self.changed.emit()
 
@@ -178,11 +178,23 @@ class DayGrid(QWidget):
 
     def insert(self, rel: str, ticked: bool) -> None:
         """Add a card for rel in its place (by the sort key), ticked or not."""
-        if self.card(rel) is not None:
+        self.insert_many([rel], ticked)
+
+    def insert_many(self, rels: list[str], ticked: bool) -> None:
+        """Add a card for each of rels in its place (by the sort key), ticked
+        or not, laid out once (a big group put back)."""
+        shown = set(self.rels())
+        new = sorted({rel for rel in rels if rel not in shown}, key=self._sort_key)
+        if not new:
             return
-        key = self._sort_key(rel)
-        place = sum(1 for card in self.scroll.cards if self._sort_key(card.rel) < key)
-        self.scroll.insert_card(place, self._card(rel, ticked))
+        keys = [self._sort_key(card.rel) for card in self.scroll.cards]
+        placed = []
+        for rel in new:
+            key = self._sort_key(rel)
+            place = bisect.bisect_left(keys, key)
+            keys.insert(place, key)
+            placed.append((place, self._card(rel, ticked)))
+        self.scroll.insert_cards(placed)
         self.changed.emit()
 
     # ----- ticks ------------------------------------------------------------------------------

@@ -56,7 +56,8 @@ group (none ticked: "Nothing ticked"), L, E (the focused file) and Ctrl+Z as
 in the one view, and G or Esc go back to one at a time, on the focused file.
 The ticked files leave the grid at once; the unticked ones stay, unticked.
 A file whose move fails comes back into the grid, ticked. Once the grid is
-empty and its moves are done, the next day opens (else the day before; with
+empty and the queue is idle (a failed move or a queued put-back may fill it
+again), the next day opens (else the day before; with
 no files left, the Preview ends as after the last file). A file opened
 alone is the one view with all its keys, but G or Esc goes back to the grid
 of its file's day (with the ticks it had, for the day it was opened from).
@@ -75,6 +76,7 @@ the session is finished on the queue, and ended(PreviewEnd) says how it
 went.
 """
 
+import bisect
 import itertools
 import logging
 import math
@@ -434,10 +436,11 @@ class PreviewPage(QWidget):
         self._view = "one"  # "one" (one at a time) or "day" (the grid)
         self._alone = False  # the one view shows a file opened from the grid
         self._days: dict[str, DayFacts] = {}  # each file's day, once read
+        self._days_read = False  # G has read them (until then none are kept)
+        self._root_name = ""  # the grid's folder line
         self._finding: Task | None = None  # reading the days
         self._day: date | None = None  # the grid's day
         self._day_line = ""
-        self._grid_pending: set[str] = set()  # the grid's files whose moves are queued
         # (day, its files, those ticked) when a file was opened alone from the grid
         self._saved_ticks: tuple[date | None, set[str], set[str]] | None = None
         self._overlay_view = "one"  # the view M opened the overlay in
@@ -664,10 +667,10 @@ class PreviewPage(QWidget):
         self._view = "one"
         self._alone = False
         self._days = {}
+        self._days_read = False
         self._finding = None
         self._day = None
         self._day_line = ""
-        self._grid_pending = set()
         self._saved_ticks = None
         self.day_grid.clear()
         self._sync_day_buttons()
@@ -842,7 +845,7 @@ class PreviewPage(QWidget):
         self._day_line = (f"{name} · day {k} of {n} · {files} file{'' if files == 1 else 's'}"
                           f" · {ticked} ticked")
         self._set_line(self.title_label, self._day_line)
-        self._set_line(self.folder_label, self.root.resolve().name or str(self.root))
+        self._set_line(self.folder_label, self._root_name)
         self._sync_day_buttons()
 
     def day_text(self) -> str:
@@ -999,6 +1002,7 @@ class PreviewPage(QWidget):
             if done(task):
                 for rel, facts in result.items():
                     self._days.setdefault(rel, facts)  # a put-back's is newer
+                self._days_read = True
                 if self._view == "one" and not self.overlay.isVisible():
                     self._open_day()
 
@@ -1019,7 +1023,7 @@ class PreviewPage(QWidget):
         self.overlay.hide()
         self._view, self._alone, self._day = "day", False, day
         self._saved_ticks = None
-        self._grid_pending = set()
+        self._root_name = self.root.resolve().name or str(self.root)
         self.viewers.setCurrentWidget(self.day_view)
         self.day_grid.show_day(self.root, self._rels_of(day), ticked, focus)
         self._sync_keys()
@@ -1046,15 +1050,19 @@ class PreviewPage(QWidget):
 
     def _one_at_a_time(self) -> None:
         """G or Esc in the grid: one at a time, on the focused file (an empty
-        grid's: the first file of a later day, else the last file)."""
+        grid's: the first file of the next day, else the last file)."""
         if not self._active():
             return
         rel = self.day_grid.focused()
         if rel is None:
             order = _day_order(self._day)
-            later = [other for other in self.files
-                     if _day_order(self._day_of(other)) > order]
-            rel = later[0] if later else (self.files[-1] if self.files else None)
+            later = [other for other in self.files if other in self._days
+                     and _day_order(self._day_of(other)) > order]
+            if later:
+                rel = min(later, key=lambda other: (_day_order(self._day_of(other)),
+                                                    self._day_sort_key(other)))
+            else:
+                rel = self.files[-1] if self.files else None
         if rel is not None:
             self._say("")
             self._to_one(rel, alone=False)
@@ -1062,7 +1070,6 @@ class PreviewPage(QWidget):
     def _to_one(self, rel: str, alone: bool) -> None:
         self._view, self._alone = "one", alone
         self._saved_ticks = None
-        self._grid_pending = set()
         self.day_grid.clear()  # its thumbnails, and those still to come, go
         self._index = self.files.index(rel)
         self._sync_keys()
@@ -1097,13 +1104,12 @@ class PreviewPage(QWidget):
         later = [day for day in days if _day_order(day) > order]
         self._show_day(later[0] if later else days[-1])
 
-    def _grid_move_done(self, rel: str) -> None:
-        """A move of the grid's ended (moved, or back in the list)."""
-        if rel not in self._grid_pending:
-            return
-        self._grid_pending.discard(rel)
-        if (self._view == "day" and self._active() and not self._grid_pending
-                and not self.day_grid.rels()):
+    def _check_empty_grid(self) -> None:
+        """The queue is idle: an empty grid opens the next day (or ends the
+        Preview). Not before: a move that fails, or a put-back queued after
+        the moves, brings files back into it."""
+        if (self._view == "day" and self._active() and self._running is None
+                and not self._queue and not self.day_grid.rels()):
             self._open_next_day()
 
     # ----- the overlay ---------------------------------------------------------------------------
@@ -1257,7 +1263,6 @@ class PreviewPage(QWidget):
         group = next(self._group_ids)
         gone = set(moving)
         self.files = [rel for rel in self.files if rel not in gone]
-        self._grid_pending |= gone
         self.day_grid.remove(moving)
         for rel in moving:
             self._enqueue(partial(self.session.move, rel, Path(target), group),
@@ -1296,7 +1301,6 @@ class PreviewPage(QWidget):
             self._reinsert(rel)
         else:
             self._moved.append(rel)
-        self._grid_move_done(rel)
 
     def _move_failed(self, rel: str, error: object) -> None:
         text = f"Couldn't move {rel.rpartition('/')[2]}: {_error_text(error)}"
@@ -1305,25 +1309,31 @@ class PreviewPage(QWidget):
             return
         self._reinsert(rel)
         self._tell(text)
-        self._grid_move_done(rel)
 
-    def _reinsert(self, rel: str, order: float | None = None) -> int:
+    def _reinsert(self, rel: str, order: float | None = None, show: bool = True) -> int:
         """Put rel back in the list where it was; its place. In the grid, a
-        file of its day comes back into it, ticked."""
+        file of its day comes back into it, ticked. With show False neither
+        the grid nor the top line is touched (the caller does it once)."""
         if order is None:
             order = self._order.get(rel, float(len(self._order)))
         self._order[rel] = order
-        place = sum(1 for other in self.files if self._order.get(other, float("inf")) < order)
+        place = bisect.bisect_left(self.files, order,
+                                   key=lambda other: self._order.get(other, math.inf))
         self.files.insert(place, rel)
         if self._shown is not None and place <= self._index:
             self._index += 1  # the file shown stays shown
-        if self._days and rel not in self._days:
+        if self._days_read and rel not in self._days:
             # Moved before the days were read, and back now: one stat, here.
             self._days[rel] = _day_facts(self.root / rel)
-        if self._view == "day" and rel in self._days and self._day_of(rel) == self._day:
-            self.day_grid.insert(rel, True)
-        self._update_top()
+        if show:
+            if self._in_grid_day(rel):
+                self.day_grid.insert(rel, True)
+            self._update_top()
         return place
+
+    def _in_grid_day(self, rel: str) -> bool:
+        """Whether rel belongs in the grid shown."""
+        return self._view == "day" and rel in self._days and self._day_of(rel) == self._day
 
     def _put_back(self) -> None:
         if not self._active():
@@ -1348,9 +1358,11 @@ class PreviewPage(QWidget):
             self._tell(NOTHING_TO_PUT_BACK)
             return
         placed: list[tuple[str, str]] = []  # (where it was, where it is now)
+        keep = self._days_read or self._finding is not None  # else nothing is kept
         for now, day, mtime in back:
             placed.append((self._moved.pop() if self._moved else now, now))
-            self._days[now] = (day, mtime)  # read again
+            if keep:
+                self._days[now] = (day, mtime)  # read again
         if error is not None:
             self._put_back_failed(error)
         if self._ending or not placed:
@@ -1359,11 +1371,15 @@ class PreviewPage(QWidget):
             order = self._order.get(was, float(len(self._order)))
             if now != was:
                 order += 0.5  # just after the place its name now has someone else in
-            self._reinsert(now, order)
+            self._reinsert(now, order, show=False)
         last = placed[-1][1]
         if self._view == "day":
             if self._day_of(last) != self._day:
                 self._show_day(self._day_of(last), focus=last)
+            else:  # into the grid at once, laid out once
+                self.day_grid.insert_many([now for _, now in placed if self._in_grid_day(now)],
+                                          True)
+                self._update_top()
             return
         self._index = self.files.index(last)
         self._show_current()
@@ -1434,6 +1450,8 @@ class PreviewPage(QWidget):
                 self._untell(text)
             ok, value = result
             (done if ok else failed)(value)
+            if not self._queue:
+                self._check_empty_grid()
             self._pump()
 
         task.signals.result.connect(ended)

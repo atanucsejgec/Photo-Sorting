@@ -122,15 +122,16 @@ class CardGrid(QScrollArea):
         self._new_grid()
         self.setWidget(self._holder)
 
-    def set_cards(self, cards: list[GridCard], keep_place: bool = False) -> None:
+    def set_cards(self, cards: list[GridCard], keep_place: bool = False,
+                  place: int = 0) -> None:
         """Show cards in place of those shown before (which are deleted), and
-        ask for their thumbnails. The focus starts on the first card, or with
-        keep_place on the one with the current card's key."""
+        ask for their thumbnails. The focus starts on the card at place (the
+        first), or with keep_place on the one with the current card's key."""
         self.stop_thumbnails()
         self._generation += 1
         self._new_grid()
         self.cards = list(cards)
-        self.navigator.set_cards(self.cards, None if keep_place else 0)
+        self.navigator.set_cards(self.cards, None if keep_place else place)
         self._columns = 0
         self._fit()
         self.setWidget(self._holder)  # the cards are in it already: they show at once
@@ -154,10 +155,16 @@ class CardGrid(QScrollArea):
 
     def insert_card(self, place: int, card: GridCard) -> None:
         """Add card at place among the cards; its thumbnail is asked for."""
-        place = max(0, min(place, len(self.cards)))
-        self.cards.insert(place, card)
-        self._wire(card)
-        self._changed()
+        self.insert_cards([(place, card)])
+
+    def insert_cards(self, placed: list[tuple[int, GridCard]]) -> None:
+        """Add each (place, card), in turn (a place counts the cards added
+        before it), then lay the cards out once."""
+        for place, card in placed:
+            self.cards.insert(max(0, min(place, len(self.cards))), card)
+            self._wire(card)
+        if placed:
+            self._changed()
 
     def remove_cards(self, cards: list[GridCard]) -> None:
         """Take cards out (they are deleted); a thumbnail still to come for

@@ -38,6 +38,7 @@ from test_ui_preview import (
     _open,
     _settings,
     _showing,
+    _slow_moves,
     _speed_back_to_1,  # noqa: F401  (autouse fixture)
     root,  # noqa: F401  (fixture)
     shown_in_folder,  # noqa: F401  (autouse fixture)
@@ -502,4 +503,88 @@ def test_viewer_keys_unchanged(qtbot, make_window, one_day, errors):
     assert isinstance(page.viewer(), pv.TextViewer)
     grid = _grid(qtbot, page)
     assert grid.rels() == ["d.jpg", "e.txt"]
+    assert errors == []
+
+
+# ----- fix round 1 ---------------------------------------------------------------------------
+
+def test_putting_back_a_big_group_is_quick(qtbot, make_window, root, monkeypatch, errors):
+    """300 files back into the grid in one go: the handler never freezes the window."""
+    for n in range(300):
+        _photo(root, f"p{n:03}.jpg", FRI.replace(minute=n % 60, second=n // 60))
+    w = make_window()
+    page = _open(qtbot, w, root)
+    grid = _grid(qtbot, page)
+    _key(qtbot, Qt.Key.Key_Space)  # p000 stays
+    _key(qtbot, Qt.Key.Key_N)
+    _idle(qtbot, page)
+    assert grid.rels() == ["p000.jpg"]
+    took = []
+    real = page._put_back_ok
+
+    def timed(result):
+        start = time.perf_counter()
+        real(result)
+        took.append(time.perf_counter() - start)
+
+    monkeypatch.setattr(page, "_put_back_ok", timed)
+    qtbot.waitUntil(lambda: page.day_grid.isAncestorOf(_focused()), timeout=WAIT_MS)
+    _key(qtbot, Qt.Key.Key_Z, CTRL)
+    _idle(qtbot, page)
+    assert len(grid.rels()) == 300
+    assert len(grid.ticked()) == 299
+    assert len(took) == 1 and took[0] < 0.3, took
+    assert errors == []
+
+
+def test_n_then_ctrl_z_on_the_last_day_before_the_moves_end(qtbot, make_window, one_day,
+                                                           monkeypatch, errors):
+    """The put-back is queued: the Preview never ends, the files come back."""
+    (one_day / "d.jpg").unlink()
+    gate = _slow_moves(monkeypatch)
+    w = make_window()
+    page = _open(qtbot, w, one_day)
+    grid = _grid(qtbot, page)
+    _key(qtbot, Qt.Key.Key_N)
+    assert grid.rels() == []
+    _key(qtbot, Qt.Key.Key_Z, CTRL)
+    gate.set()
+    _idle(qtbot, page)
+    qtbot.wait(50)
+    assert w.current_page() is page
+    assert page.session is not None
+    assert page.view() == "day"
+    assert grid.rels() == ["a.jpg", "b.jpg", "c.jpg"]
+    assert page.session.moved == []
+    assert errors == []
+
+
+def test_days_are_kept_only_once_read(qtbot, make_window, one_day, errors):
+    w = make_window()
+    page = _open(qtbot, w, one_day)
+    _key(qtbot, Qt.Key.Key_N)
+    _key(qtbot, Qt.Key.Key_Z, CTRL)
+    _showing(qtbot, page, "1 of 4 · a.jpg")
+    _idle(qtbot, page)
+    assert page._days == {}  # no G yet: nothing read, nothing kept
+    assert errors == []
+
+
+def test_one_at_a_time_from_an_empty_grid_goes_to_the_next_days_first(
+        qtbot, make_window, root, monkeypatch, errors):
+    _photo(root, "a.jpg", SAT)
+    _photo(root, "b.jpg", FRI)
+    _photo(root, "c.jpg", SUN.replace(hour=13))
+    _photo(root, "d.jpg", SUN)  # Sun's first, though listed after c
+    gate = _slow_moves(monkeypatch)
+    w = make_window()
+    page = _open(qtbot, w, root)
+    grid = _grid(qtbot, page)
+    _key(qtbot, Qt.Key.Key_N)  # Sat's a: the grid is empty while it moves
+    assert grid.rels() == []
+    _key(qtbot, Qt.Key.Key_G)
+    assert page.view() == "one"
+    assert page.current() == "d.jpg"
+    gate.set()
+    _idle(qtbot, page)
     assert errors == []
