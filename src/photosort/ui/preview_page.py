@@ -987,13 +987,15 @@ class PreviewPage(QWidget):
         self._say("")
         self._show_day(self._day_of(rel), focus=rel)
 
-    def _find_days(self, rels: list[str], shown: str) -> None:
+    def _find_days(self, rels: list[str], shown: str, quiet: bool = False) -> None:
         """Read the days of rels on the pool (then of any file that came back
         into the list meanwhile, a failed move); then open the grid of shown,
         the file G was pressed on, if it is still shown in the one view with
         nothing over it (a dialog, the overlay). Else nothing is said: the
-        days are kept, and the next G opens at once."""
-        self._say(FINDING_DAYS)
+        days are kept, and the next G opens at once. quiet: a follow-up read
+        after which the grid won't open says nothing either."""
+        if not quiet:
+            self._say(FINDING_DAYS)
         task = Task(_read_days, self.root, rels)
         generation = self._generation
 
@@ -1011,12 +1013,13 @@ class PreviewPage(QWidget):
             for rel, facts in result.items():
                 self._days.setdefault(rel, facts)  # a put-back's is newer
             self._days_read = True
+            opens = (self._active() and self._view == "one" and self.current() == shown
+                     and not self.overlay.isVisible()
+                     and QApplication.activeModalWidget() is None)
             missing = [other for other in self.files if other not in self._days]
             if missing:
-                self._find_days(missing, shown)
-            elif (self._active() and self._view == "one" and self.current() == shown
-                    and not self.overlay.isVisible()
-                    and QApplication.activeModalWidget() is None):
+                self._find_days(missing, shown, quiet=not opens)
+            elif opens:
                 self._open_day()
 
         def failed(message: str, task=task) -> None:
@@ -1334,9 +1337,10 @@ class PreviewPage(QWidget):
         """The failed moves come back into the grid, laid out once."""
         returns, self._returns = self._returns, []
         if returns and self._view == "day" and not self._ending:
-            self.day_grid.insert_many([rel for rel in returns
-                                       if rel in self.files and self._in_grid_day(rel)], True)
+            back = [rel for rel in returns if rel in self.files and self._in_grid_day(rel)]
+            self.day_grid.insert_many(back, True)
             self._update_top()
+            self._focus_returned(back)
 
     def _reinsert(self, rel: str, order: float | None = None, show: bool = True) -> int:
         """Put rel back in the list where it was; its place. In the grid, a
@@ -1362,6 +1366,17 @@ class PreviewPage(QWidget):
     def _in_grid_day(self, rel: str) -> bool:
         """Whether rel belongs in the grid shown."""
         return self._view == "day" and rel in self._days and self._day_of(rel) == self._day
+
+    def _focus_returned(self, back: list[str]) -> None:
+        """Files came back into the grid: unless the focus is on a card still
+        there, it goes to the first of them (the page shown, no dialog open)."""
+        if not back or not self.isVisible() or QApplication.activeModalWidget() is not None:
+            return
+        focus = QApplication.focusWidget()
+        if focus is not None and focus in self.day_grid.cards():
+            return
+        first = next((rel for rel in self.day_grid.rels() if rel in back), None)
+        self.day_grid.focus(first)
 
     def _put_back(self) -> None:
         if not self._active():
@@ -1405,9 +1420,10 @@ class PreviewPage(QWidget):
             if self._day_of(last) != self._day:
                 self._show_day(self._day_of(last), focus=last)
             else:  # into the grid at once, laid out once
-                self.day_grid.insert_many([now for _, now in placed if self._in_grid_day(now)],
-                                          True)
+                back = [now for _, now in placed if self._in_grid_day(now)]
+                self.day_grid.insert_many(back, True)
                 self._update_top()
+                self._focus_returned(back)
             return
         self._index = self.files.index(last)
         self._show_current()

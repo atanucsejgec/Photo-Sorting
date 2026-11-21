@@ -22,7 +22,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QShortcut
-from PySide6.QtWidgets import QCheckBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QVBoxLayout, QWidget
 
 from photosort.modes.preview import file_kind
 from photosort.ui import preview_viewers as pv
@@ -100,6 +100,8 @@ class DayGrid(QWidget):
         super().__init__(parent)
         self.root = Path()
         self._sort_key = sort_key or (lambda rel: rel)
+        # An empty grid holds the focus itself, so its keys (and the page's) still work.
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.scroll = _Cards(key=lambda card: card.rel, pool=pv.image_pool())
         self.scroll.open_file.connect(self.open_file)
         layout = QVBoxLayout(self)
@@ -163,17 +165,32 @@ class DayGrid(QWidget):
         card = self.scroll.current()
         return None if card is None else card.rel
 
-    def focus(self) -> None:
-        """Focus the current card, scrolled into view once the cards are laid out."""
-        if self.isVisible():
-            self.scroll.navigator.focus()
-            self.scroll.navigator.reveal_soon()
+    def focus(self, rel: str | None = None) -> None:
+        """Focus rel's card (the current card if None or not shown), scrolled
+        into view once the cards are laid out; an empty grid takes the focus
+        itself."""
+        if not self.isVisible():
+            return
+        if not self.scroll.cards:
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+            return
+        rels = self.rels()
+        self.scroll.navigator.focus(rels.index(rel) if rel in rels else None)
+        self.scroll.navigator.reveal_soon()
+
+    def has_focus_inside(self) -> bool:
+        """Whether the focus is on the grid or one of its cards."""
+        focus = QApplication.focusWidget()
+        return focus is not None and (focus is self or self.isAncestorOf(focus))
 
     def remove(self, rels) -> None:
         """Take the cards of rels out; the focus stays on the current card, or
         goes to the one now in its place."""
         gone = set(rels)
+        had_focus = self.has_focus_inside()
         self.scroll.remove_cards([card for card in self.scroll.cards if card.rel in gone])
+        if had_focus and not self.scroll.cards:
+            self.focus()  # the grid itself: Ctrl+Z, PgUp/PgDn still work
         self.changed.emit()
 
     def insert(self, rel: str, ticked: bool) -> None:

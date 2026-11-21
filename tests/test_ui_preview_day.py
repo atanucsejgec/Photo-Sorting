@@ -753,3 +753,86 @@ def test_the_days_task_is_kept_until_it_ends(qtbot, make_window, one_day, monkey
     qtbot.waitUntil(lambda: not page._day_tasks, timeout=WAIT_MS)
     assert page.view() == "one"
     assert errors == []
+
+
+# ----- the focus through an empty grid -------------------------------------------------------
+
+def _on_a_card(page) -> bool:
+    focus = _focused()
+    return focus is not None and focus in page.day_grid.cards()
+
+
+def test_every_move_failing_keeps_the_keys(qtbot, make_window, one_day, monkeypatch, errors):
+    """The grid empties, its files come back: Space, N and Ctrl+Z work, no click."""
+    from photosort.modes import preview as preview_mode
+
+    def refuse(src, dst):
+        raise PermissionError(13, "Permission denied", str(dst))
+
+    monkeypatch.setattr(preview_mode, "move_file", refuse)
+    w = make_window()
+    page = _open(qtbot, w, one_day)
+    grid = _grid(qtbot, page)
+    _key(qtbot, Qt.Key.Key_N)
+    _idle(qtbot, page)
+    qtbot.waitUntil(lambda: grid.rels() == ["a.jpg", "b.jpg", "c.jpg"], timeout=WAIT_MS)
+    qtbot.waitUntil(lambda: _on_a_card(page), timeout=WAIT_MS)
+    _key(qtbot, Qt.Key.Key_Space)
+    assert len(grid.ticked()) == 2
+    _key(qtbot, Qt.Key.Key_N)  # the two fail again
+    _idle(qtbot, page)
+    qtbot.waitUntil(lambda: _on_a_card(page), timeout=WAIT_MS)
+    _key(qtbot, Qt.Key.Key_Z, CTRL)
+    qtbot.waitUntil(lambda: "Nothing to put back" in page.message(), timeout=WAIT_MS)
+    assert errors == []
+
+
+def test_ctrl_z_by_key_on_an_empty_last_day(qtbot, make_window, one_day, monkeypatch, errors):
+    (one_day / "d.jpg").unlink()
+    gate = _slow_moves(monkeypatch)
+    w = make_window()
+    page = _open(qtbot, w, one_day)
+    grid = _grid(qtbot, page)
+    _key(qtbot, Qt.Key.Key_N)
+    assert grid.rels() == []
+    assert _focused() is not None and (_focused() is grid or grid.isAncestorOf(_focused()))
+    assert w.strip.text() == GRID_KEYS
+    _key(qtbot, Qt.Key.Key_Z, CTRL)
+    gate.set()
+    _idle(qtbot, page)
+    qtbot.waitUntil(lambda: grid.rels() == ["a.jpg", "b.jpg", "c.jpg"], timeout=WAIT_MS)
+    qtbot.waitUntil(lambda: _on_a_card(page), timeout=WAIT_MS)
+    _key(qtbot, Qt.Key.Key_PageDown)  # the keys work: nothing after, it stays
+    _key(qtbot, Qt.Key.Key_Space)
+    assert len(grid.ticked()) == 2
+    assert errors == []
+
+
+def test_a_follow_up_read_says_nothing_when_the_grid_wont_open(
+        qtbot, make_window, one_day, monkeypatch, errors):
+    from photosort.modes import preview as preview_mode
+
+    days_gate = _slow_days(monkeypatch)
+    move_gate = __import__("threading").Event()
+    said = []
+
+    def refuse(src, dst):
+        move_gate.wait(5)
+        raise PermissionError(13, "Permission denied", str(dst))
+
+    monkeypatch.setattr(preview_mode, "move_file", refuse)
+    w = make_window()
+    page = _open(qtbot, w, one_day)
+    _key(qtbot, Qt.Key.Key_N)  # a: held, then fails
+    _showing(qtbot, page, "1 of 3 · b.jpg")
+    _key(qtbot, Qt.Key.Key_G)
+    _key(qtbot, Qt.Key.Key_Right)  # the file changes: the grid won't open
+    move_gate.set()
+    qtbot.waitUntil(lambda: "Couldn't move a.jpg" in page.message(), timeout=WAIT_MS)
+    real_say = page._say
+    monkeypatch.setattr(page, "_say", lambda text: (said.append(text), real_say(text)))
+    days_gate.set()
+    qtbot.waitUntil(lambda: page._finding is None and "a.jpg" in page._days, timeout=WAIT_MS)
+    assert not any("Finding the days…" in text for text in said)
+    assert page.view() == "one"
+    assert errors == []
