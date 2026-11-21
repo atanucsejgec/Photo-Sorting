@@ -151,14 +151,37 @@ class _Cards(CardGrid):
         self._scroller = QTimer(self)
         self._scroller.setInterval(_SCROLL_MS)
         self._scroller.timeout.connect(self._autoscroll)
+        self.navigator.current_changed.connect(self._focus_moved)
 
     def card_double_clicked(self, card: GridCard) -> None:
         self.open_file.emit(card.rel)
 
     def set_cards(self, cards: list[GridCard], keep_place: bool = False,
                   place: int = 0) -> None:
+        self._end()  # a drag ends with the cards it began on
         self._anchor = None
         super().set_cards(cards, keep_place, place)
+
+    def insert_cards(self, placed: list[tuple[int, GridCard]]) -> None:
+        if placed:
+            self._end()
+        super().insert_cards(placed)
+
+    def remove_cards(self, cards: list[GridCard]) -> None:
+        if cards:
+            self._end()
+        super().remove_cards(cards)
+
+    def hideEvent(self, event) -> None:
+        self._end()  # the page left, or the file opened alone, mid-drag
+        super().hideEvent(event)
+
+    def _focus_moved(self) -> None:
+        """The keys moved the focus (not a press: its release says): the
+        focused card is Shift+click's anchor."""
+        card = self.current()
+        if card is not None and QApplication.mouseButtons() == Qt.MouseButton.NoButton:
+            self._anchor = card.rel
 
     # ----- the mouse --------------------------------------------------------------------------
 
@@ -236,15 +259,15 @@ class _Cards(CardGrid):
         if self._start is None:
             return
         area = QRect(self._start, self._in_grid(pos)).normalized()
-        self.box.setGeometry(QRect(self.viewport().mapFrom(self.widget(), area.topLeft()),
+        self.box.setGeometry(QRect(self.widget().mapTo(self.viewport(), area.topLeft()),
                                    area.size()))
         flip = bool(self._modifiers & Qt.KeyboardModifier.ControlModifier)
+        cards = [card for card in self.cards if card.rel in self._before]  # only the drag's
         states = []
-        for card in self.cards:
+        for card in cards:
             hit = card.geometry().intersects(area)
-            before = self._before.get(card.rel, card.tick.isChecked())
-            states.append((hit != before) if flip else hit)
-        self._set_ticks(self.cards, states)
+            states.append((hit != self._before[card.rel]) if flip else hit)
+        self._set_ticks(cards, states)
 
     def _clicked(self, pos: QPoint) -> None:
         """A click (no drag) at pos: Ctrl flips the card, Shift ticks the
@@ -289,6 +312,7 @@ class _Cards(CardGrid):
         old = bar.value()
         bar.setValue(old + (step if out > 0 else -step))
         if bar.value() != old:
+            self.navigator.unpin()  # the view stays where the drag took it
             self._drag_to(self._pointer)
 
 

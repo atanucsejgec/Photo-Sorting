@@ -28,7 +28,8 @@ from keys import (
     models_present,  # noqa: F401
     settings_path,  # noqa: F401
 )
-from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtCore import QPoint, QRect, Qt, QtMsgType, qInstallMessageHandler
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 from test_ui_preview import (
     CTRL,
@@ -840,10 +841,30 @@ def test_a_follow_up_read_says_nothing_when_the_grid_wont_open(
 
 
 # ----- the mouse -----------------------------------------------------------------------------
+#
+# The mouse goes through the window, as the owner's does: a press lands on the
+# widget under it (a card's picture, its tick, a gap), gives a card the click
+# focus, and travels up to the grid's viewport.
 
 LEFT = Qt.MouseButton.LeftButton
 SHIFT = Qt.KeyboardModifier.ShiftModifier
 NO_KEYS = Qt.KeyboardModifier.NoModifier
+
+
+@pytest.fixture
+def qt_warnings():
+    """Every Qt warning while the test runs ("parent must be in parent
+    hierarchy"…): the test fails on any."""
+    seen: list[str] = []
+
+    def handler(kind, _context, message) -> None:
+        if kind in (QtMsgType.QtWarningMsg, QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
+            seen.append(message)
+
+    previous = qInstallMessageHandler(handler)
+    yield seen
+    qInstallMessageHandler(previous)
+    assert seen == []
 
 
 @pytest.fixture
@@ -854,42 +875,57 @@ def six(root) -> Path:
     return root
 
 
-def _six_grid(qtbot, make_window, six):
-    """The grid of six's day, its cards laid out, at least four to a row."""
-    w = make_window(size=(1600, 900))
+def _six_grid(qtbot, make_window, six, size=(1600, 900), columns: int = 4):
+    """The grid of six's day, its cards laid out, at least columns to a row."""
+    w = make_window(size=size)
     page = _open(qtbot, w, six)
     grid = _grid(qtbot, page)
-    qtbot.waitUntil(lambda: grid.scroll.columns() >= 4, timeout=WAIT_MS)
+    qtbot.waitUntil(lambda: grid.scroll.columns() >= columns, timeout=WAIT_MS)
     return page, grid
 
 
 def _on(grid, rel: str, where: str = "picture") -> QPoint:
-    """A point of rel's card, in the viewport: its picture's middle, or its
-    tick box."""
+    """A point of rel's card, in the viewport: its picture's middle, its
+    tick's box, or its name (beside the box)."""
     card = grid.card(rel)
+    view = grid.scroll.viewport()
+    tick = card.tick
     if where == "box":
-        tick = card.tick
-        return tick.mapTo(grid.scroll.viewport(), tick.box_rect().center())
+        return tick.mapTo(view, tick.box_rect().center())
+    if where == "name":
+        return tick.mapTo(view, QPoint(tick.width() - 4, tick.height() // 2))
     label = card.thumb_label
-    return label.mapTo(grid.scroll.viewport(), label.rect().center())
+    return label.mapTo(view, label.rect().center())
+
+
+def _window_at(grid, at: QPoint):
+    """The window and at (in the viewport) in it."""
+    window = grid.window()
+    return window.windowHandle(), grid.scroll.viewport().mapTo(window, at)
 
 
 def _press(qtbot, grid, at: QPoint, modifier=NO_KEYS) -> None:
-    qtbot.mousePress(grid.scroll.viewport(), LEFT, modifier, at)
+    handle, pos = _window_at(grid, at)
+    QTest.mousePress(handle, LEFT, modifier, pos)
 
 
 def _move(qtbot, grid, to: QPoint) -> None:
-    qtbot.mouseMove(grid.scroll.viewport(), to)
+    handle, pos = _window_at(grid, to)
+    QTest.mouseMove(handle, pos)
 
 
 def _release(qtbot, grid, at: QPoint, modifier=NO_KEYS) -> None:
-    qtbot.mouseRelease(grid.scroll.viewport(), LEFT, modifier, at)
+    handle, pos = _window_at(grid, at)
+    QTest.mouseRelease(handle, LEFT, modifier, pos)
+
+
+def _click_at(qtbot, grid, at: QPoint, modifier=NO_KEYS) -> None:
+    _press(qtbot, grid, at, modifier)
+    _release(qtbot, grid, at, modifier)
 
 
 def _click(qtbot, grid, rel: str, modifier=NO_KEYS) -> None:
-    at = _on(grid, rel)
-    _press(qtbot, grid, at, modifier)
-    _release(qtbot, grid, at, modifier)
+    _click_at(qtbot, grid, _on(grid, rel), modifier)
 
 
 def _drag(qtbot, grid, start: QPoint, end: QPoint, modifier=NO_KEYS) -> None:
@@ -899,7 +935,8 @@ def _drag(qtbot, grid, start: QPoint, end: QPoint, modifier=NO_KEYS) -> None:
     _release(qtbot, grid, end, modifier)
 
 
-def test_a_drag_box_ticks_only_the_cards_it_touches(qtbot, make_window, six, errors):
+def test_a_drag_box_ticks_only_the_cards_it_touches(qtbot, make_window, six, errors,
+                                                    qt_warnings):
     page, grid = _six_grid(qtbot, make_window, six)
     start, end = _on(grid, "p2.jpg"), _on(grid, "p4.jpg")
     _press(qtbot, grid, start)
@@ -907,20 +944,31 @@ def test_a_drag_box_ticks_only_the_cards_it_touches(qtbot, make_window, six, err
     _move(qtbot, grid, end)
     assert grid.ticked() == ["p2.jpg", "p3.jpg", "p4.jpg"]  # live
     assert page.day_text() == "Fri 28 Feb 2025 · day 1 of 1 · 6 files · 3 ticked"
-    assert grid.scroll.box.isVisible()  # the box shows while dragging
+    box = grid.scroll.box
+    assert box.isVisible()  # the box shows while dragging, from the press to the pointer
+    assert box.geometry() == QRect(start, end).normalized()
     _move(qtbot, grid, _on(grid, "p3.jpg"))
     assert grid.ticked() == ["p2.jpg", "p3.jpg"]
     assert page.day_text() == "Fri 28 Feb 2025 · day 1 of 1 · 6 files · 2 ticked"
+    assert box.geometry() == QRect(start, _on(grid, "p3.jpg")).normalized()
     _move(qtbot, grid, end)
     _release(qtbot, grid, end)
     assert grid.ticked() == ["p2.jpg", "p3.jpg", "p4.jpg"]
     assert page.day_text() == "Fri 28 Feb 2025 · day 1 of 1 · 6 files · 3 ticked"
-    assert not grid.scroll.box.isVisible()
+    assert not box.isVisible()
     assert page.view() == "day"
     assert errors == []
 
 
-def test_a_drag_box_from_a_gap(qtbot, make_window, six, errors):
+def test_a_drag_box_at_1024x600(qtbot, make_window, six, errors, qt_warnings):
+    _page, grid = _six_grid(qtbot, make_window, six, size=(1024, 600), columns=2)
+    start, end = _on(grid, "p2.jpg"), _on(grid, "p1.jpg")  # leftward
+    _drag(qtbot, grid, start, end)
+    assert grid.ticked() == ["p1.jpg", "p2.jpg"]
+    assert errors == []
+
+
+def test_a_drag_box_from_a_gap(qtbot, make_window, six, errors, qt_warnings):
     _page, grid = _six_grid(qtbot, make_window, six)
     card = grid.card("p1.jpg")
     gap = QPoint(1, card.mapTo(grid.scroll.viewport(), QPoint(0, 0)).y() + 5)  # left of p1
@@ -929,7 +977,15 @@ def test_a_drag_box_from_a_gap(qtbot, make_window, six, errors):
     assert errors == []
 
 
-def test_ctrl_drag_flips_against_the_ticks_at_the_start(qtbot, make_window, six, errors):
+def test_a_drag_box_from_a_name(qtbot, make_window, six, errors, qt_warnings):
+    _page, grid = _six_grid(qtbot, make_window, six)
+    _drag(qtbot, grid, _on(grid, "p3.jpg", "name"), _on(grid, "p4.jpg"))
+    assert grid.ticked() == ["p3.jpg", "p4.jpg"]
+    assert errors == []
+
+
+def test_ctrl_drag_flips_against_the_ticks_at_the_start(qtbot, make_window, six, errors,
+                                                        qt_warnings):
     _page, grid = _six_grid(qtbot, make_window, six)
     grid.card("p3.jpg").tick.setChecked(False)
     start = _on(grid, "p2.jpg")
@@ -947,19 +1003,21 @@ def test_ctrl_drag_flips_against_the_ticks_at_the_start(qtbot, make_window, six,
     assert errors == []
 
 
-def test_ctrl_click_flips_one_card(qtbot, make_window, six, errors):
+def test_ctrl_click_flips_one_card(qtbot, make_window, six, errors, qt_warnings):
     page, grid = _six_grid(qtbot, make_window, six)
     _click(qtbot, grid, "p3.jpg", CTRL)
     assert grid.ticked() == ["p1.jpg", "p2.jpg", "p4.jpg", "p5.jpg", "p6.jpg"]
     assert grid.focused() == "p3.jpg"
+    assert _focused() is grid.card("p3.jpg")
     assert page.day_text() == "Fri 28 Feb 2025 · day 1 of 1 · 6 files · 5 ticked"
+    qtbot.wait(QApplication.doubleClickInterval() + 50)  # not a double-click
     _click(qtbot, grid, "p3.jpg", CTRL)
     assert len(grid.ticked()) == 6
+    assert page.view() == "day"
     assert errors == []
 
 
-def test_shift_click_ticks_a_range_like_the_anchor(qtbot, make_window, six, errors):
-    _page, grid = _six_grid(qtbot, make_window, six)
+def _shift_clicks(qtbot, grid) -> None:
     assert grid.focused() == "p1.jpg"
     _key(qtbot, Qt.Key.Key_Space)  # p1 unticked; no click yet: p1, the focused, is the anchor
     _click(qtbot, grid, "p3.jpg", SHIFT)  # downward
@@ -975,10 +1033,33 @@ def test_shift_click_ticks_a_range_like_the_anchor(qtbot, make_window, six, erro
     assert grid.ticked() == ["p1.jpg", "p2.jpg", "p3.jpg", "p4.jpg", "p6.jpg"]
     _click(qtbot, grid, "p2.jpg", SHIFT)  # upward, unticked
     assert grid.ticked() == ["p1.jpg", "p6.jpg"]
+    _key(qtbot, Qt.Key.Key_Right)  # the keys move the anchor too: p3, unticked
+    _click(qtbot, grid, "p6.jpg", SHIFT)
+    assert grid.ticked() == ["p1.jpg"]
+
+
+def test_shift_click_ticks_a_range_like_the_anchor(qtbot, make_window, six, errors,
+                                                   qt_warnings):
+    _page, grid = _six_grid(qtbot, make_window, six)
+    _shift_clicks(qtbot, grid)
     assert errors == []
 
 
-def test_a_short_press_is_a_plain_click(qtbot, make_window, six, errors):
+def test_shift_click_at_1024x600(qtbot, make_window, six, errors, qt_warnings):
+    """At the app's own size: the first row shows, two cards."""
+    _page, grid = _six_grid(qtbot, make_window, six, size=(1024, 600), columns=2)
+    assert grid.focused() == "p1.jpg"
+    _key(qtbot, Qt.Key.Key_Space)  # p1 unticked, focused: the anchor
+    _click(qtbot, grid, "p2.jpg", SHIFT)
+    assert grid.ticked() == ["p3.jpg", "p4.jpg", "p5.jpg", "p6.jpg"]
+    assert grid.focused() == "p2.jpg"
+    _click(qtbot, grid, "p1.jpg", CTRL)  # p1 ticked, the anchor
+    _click(qtbot, grid, "p2.jpg", SHIFT)
+    assert len(grid.ticked()) == 6
+    assert errors == []
+
+
+def test_a_short_press_is_a_plain_click(qtbot, make_window, six, errors, qt_warnings):
     _page, grid = _six_grid(qtbot, make_window, six)
     at = _on(grid, "p3.jpg")
     near = at + QPoint(2, 1)
@@ -990,16 +1071,13 @@ def test_a_short_press_is_a_plain_click(qtbot, make_window, six, errors):
     assert _focused() is grid.card("p3.jpg")
     assert len(grid.ticked()) == 6
     assert not grid.scroll.box.isVisible()
-    # the name, under its tick: a plain click too (only the box ticks)
-    tick = grid.card("p4.jpg").tick
-    name = QPoint(tick.width() - 4, tick.height() // 2)
-    qtbot.mouseClick(tick, LEFT, NO_KEYS, name)
+    _click_at(qtbot, grid, _on(grid, "p4.jpg", "name"))  # the name: a plain click too
     assert grid.focused() == "p4.jpg"
     assert len(grid.ticked()) == 6
     assert errors == []
 
 
-def test_a_press_on_a_tick_box_never_starts_a_box(qtbot, make_window, six, errors):
+def test_a_press_on_a_tick_box_never_starts_a_box(qtbot, make_window, six, errors, qt_warnings):
     _page, grid = _six_grid(qtbot, make_window, six)
     start = _on(grid, "p2.jpg", "box")
     _press(qtbot, grid, start)
@@ -1008,15 +1086,20 @@ def test_a_press_on_a_tick_box_never_starts_a_box(qtbot, make_window, six, error
     assert not grid.scroll.box.isVisible()
     _release(qtbot, grid, _on(grid, "p4.jpg"))
     assert len(grid.ticked()) == 6
-    tick = grid.card("p2.jpg").tick  # a click on the box still ticks
-    qtbot.mouseClick(tick, LEFT, NO_KEYS, tick.box_rect().center())
+    qtbot.wait(QApplication.doubleClickInterval() + 50)
+    _click_at(qtbot, grid, _on(grid, "p2.jpg", "box"))  # a click on the box still ticks
     assert "p2.jpg" not in grid.ticked()
     assert errors == []
 
 
-def test_a_drag_past_the_bottom_scrolls(qtbot, make_window, root, errors):
-    for n in range(24):
+def _many(root: Path, count: int = 24) -> None:
+    for n in range(count):
         _photo(root, f"p{n:02}.jpg", FRI.replace(minute=n))
+
+
+def test_a_drag_past_the_bottom_scrolls_and_the_view_stays(qtbot, make_window, root, errors,
+                                                           qt_warnings):
+    _many(root)
     w = make_window()
     page = _open(qtbot, w, root)
     grid = _grid(qtbot, page)
@@ -1025,24 +1108,29 @@ def test_a_drag_past_the_bottom_scrolls(qtbot, make_window, root, errors):
     assert bar.value() == 0
     view = grid.scroll.viewport()
     start = _on(grid, "p00.jpg")
+    below = QPoint(start.x(), view.height() + 20)
     _press(qtbot, grid, start)
     _move(qtbot, grid, start + QPoint(4, 4))
-    _move(qtbot, grid, QPoint(start.x(), view.height() + 60))
+    _move(qtbot, grid, below)
     qtbot.waitUntil(lambda: bar.value() == bar.maximum(), timeout=WAIT_MS)
     columns = grid.scroll.columns()
     first_column = grid.rels()[::columns]
     assert grid.ticked() == first_column  # the box grew with the scroll, down to the last row
-    _release(qtbot, grid, QPoint(start.x(), view.height() + 60))
+    _release(qtbot, grid, below)
     assert grid.ticked() == first_column
+    assert not grid.scroll._scroller.isActive()  # no more scrolling once released
     value = bar.value()
+    w.resize(w.width(), w.height() - 40)  # the view changes size: it stays where it went
     qtbot.wait(100)
-    assert bar.value() == value  # no more scrolling once released
+    assert bar.value() >= value - 40 > 0
     assert errors == []
 
 
-def test_a_double_click_still_opens_the_file_alone(qtbot, make_window, six, errors):
+def test_a_double_click_still_opens_the_file_alone(qtbot, make_window, six, errors,
+                                                   qt_warnings):
     page, grid = _six_grid(qtbot, make_window, six)
-    qtbot.mouseDClick(grid.card("p3.jpg").thumb_label, LEFT)
+    handle, pos = _window_at(grid, _on(grid, "p3.jpg"))
+    QTest.mouseDClick(handle, LEFT, NO_KEYS, pos)
     qtbot.waitUntil(lambda: page.view() == "one", timeout=WAIT_MS)
     _showing(qtbot, page, "3 of 6 · p3.jpg")
     qtbot.waitUntil(lambda: _focused() is page._box, timeout=WAIT_MS)
@@ -1053,7 +1141,7 @@ def test_a_double_click_still_opens_the_file_alone(qtbot, make_window, six, erro
     assert errors == []
 
 
-def test_n_after_a_drag_box_moves_only_the_boxed(qtbot, make_window, six, errors):
+def test_n_after_a_drag_box_moves_only_the_boxed(qtbot, make_window, six, errors, qt_warnings):
     page, grid = _six_grid(qtbot, make_window, six)
     _drag(qtbot, grid, _on(grid, "p2.jpg"), _on(grid, "p4.jpg"))
     assert grid.has_focus_inside()
@@ -1063,4 +1151,75 @@ def test_n_after_a_drag_box_moves_only_the_boxed(qtbot, make_window, six, errors
     assert sorted(p.name for p in (six / NOT_NEEDED).iterdir()) == ["p2.jpg", "p3.jpg", "p4.jpg"]
     for n in (1, 5, 6):
         assert (six / f"p{n}.jpg").is_file()
+    assert errors == []
+
+
+@pytest.fixture
+def two_days(root) -> Path:
+    """f1.jpg … f6.jpg on Fri 28 Feb, s1.jpg … s6.jpg on Sat 1 Mar."""
+    for n in range(1, 7):
+        _photo(root, f"f{n}.jpg", FRI.replace(hour=8 + n))
+        _photo(root, f"s{n}.jpg", SAT.replace(hour=8 + n))
+    return root
+
+
+def _drag_ends(qtbot, grid) -> None:
+    """The drag is over: no box, no scrolling, and moving the mouse ticks nothing."""
+    scroll = grid.scroll
+    assert not scroll._scroller.isActive()
+    assert not scroll.box.isVisible()
+    assert scroll._start is None
+
+
+def test_pgdn_mid_drag_ends_the_drag(qtbot, make_window, two_days, errors, qt_warnings):
+    w = make_window(size=(1600, 900))
+    page = _open(qtbot, w, two_days)
+    grid = _grid(qtbot, page)
+    qtbot.waitUntil(lambda: grid.scroll.columns() >= 4, timeout=WAIT_MS)
+    start = _on(grid, "f2.jpg")
+    _press(qtbot, grid, start)
+    _move(qtbot, grid, start + QPoint(10, 10))
+    assert grid.ticked() == ["f2.jpg"]
+    _key(qtbot, Qt.Key.Key_PageDown)  # the button still held
+    qtbot.waitUntil(lambda: grid.rels() and grid.rels()[0] == "s1.jpg", timeout=WAIT_MS)
+    _drag_ends(qtbot, grid)
+    _move(qtbot, grid, _on(grid, "s4.jpg"))
+    _move(qtbot, grid, _on(grid, "s5.jpg"))
+    _release(qtbot, grid, _on(grid, "s5.jpg"))
+    assert len(grid.ticked()) == 6  # the next day keeps all its ticks
+    _drag_ends(qtbot, grid)
+    assert errors == []
+
+
+def test_leaving_the_grid_mid_drag_ends_the_drag(qtbot, make_window, six, errors, qt_warnings):
+    page, grid = _six_grid(qtbot, make_window, six)
+    start = _on(grid, "p2.jpg")
+    _press(qtbot, grid, start)
+    _move(qtbot, grid, start + QPoint(10, 10))
+    _move(qtbot, grid, _on(grid, "p3.jpg"))
+    assert grid.ticked() == ["p2.jpg", "p3.jpg"]
+    _key(qtbot, Qt.Key.Key_Escape)  # one at a time, the button still held
+    qtbot.waitUntil(lambda: page.view() == "one", timeout=WAIT_MS)
+    _drag_ends(qtbot, grid)
+    ticked = grid.ticked()
+    handle = grid.window().windowHandle()
+    QTest.mouseMove(handle, QPoint(5, 5))
+    QTest.mouseRelease(handle, LEFT, NO_KEYS, QPoint(5, 5))
+    assert grid.ticked() == ticked
+    _drag_ends(qtbot, grid)
+    assert errors == []
+
+
+def test_a_card_added_mid_drag_ends_the_drag(qtbot, make_window, six, errors, qt_warnings):
+    _page, grid = _six_grid(qtbot, make_window, six)
+    start = _on(grid, "p2.jpg")
+    _press(qtbot, grid, start)
+    _move(qtbot, grid, start + QPoint(10, 10))
+    grid.remove(["p6.jpg"])  # as a move taking a file out
+    _drag_ends(qtbot, grid)
+    grid.insert("p6.jpg", True)  # as a failed move putting it back
+    _move(qtbot, grid, _on(grid, "p6.jpg"))
+    _release(qtbot, grid, _on(grid, "p6.jpg"))
+    assert grid.ticked() == ["p2.jpg", "p6.jpg"]
+    _drag_ends(qtbot, grid)
     assert errors == []

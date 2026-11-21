@@ -429,6 +429,11 @@ class GridNavigator(QObject):
     def _unpin(self, _action: int = 0) -> None:
         """The owner scrolled (a scrollbar action: the wheel, a drag, a click
         on the bar), not a setValue() or a range shrinking under the value."""
+        self.unpin()
+
+    def unpin(self) -> None:
+        """The owner scrolled the view another way (a drag past its edge):
+        it stays where they put it, until a card takes the focus."""
         self._pinned = False
 
     def _scroll_to(self, card: QWidget) -> None:
