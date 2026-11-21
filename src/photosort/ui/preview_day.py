@@ -14,23 +14,37 @@ cards, Space ticks or unticks the focused one (a click on the tick does
 too), A ticks all, or unticks all when all are ticked, and Enter (or a
 double-click) asks for the focused file alone (open_file). changed says
 that the cards or their ticks changed.
+
+The mouse ticks as a file manager selects (see _Cards): a box dragged from a
+gap or a card's picture or name ticks only the cards it touches (with Ctrl,
+flips them, against the ticks at its start), Ctrl+click flips a card, and
+Shift+click gives the cards from the anchor (the card clicked last, else the
+focused one) to this one the anchor's tick. A click on the tick's box flips
+it; a click elsewhere (moved less than the drag distance) focuses the card.
+Dragging past the top or bottom scrolls, faster the further out.
 """
 
 import bisect
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QShortcut
-from PySide6.QtWidgets import QApplication, QCheckBox, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QShortcut
+from PySide6.QtWidgets import (
+    QApplication, QCheckBox, QStyle, QStyleOptionButton, QVBoxLayout, QWidget,
+)
 
 from photosort.modes.preview import file_kind
 from photosort.ui import preview_viewers as pv
 from photosort.ui import shortcuts
 from photosort.ui.card_grid import CardGrid, GridCard
+from photosort.ui.theme import COLORS
 
 _KIND_WORDS = {"pdf": "PDF", "video": "Video", "audio": "Sound", "text": "Text"}
 _TICK_ROOM = 28  # the tick's box and its gap, beside the name
+_BOX_SLACK = 3  # px round the tick's box that still click it
+_SCROLL_MS = 30  # a drag past the edge scrolls this often…
+_SCROLL_MIN, _SCROLL_MAX = 4, 60  # …by this many px at least and at most
 
 
 def kind_word(path: Path) -> str | None:
@@ -45,6 +59,39 @@ def kind_word(path: Path) -> str | None:
     return f"{ext.upper()} file" if ext else "File"
 
 
+class _Tick(QCheckBox):
+    """A card's tick: only its box (and a little round it) takes a click; a
+    press on the name is the card's (a click focuses it, a drag boxes)."""
+
+    def box_rect(self) -> QRect:
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        return self.style().subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, option, self)
+
+    def hitButton(self, pos: QPoint) -> bool:
+        slack = _BOX_SLACK
+        return self.box_rect().adjusted(-slack, -slack, slack, slack).contains(pos)
+
+
+class _Box(QWidget):
+    """The box being dragged: the accent, see-through, with a solid edge. The
+    mouse goes through it."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.hide()
+
+    def paintEvent(self, _event) -> None:
+        edge = QColor(COLORS["focus"])
+        fill = QColor(edge)
+        fill.setAlpha(50)
+        painter = QPainter(self)
+        painter.setPen(edge)
+        painter.setBrush(fill)
+        painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+
+
 class DayCard(GridCard):
     """One file of the day: its thumbnail (or its kind), then the tick with
     its name (cut in the middle to fit; the tooltip has it whole, with its
@@ -56,7 +103,7 @@ class DayCard(GridCard):
         if self._kind is not None:
             self.thumb_label.setText(self._kind)
         self.thumb_label.setToolTip("Double-click to see it alone")
-        self.tick = QCheckBox()
+        self.tick = _Tick()
         self.tick.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # Space on the card ticks
         self.tick.setToolTip(rel)
         self.tick.setChecked(True)
@@ -81,12 +128,168 @@ class DayCard(GridCard):
 
 
 class _Cards(CardGrid):
-    """The CardGrid of a DayGrid: a double-click asks for the file alone."""
+    """The CardGrid of a DayGrid: a double-click asks for the file alone, and
+    the mouse ticks (see the module doc; ticked says it did).
+
+    The viewport sees every press the cards leave (all but those on a tick's
+    box), as the cards' parents' parent; the box is kept in the grid's
+    coordinates, so it grows as the view scrolls under it."""
 
     open_file = Signal(str)
+    ticked = Signal()  # the mouse changed ticks
+
+    def __init__(self, key, pool=None) -> None:
+        super().__init__(key, pool=pool)
+        self.box = _Box(self.viewport())
+        self._start: QPoint | None = None  # the press, in the grid (None: no press)
+        self._start_view = QPoint()  # the press, in the viewport
+        self._modifiers = Qt.KeyboardModifier.NoModifier  # held at the press
+        self._dragging = False
+        self._pointer = QPoint()  # in the viewport, the last move
+        self._before: dict[str, bool] = {}  # the ticks when the drag began, by rel
+        self._anchor: str | None = None  # Shift+click's (the card clicked last)
+        self._scroller = QTimer(self)
+        self._scroller.setInterval(_SCROLL_MS)
+        self._scroller.timeout.connect(self._autoscroll)
 
     def card_double_clicked(self, card: GridCard) -> None:
         self.open_file.emit(card.rel)
+
+    def set_cards(self, cards: list[GridCard], keep_place: bool = False,
+                  place: int = 0) -> None:
+        self._anchor = None
+        super().set_cards(cards, keep_place, place)
+
+    # ----- the mouse --------------------------------------------------------------------------
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.viewport():
+            kind = event.type()
+            if kind == QEvent.Type.MouseButtonPress:
+                return self._pressed(event)
+            if kind == QEvent.Type.MouseMove and self._start is not None:
+                return self._moved(event)
+            if (kind == QEvent.Type.MouseButtonRelease and self._start is not None
+                    and event.button() == Qt.MouseButton.LeftButton):
+                return self._released(event)
+        return super().eventFilter(watched, event)
+
+    def _in_grid(self, pos: QPoint) -> QPoint:
+        return self.widget().mapFrom(self.viewport(), pos)
+
+    def _card_at(self, pos: QPoint) -> int | None:
+        """The place of the card at pos (in the viewport), if any."""
+        at = self._in_grid(pos)
+        return next((n for n, card in enumerate(self.cards) if card.geometry().contains(at)),
+                    None)
+
+    def _on_tick_box(self, pos: QPoint) -> bool:
+        n = self._card_at(pos)
+        if n is None:
+            return False
+        tick = self.cards[n].tick
+        return tick.hitButton(tick.mapFrom(self.viewport(), pos))
+
+    def _pressed(self, event) -> bool:
+        pos = event.position().toPoint()
+        if event.button() != Qt.MouseButton.LeftButton or self._on_tick_box(pos):
+            return False
+        self._end()
+        self._start, self._start_view = self._in_grid(pos), pos
+        self._modifiers = event.modifiers()
+        return True
+
+    def _moved(self, event) -> bool:
+        if not event.buttons() & Qt.MouseButton.LeftButton:
+            self._end()  # its release went elsewhere
+            return False
+        self._pointer = event.position().toPoint()
+        if not self._dragging:
+            if ((self._pointer - self._start_view).manhattanLength()
+                    < QApplication.startDragDistance()):
+                return True  # a click, so far
+            self._dragging = True
+            self._before = {card.rel: card.tick.isChecked() for card in self.cards}
+            self.box.show()
+            self.box.raise_()
+            self._scroller.start()
+        self._drag_to(self._pointer)
+        return True
+
+    def _released(self, event) -> bool:
+        pos = event.position().toPoint()
+        if self._dragging:
+            self._drag_to(pos)
+        elif self.isVisible():
+            self._clicked(pos)
+        self._end()
+        return True
+
+    def _end(self) -> None:
+        self._start, self._dragging, self._before = None, False, {}
+        self._scroller.stop()
+        self.box.hide()
+
+    def _drag_to(self, pos: QPoint) -> None:
+        """The box from the press to pos (in the viewport): its cards ticked,
+        the others not; with Ctrl, its cards flipped, the others as they were."""
+        if self._start is None:
+            return
+        area = QRect(self._start, self._in_grid(pos)).normalized()
+        self.box.setGeometry(QRect(self.viewport().mapFrom(self.widget(), area.topLeft()),
+                                   area.size()))
+        flip = bool(self._modifiers & Qt.KeyboardModifier.ControlModifier)
+        states = []
+        for card in self.cards:
+            hit = card.geometry().intersects(area)
+            before = self._before.get(card.rel, card.tick.isChecked())
+            states.append((hit != before) if flip else hit)
+        self._set_ticks(self.cards, states)
+
+    def _clicked(self, pos: QPoint) -> None:
+        """A click (no drag) at pos: Ctrl flips the card, Shift ticks the
+        cards from the anchor like it; the card is focused, the new anchor."""
+        n = self._card_at(pos)
+        if n is None:
+            return
+        if self._modifiers & Qt.KeyboardModifier.ShiftModifier:
+            rels = [card.rel for card in self.cards]
+            anchor = (rels.index(self._anchor) if self._anchor in rels
+                      else self.navigator.current_index())
+            on = self.cards[anchor].tick.isChecked()
+            low, high = sorted((anchor, n))
+            self._set_ticks(self.cards[low:high + 1], [on] * (high + 1 - low))
+        elif self._modifiers & Qt.KeyboardModifier.ControlModifier:
+            tick = self.cards[n].tick
+            self._set_ticks([self.cards[n]], [not tick.isChecked()])
+        self._anchor = self.cards[n].rel
+        self.navigator.focus(n)
+
+    def _set_ticks(self, cards: list[GridCard], states: list[bool]) -> None:
+        """Tick each card as its state says; ticked once if any changed."""
+        changed = False
+        for card, on in zip(cards, states):
+            if card.tick.isChecked() != on:
+                card.tick.blockSignals(True)
+                card.tick.setChecked(on)
+                card.tick.blockSignals(False)
+                changed = True
+        if changed:
+            self.ticked.emit()
+
+    def _autoscroll(self) -> None:
+        """The pointer past the top or bottom: scroll that way, faster the
+        further out, and the box grows with it."""
+        y, height = self._pointer.y(), self.viewport().height()
+        out = y - height if y > height else min(y, 0)
+        if out == 0:
+            return
+        step = min(_SCROLL_MAX, _SCROLL_MIN + abs(out) // 2)
+        bar = self.verticalScrollBar()
+        old = bar.value()
+        bar.setValue(old + (step if out > 0 else -step))
+        if bar.value() != old:
+            self._drag_to(self._pointer)
 
 
 class DayGrid(QWidget):
@@ -104,6 +307,7 @@ class DayGrid(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.scroll = _Cards(key=lambda card: card.rel, pool=pv.image_pool())
         self.scroll.open_file.connect(self.open_file)
+        self.scroll.ticked.connect(self.changed)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.scroll)
