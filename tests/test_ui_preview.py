@@ -57,7 +57,7 @@ CTRL = Qt.KeyboardModifier.ControlModifier
 ALT = Qt.KeyboardModifier.AltModifier
 NONE = Qt.KeyboardModifier.NoModifier
 PAGE_KEYS = ("←→ file · N not needed · M move to… · L edit folders · E show in folder · "
-             "Ctrl+Z put back · Esc leave")
+             "Ctrl+Z put back · G day · Esc leave")
 IMAGE_KEYS = "+− zoom · F fit · ↑↓ scroll"
 ASK_STRIP = "←→ choose · Enter pick · Esc no/close"
 

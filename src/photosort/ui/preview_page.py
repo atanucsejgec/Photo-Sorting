@@ -16,9 +16,10 @@ Preview; a held one's repeats stop there); N moves the file to <root>/Not needed
 overlay, where 1…9 and 0 move it to that slot, Enter (or "Other folder…")
 picks another folder (anywhere: see modes.preview.target_problem for the
 ones refused), and Esc closes it; L edits the slots
-(SlotEditor); Ctrl+Z puts back the last file moved, and shows it again;
-E (or "Show in folder") shows the file selected in the file manager
-(ui.show_folder), and the Preview stays on it; Esc asks whether to leave.
+(SlotEditor); Ctrl+Z puts back the last group of files moved (a single
+move is a group of one), and shows them again; E (or "Show in folder")
+shows the file selected in the file manager (ui.show_folder), and the
+Preview stays on it; G opens the day view (below); Esc asks whether to leave.
 The viewer's own keys (Space, Shift+←/→, S,
 +/−, F, ↑/↓, PgUp/PgDn, O) are offered to it first: each viewer sits in a
 box that takes the focus and hands it every key press that is not one of
@@ -42,6 +43,26 @@ it opens, under "Getting the player ready…", right after the first file is
 shown (or before, if that file is the one that plays), and both media
 viewers use it for every file after: a file change never waits for it.
 
+The day view (G) shows every file of the shown file's day in a grid
+(preview_day.DayGrid), all ticked: the day is the local date of the file's
+modified time, read for every file on a pool thread the first time G is
+pressed ("Finding the days…") and kept (a file put back is read again);
+files whose day can't be read are "Unknown day", the last day. The top line
+reads "Fri 28 Feb 2025 · day 3 of 41 · 9 files · 7 ticked". Keys there: the
+arrows between the cards, Space ticks, A ticks all (or none), Enter or a
+double-click opens the file alone, PgUp/PgDn (or "◀ Day before" and "Day
+after ▶") the day before or after, N and M move every ticked file as one
+group (none ticked: "Nothing ticked"), L, E (the focused file) and Ctrl+Z as
+in the one view, and G or Esc go back to one at a time, on the focused file.
+The ticked files leave the grid at once; the unticked ones stay, unticked.
+A file whose move fails comes back into the grid, ticked. Once the grid is
+empty and its moves are done, the next day opens (else the day before; with
+no files left, the Preview ends as after the last file). A file opened
+alone is the one view with all its keys, but G or Esc goes back to the grid
+of its file's day (with the ticks it had, for the day it was opened from).
+Ctrl+Z puts back the whole last group, in either view; in the grid, a group
+of another day opens that day.
+
 M remembers the file shown; a slot or Other folder… moves that file only
 if it is still the one shown (a put-back may land meanwhile, while the
 picker is open, say), else "The file changed — press M again". Any change
@@ -54,12 +75,15 @@ the session is finished on the queue, and ended(PreviewEnd) says how it
 went.
 """
 
+import itertools
 import logging
+import math
 import os
 import urllib.parse
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import date
 from functools import partial
 from pathlib import Path
 
@@ -72,10 +96,12 @@ from PySide6.QtWidgets import (
 from shiboken6 import isValid
 
 from photosort.modes.preview import (
-    NOT_NEEDED, SLOTS, PreviewSession, file_kind, inside_root, target_problem,
+    NOT_NEEDED, SLOTS, PreviewSession, PutBackError, day_text, file_day, file_kind,
+    inside_root, target_problem,
 )
 from photosort.ui import dialogs, shortcuts, show_folder
 from photosort.ui import preview_viewers as pv
+from photosort.ui.preview_day import DayGrid
 from photosort.ui.labels import literal
 from photosort.ui.shortcuts import ShortcutStrip
 from photosort.ui.theme import COLORS, heading, page_spacing, scaled_font, styled
@@ -90,6 +116,12 @@ LAST_FILE = "That was the last file"
 LIST_FULL = "The list is full; edit it with L"
 NOTHING_TO_PUT_BACK = "Nothing to put back"
 FILE_CHANGED = "The file changed — press M again"
+DAY_CHANGED = "The day changed — press M again"
+NOTHING_TICKED = "Nothing ticked"
+FINDING_DAYS = "Finding the days…"
+UNKNOWN_DAY = "Unknown day"
+DAY_BEFORE_BUTTON = "◀ Day before (PgUp)"
+DAY_AFTER_BUTTON = "Day after (PgDn) ▶"
 FINISHING = "Finishing…"
 PLAYER_READYING = "Getting the player ready…"
 MESSAGE_LINES = 3  # the message line keeps the last this many notes
@@ -235,6 +267,44 @@ def _error_text(error: object) -> str:
     return str(error) or type(error).__name__
 
 
+DayFacts = tuple[date | None, float]  # (the day, the modified time; inf if unread)
+
+
+def _day_facts(path: Path) -> DayFacts:
+    """path's day (file_day) and its modified time (a broken link's own),
+    to order a day's files; inf if it can't be read."""
+    for stat in (os.stat, os.lstat):
+        try:
+            mtime = stat(path).st_mtime
+            break
+        except (OSError, ValueError):
+            continue
+    else:
+        mtime = math.inf
+    return file_day(path), mtime
+
+
+def _read_days(root: Path, rels: list[str], progress=None, cancel=None) -> dict[str, DayFacts]:
+    """The day facts of each of rels (relative to root)."""
+    return {rel: _day_facts(Path(root) / rel) for rel in rels}
+
+
+def _put_back_group(session: PreviewSession, root: Path
+                    ) -> tuple[list[tuple[str, date | None, float]], BaseException | None]:
+    """Put back the last group: (where each file is now, with its day facts,
+    in put-back order; why the rest could not be put back, or None)."""
+    try:
+        back, error = session.put_back_group(), None
+    except PutBackError as e:
+        back, error = e.back, e.error
+    return [(rel, *_day_facts(Path(root) / rel)) for rel in back], error
+
+
+def _day_order(day: date | None) -> tuple[bool, date]:
+    """The days in order, Unknown day (None) last."""
+    return day is None, day or date.min
+
+
 @dataclass(frozen=True)
 class PreviewEnd:
     """How a Preview ended: its run (None if nothing was ever moved), the
@@ -359,6 +429,20 @@ class PreviewPage(QWidget):
         self._ending = False
         self._last = False
         self._problems: list[str] = []
+        self._group_ids = itertools.count(1)  # each N or M press: a fresh group
+        # The day view: see the module doc.
+        self._view = "one"  # "one" (one at a time) or "day" (the grid)
+        self._alone = False  # the one view shows a file opened from the grid
+        self._days: dict[str, DayFacts] = {}  # each file's day, once read
+        self._finding: Task | None = None  # reading the days
+        self._day: date | None = None  # the grid's day
+        self._day_line = ""
+        self._grid_pending: set[str] = set()  # the grid's files whose moves are queued
+        # (day, its files, those ticked) when a file was opened alone from the grid
+        self._saved_ticks: tuple[date | None, set[str], set[str]] | None = None
+        self._overlay_view = "one"  # the view M opened the overlay in
+        self._overlay_rels: list[str] = []  # the files ticked then (the grid)
+        self._overlay_day: date | None = None
 
         layout = QVBoxLayout(self)
         page_spacing(layout)
@@ -389,6 +473,26 @@ class PreviewPage(QWidget):
         self.overlay.other.connect(self._other_from_overlay)
         self.overlay.closed.connect(self._close_overlay)
         self.view_area.installEventFilter(self)  # the overlay follows its size
+        self.day_grid = DayGrid(sort_key=self._day_sort_key)
+        self.day_grid.changed.connect(self._update_top)
+        self.day_grid.open_file.connect(self._open_alone)
+        self.before_button = QPushButton(literal(DAY_BEFORE_BUTTON))
+        self.after_button = QPushButton(literal(DAY_AFTER_BUTTON))
+        day_row = QHBoxLayout()
+        day_row.setContentsMargins(0, 0, 0, 0)
+        day_row.addWidget(self.before_button)
+        day_row.addStretch(1)
+        day_row.addWidget(self.after_button)
+        for button, step in ((self.before_button, -1), (self.after_button, 1)):
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(partial(self._day_step, step))
+        self.day_view = QWidget()  # the grid, under the day buttons
+        day_layout = QVBoxLayout(self.day_view)
+        day_layout.setContentsMargins(0, 0, 0, 0)
+        day_layout.setSpacing(6)
+        day_layout.addLayout(day_row)
+        day_layout.addWidget(self.day_grid, 1)
+        self.viewers.addWidget(self.day_view)
 
         side = QWidget()
         side.setFixedWidth(SIDE_WIDTH)
@@ -422,21 +526,36 @@ class PreviewPage(QWidget):
         body.addWidget(side)
         layout.addLayout(body, 1)
 
-        # The page's keys; the viewer's are on its box. All are off while the
-        # overlay is open (it has its own) and once the Preview is ending.
+        # The page's keys; the viewer's are on its box, the grid's on it. All
+        # are off while the overlay is open (it has its own) and once the
+        # Preview is ending; G and Esc are the view's (one set on at a time).
         # ← and → reach the page through the box (_arrow, recorded there), so
         # that a held → never runs on past the last file.
         self._keys = [
-            shortcuts.bind(self, "N", "N", "not needed",
-                           lambda: self._move_to(self.root / NOT_NEEDED, self.current()),
-                           repeat=False),
+            shortcuts.bind(self, "N", "N", "not needed", self._not_needed, repeat=False),
             shortcuts.bind(self, "M", "M", "move to…", self._open_overlay, repeat=False),
             shortcuts.bind(self, "L", "L", "edit folders", self._edit_slots, repeat=False),
             shortcuts.bind(self, "E", "E", "show in folder", self._show_in_folder,
                            repeat=False),
             shortcuts.bind(self, "Ctrl+Z", "Ctrl+Z", "put back", self._put_back,
                            repeat=False),
+        ]
+        self._one_keys = [  # one at a time
+            shortcuts.bind(self, "G", "G", "day", self._open_day, repeat=False),
             shortcuts.bind(self, "Escape", "Esc", "leave", self._leave, repeat=False),
+        ]
+        self._alone_keys = [  # a file opened alone from the grid
+            shortcuts.bind(self, ["G", "Escape"], "G/Esc", "back to the day",
+                           self._back_to_day, repeat=False),
+        ]
+        self._day_keys = [  # the grid
+            *self.day_grid.keys,
+            shortcuts.bind(self.day_grid, "PgUp", "PgUp/PgDn", "day before/after",
+                           partial(self._day_step, -1)),
+            shortcuts.bind(self.day_grid, "PgDown", "PgUp/PgDn", "day before/after",
+                           partial(self._day_step, 1)),
+            shortcuts.bind(self, ["G", "Escape"], "G/Esc", "one at a time",
+                           self._one_at_a_time, repeat=False),
         ]
         self.set_slots(self._slots)
         self._sync_keys()
@@ -456,6 +575,7 @@ class PreviewPage(QWidget):
         self._ending = False
         self._last = False
         self._problems = []
+        self._reset_day_view()
         self._say("")
         self.set_slots(slots)
         self._sync_keys()
@@ -486,7 +606,7 @@ class PreviewPage(QWidget):
                 self._box_for(kind)
         if self.message() == PLAYER_READYING:
             self._say("")
-        if self._shown is None and self._box is None and self.files:
+        if self._shown is None and self._box is None and self.files and self._view == "one":
             self._show_current()
 
     def shutdown(self) -> None:
@@ -496,6 +616,7 @@ class PreviewPage(QWidget):
         if session is None:
             return
         self._release()
+        self.day_grid.stop_thumbnails()
         self.overlay.hide()
         self._generation += 1  # the running job's result, when it comes, is dropped
         if self._running is not None:
@@ -532,14 +653,30 @@ class PreviewPage(QWidget):
         self._moved = []
         self._box = None
         self._ending = False
+        self._reset_day_view()
         self.title_label.clear()
         self.folder_label.clear()
         self._say("")
         self._sync_keys()
 
+    def _reset_day_view(self) -> None:
+        """Back to one at a time, the days forgotten (a session starts or ends)."""
+        self._view = "one"
+        self._alone = False
+        self._days = {}
+        self._finding = None
+        self._day = None
+        self._day_line = ""
+        self._grid_pending = set()
+        self._saved_ticks = None
+        self.day_grid.clear()
+        self._sync_day_buttons()
+
     def focus_first(self) -> None:
         if self.overlay.isVisible():
             self.overlay.setFocus(Qt.FocusReason.OtherFocusReason)
+        elif self._view == "day":
+            self.day_grid.focus()
         elif self._box is not None:
             self._box.setFocus(Qt.FocusReason.OtherFocusReason)
 
@@ -556,15 +693,31 @@ class PreviewPage(QWidget):
     def _active(self) -> bool:
         return self.session is not None and not self._ending
 
+    def view(self) -> str:
+        """"one" (one at a time, a file opened alone included) or "day" (the grid)."""
+        return self._view
+
     def _sync_keys(self) -> None:
         on = self._active() and not self.overlay.isVisible()
+        one, day = self._view == "one", self._view == "day"
+        wanted = ([(key, on) for key in self._keys]
+                  + [(key, on and one and not self._alone) for key in self._one_keys]
+                  + [(key, on and one and self._alone) for key in self._alone_keys]
+                  + [(key, on and day) for key in self._day_keys])
         changed = False
-        for key in self._keys:
-            if key.isEnabled() != on:
-                key.setEnabled(on)
+        # Off first, then on: two keys of one view never clash on the same key.
+        for key, want in sorted(wanted, key=lambda pair: pair[1]):
+            if key.isEnabled() != want:
+                key.setEnabled(want)
                 changed = True
+        self._sync_day_buttons()
         if changed:
             self.keys_changed.emit()
+
+    def _sync_day_buttons(self) -> None:
+        on = self._view == "day" and self._active() and not self.overlay.isVisible()
+        for button, step in ((self.before_button, -1), (self.after_button, 1)):
+            button.setEnabled(on and bool(self._neighbour_day(step)))
 
     # ----- showing a file --------------------------------------------------------------------
 
@@ -644,6 +797,10 @@ class PreviewPage(QWidget):
         task.start()
 
     def _update_top(self) -> None:
+        if self._view == "day":
+            if not self._ending:  # "Finishing…" stays
+                self._update_day_top()
+            return
         rel = self.current()
         if rel is None:
             return
@@ -673,6 +830,24 @@ class PreviewPage(QWidget):
         text = label.property("full_text") or ""
         width = max(label.width(), 50)
         label.setText(label.fontMetrics().elidedText(text, Qt.TextElideMode.ElideMiddle, width))
+
+    def _update_day_top(self) -> None:
+        """The grid's top line: "Fri 28 Feb 2025 · day 3 of 41 · 9 files · 7 ticked"."""
+        days = self._day_list()
+        order = _day_order(self._day)
+        k = 1 + sum(1 for day in days if _day_order(day) < order)
+        n = len(days) + (0 if self._day in days else 1)  # an empty grid's day still counts
+        files, ticked = len(self.day_grid.rels()), len(self.day_grid.ticked())
+        name = UNKNOWN_DAY if self._day is None else day_text(self._day)
+        self._day_line = (f"{name} · day {k} of {n} · {files} file{'' if files == 1 else 's'}"
+                          f" · {ticked} ticked")
+        self._set_line(self.title_label, self._day_line)
+        self._set_line(self.folder_label, self.root.resolve().name or str(self.root))
+        self._sync_day_buttons()
+
+    def day_text(self) -> str:
+        """The grid's top line, uncut ("" in the one view)."""
+        return self._day_line if self._view == "day" else ""
 
     def text(self) -> str:
         """The top line, uncut."""
@@ -763,6 +938,174 @@ class PreviewPage(QWidget):
         self.slots_changed.emit(self.slots())
         return ""
 
+    # ----- the day view --------------------------------------------------------------------------
+
+    def _day_sort_key(self, rel: str) -> tuple[float, float]:
+        """A day's files in order: by modified time, then as first listed."""
+        return (self._days.get(rel, (None, math.inf))[1],
+                self._order.get(rel, float(len(self._order))))
+
+    def _day_of(self, rel: str) -> date | None:
+        return self._days.get(rel, (None, math.inf))[0]
+
+    def _day_list(self) -> list[date | None]:
+        """The days of the files listed, in order (Unknown day last)."""
+        return sorted({self._day_of(rel) for rel in self.files if rel in self._days},
+                      key=_day_order)
+
+    def _rels_of(self, day: date | None) -> list[str]:
+        """The listed files of day, in order."""
+        return sorted((rel for rel in self.files if rel in self._days and self._day_of(rel) == day),
+                      key=self._day_sort_key)
+
+    def _neighbour_day(self, step: int) -> list[date | None]:
+        """[the day before (step -1) or after (+1) the grid's], or [] if none."""
+        if self._view != "day":
+            return []
+        order = _day_order(self._day)
+        days = self._day_list()
+        if step < 0:
+            return [day for day in days if _day_order(day) < order][-1:]
+        return [day for day in days if _day_order(day) > order][:1]
+
+    def _open_day(self) -> None:
+        """G in the one view: the grid of the shown file's day; the days are
+        read first, the first time ("Finding the days…")."""
+        rel = self.current()
+        if not self._active() or rel is None or self._finding is not None:
+            return
+        missing = [other for other in self.files if other not in self._days]
+        if missing:
+            self._find_days(missing)
+            return
+        self._say("")
+        self._show_day(self._day_of(rel), focus=rel)
+
+    def _find_days(self, rels: list[str]) -> None:
+        """Read the days of rels on the pool; then open the grid of the file
+        shown then (if the one view is still there to open it from)."""
+        self._say(FINDING_DAYS)
+        task = Task(_read_days, self.root, rels)
+        generation = self._generation
+
+        def done(task: Task) -> bool:
+            if not isValid(self) or self._finding is not task:
+                return False
+            self._finding = None
+            self._untell(FINDING_DAYS)
+            return generation == self._generation
+
+        def got(result: dict[str, DayFacts], task=task) -> None:
+            if done(task):
+                for rel, facts in result.items():
+                    self._days.setdefault(rel, facts)  # a put-back's is newer
+                if self._view == "one" and not self.overlay.isVisible():
+                    self._open_day()
+
+        def failed(message: str, task=task) -> None:
+            if done(task):
+                self._tell(f"Couldn't find the days: {message}")
+
+        task.signals.result.connect(got)
+        task.signals.error.connect(failed)
+        self._finding = task
+        task.start()
+
+    def _show_day(self, day: date | None, ticked: set[str] | None = None,
+                  focus: str | None = None) -> None:
+        """The grid of day: its files, those in ticked ticked (all if None),
+        the focus on focus (else the first)."""
+        self._release()  # the file shown is let go
+        self.overlay.hide()
+        self._view, self._alone, self._day = "day", False, day
+        self._saved_ticks = None
+        self._grid_pending = set()
+        self.viewers.setCurrentWidget(self.day_view)
+        self.day_grid.show_day(self.root, self._rels_of(day), ticked, focus)
+        self._sync_keys()
+        self._update_top()
+        if self.isVisible():
+            self.day_grid.focus()
+
+    def _day_step(self, step: int) -> None:
+        """PgUp/PgDn: the day before (-1) or after (+1), all ticked."""
+        if not self._active() or self.overlay.isVisible():
+            return
+        for day in self._neighbour_day(step):
+            self._say("")
+            self._show_day(day)
+
+    def _open_alone(self, rel: str) -> None:
+        """Enter or a double-click in the grid: rel alone, in the one view."""
+        if not self._active() or self._view != "day" or self.overlay.isVisible() \
+                or rel not in self.files:
+            return
+        saved = (self._day, set(self.day_grid.rels()), set(self.day_grid.ticked()))
+        self._to_one(rel, alone=True)
+        self._saved_ticks = saved
+
+    def _one_at_a_time(self) -> None:
+        """G or Esc in the grid: one at a time, on the focused file (an empty
+        grid's: the first file of a later day, else the last file)."""
+        if not self._active():
+            return
+        rel = self.day_grid.focused()
+        if rel is None:
+            order = _day_order(self._day)
+            later = [other for other in self.files
+                     if _day_order(self._day_of(other)) > order]
+            rel = later[0] if later else (self.files[-1] if self.files else None)
+        if rel is not None:
+            self._say("")
+            self._to_one(rel, alone=False)
+
+    def _to_one(self, rel: str, alone: bool) -> None:
+        self._view, self._alone = "one", alone
+        self._saved_ticks = None
+        self._grid_pending = set()
+        self.day_grid.clear()  # its thumbnails, and those still to come, go
+        self._index = self.files.index(rel)
+        self._sync_keys()
+        self._show_current()
+
+    def _back_to_day(self) -> None:
+        """G or Esc on a file opened alone: the grid of its day, with the
+        ticks it had if that is the day it was opened from."""
+        rel = self.current()
+        if not self._active() or rel is None:
+            return
+        if rel not in self._days:
+            self._open_day()  # not known yet (it can't be, but read it then)
+            return
+        day = self._day_of(rel)
+        ticked = None
+        if self._saved_ticks is not None and self._saved_ticks[0] == day:
+            _, then, ticked_then = self._saved_ticks
+            ticked = {other for other in self._rels_of(day)
+                      if other not in then or other in ticked_then}
+        self._say("")
+        self._show_day(day, ticked, focus=rel)
+
+    def _open_next_day(self) -> None:
+        """The grid is empty and its moves are done: the next day, else the
+        day before; with no file left, the Preview ends."""
+        days = self._day_list()
+        if not days:
+            self._end(last=True)
+            return
+        order = _day_order(self._day)
+        later = [day for day in days if _day_order(day) > order]
+        self._show_day(later[0] if later else days[-1])
+
+    def _grid_move_done(self, rel: str) -> None:
+        """A move of the grid's ended (moved, or back in the list)."""
+        if rel not in self._grid_pending:
+            return
+        self._grid_pending.discard(rel)
+        if (self._view == "day" and self._active() and not self._grid_pending
+                and not self.day_grid.rels()):
+            self._open_next_day()
+
     # ----- the overlay ---------------------------------------------------------------------------
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
@@ -780,8 +1123,17 @@ class PreviewPage(QWidget):
                                  max(0, area.height() - height - 12), width, height)
 
     def _open_overlay(self) -> None:
-        if not self._active() or self.current() is None:
+        if not self._active():
             return
+        if self._view == "day":
+            ticked = self.day_grid.ticked()
+            if not ticked:
+                self._say(NOTHING_TICKED)
+                return
+            self._overlay_rels, self._overlay_day = ticked, self._day
+        elif self.current() is None:
+            return
+        self._overlay_view = self._view
         self._say("")
         self._overlay_rel = self.current()
         self.overlay.show()
@@ -795,7 +1147,11 @@ class PreviewPage(QWidget):
             return
         self.overlay.hide()
         self._sync_keys()
-        if self._box is not None and self.isVisible():
+        if not self.isVisible():
+            return
+        if self._view == "day":
+            self.day_grid.focus()
+        elif self._box is not None:
             self._box.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _slot_picked(self, n: int) -> None:
@@ -808,17 +1164,17 @@ class PreviewPage(QWidget):
             self._say(problem)
             return
         self._close_overlay()
-        self._move_to(Path(folder), self._overlay_rel)
+        self._move_from_overlay(Path(folder))
 
     def _other_from_overlay(self) -> None:
-        rel = self._overlay_rel
         self._close_overlay()
-        self._other_folder(rel)
+        self._other_folder()
 
-    def _other_folder(self, rel: str | None) -> None:
-        """Pick a folder (the picker starts at root) and move rel (the file
-        shown when M was pressed) there, adding the folder to the slots."""
-        if not self._still_shown(rel):
+    def _other_folder(self) -> None:
+        """Pick a folder (the picker starts at root) and move what M was
+        pressed on (the file shown, or the files ticked) there, adding the
+        folder to the slots."""
+        if not self._overlay_still_there():
             return
         picked = choose_folder(self, PICK_TITLE, self.root)
         if picked is None or not self._active():
@@ -827,11 +1183,34 @@ class PreviewPage(QWidget):
         if problem is not None:
             self._say(problem)
             return
-        if not self._still_shown(rel):  # a put-back landed while the picker was open
+        if not self._overlay_still_there():  # a put-back landed while the picker was open
             return
         note = self._add_slot(picked)
-        if self._move_to(picked, rel) and note:
+        if self._move_from_overlay(picked) and note:
             self._say(note)
+
+    def _overlay_still_there(self) -> bool:
+        """Whether what M was pressed on is still shown: the file, or the
+        grid's day; if not, say so (nothing is moved)."""
+        if not self._active():
+            return False
+        if self._overlay_view == "day":
+            if self._view != "day" or self._day != self._overlay_day:
+                self._say(DAY_CHANGED)
+                return False
+            return True
+        if self._view != "one":
+            self._say(FILE_CHANGED)
+            return False
+        return self._still_shown(self._overlay_rel)
+
+    def _move_from_overlay(self, target: Path) -> bool:
+        """Move what M was pressed on into target (see _move_to, _move_ticked)."""
+        if self._overlay_view == "day":
+            if not self._overlay_still_there():
+                return False
+            return self._move_ticked(target, self._overlay_rels)
+        return self._move_to(target, self._overlay_rel)
 
     def _still_shown(self, rel: str | None) -> bool:
         """Whether rel is the file shown; if not, say so (nothing is moved)."""
@@ -843,6 +1222,48 @@ class PreviewPage(QWidget):
         return True
 
     # ----- moving --------------------------------------------------------------------------------
+
+    def _not_needed(self) -> None:
+        """N: the file shown, or the grid's ticked files, to <root>/Not needed."""
+        target = self.root / NOT_NEEDED
+        if self._view == "day":
+            self._move_ticked(target, self.day_grid.ticked())
+        else:
+            self._move_to(target, self.current())
+
+    def _move_ticked(self, target: Path, rels: list[str]) -> bool:
+        """Queue the moves of rels (the grid's ticked files, those still in
+        it) into target, as one group; they leave the grid at once. Those in
+        target already stay, and that is said. False if nothing is moved
+        ("Nothing ticked" if none of rels is in the grid)."""
+        if not self._active():
+            return False
+        shown = set(self.day_grid.rels())
+        rels = [rel for rel in rels if rel in shown]
+        if not rels:
+            self._say(NOTHING_TICKED)
+            return False
+        there = [rel for rel in rels if _same((self.root / rel).parent, target)]
+        moving = [rel for rel in rels if rel not in there]
+        where = slot_name(self.root, str(target))
+        if len(there) == 1:
+            self._say(f"{there[0].rpartition('/')[2]} is in {where} already")
+        elif there:
+            self._say(f"{len(there)} files are in {where} already")
+        else:
+            self._say("")
+        if not moving:
+            return False
+        group = next(self._group_ids)
+        gone = set(moving)
+        self.files = [rel for rel in self.files if rel not in gone]
+        self._grid_pending |= gone
+        self.day_grid.remove(moving)
+        for rel in moving:
+            self._enqueue(partial(self.session.move, rel, Path(target), group),
+                          partial(self._moved_ok, rel), partial(self._move_failed, rel),
+                          partial(moving_text, rel.rpartition("/")[2], self.root, Path(target)))
+        return True
 
     def _move_to(self, target: Path, rel: str | None) -> bool:
         """Queue the move of rel, the file shown, into target, and show the
@@ -857,7 +1278,7 @@ class PreviewPage(QWidget):
         self._say("")
         self._release()  # before the move: nothing holds the file
         del self.files[self._index]
-        self._enqueue(partial(self.session.move, rel, Path(target)),
+        self._enqueue(partial(self.session.move, rel, Path(target), next(self._group_ids)),
                       partial(self._moved_ok, rel), partial(self._move_failed, rel),
                       partial(moving_text, name, self.root, Path(target)))
         self._go_on()
@@ -873,8 +1294,9 @@ class PreviewPage(QWidget):
     def _moved_ok(self, rel: str, dst: str) -> None:
         if dst == rel:  # it was there already: nothing moved
             self._reinsert(rel)
-            return
-        self._moved.append(rel)
+        else:
+            self._moved.append(rel)
+        self._grid_move_done(rel)
 
     def _move_failed(self, rel: str, error: object) -> None:
         text = f"Couldn't move {rel.rpartition('/')[2]}: {_error_text(error)}"
@@ -883,9 +1305,11 @@ class PreviewPage(QWidget):
             return
         self._reinsert(rel)
         self._tell(text)
+        self._grid_move_done(rel)
 
     def _reinsert(self, rel: str, order: float | None = None) -> int:
-        """Put rel back in the list where it was; its place."""
+        """Put rel back in the list where it was; its place. In the grid, a
+        file of its day comes back into it, ticked."""
         if order is None:
             order = self._order.get(rel, float(len(self._order)))
         self._order[rel] = order
@@ -893,14 +1317,19 @@ class PreviewPage(QWidget):
         self.files.insert(place, rel)
         if self._shown is not None and place <= self._index:
             self._index += 1  # the file shown stays shown
+        if self._days and rel not in self._days:
+            # Moved before the days were read, and back now: one stat, here.
+            self._days[rel] = _day_facts(self.root / rel)
+        if self._view == "day" and rel in self._days and self._day_of(rel) == self._day:
+            self.day_grid.insert(rel, True)
         self._update_top()
         return place
 
     def _put_back(self) -> None:
         if not self._active():
             return  # what is said stays: a failure is not wiped by Ctrl+Z
-        self._enqueue(self.session.put_back, self._put_back_ok, self._put_back_failed,
-                      self._putting_back_text)
+        self._enqueue(partial(_put_back_group, self.session, self.root), self._put_back_ok,
+                      self._put_back_failed, self._putting_back_text)
 
     def _putting_back_text(self) -> str | None:
         """What a slow put-back says, asked while it runs: every job before it
@@ -910,17 +1339,33 @@ class PreviewPage(QWidget):
         rel = self._moved[-1]
         return moving_text(rel.rpartition("/")[2], self.root, (self.root / rel).parent)
 
-    def _put_back_ok(self, back: str | None) -> None:
-        if back is None:
+    def _put_back_ok(self, result) -> None:
+        """The last group is back (_put_back_group's result): in the one view
+        the file put back last (the group's first) is shown; in the grid the
+        files come back into it, ticked, or their day opens."""
+        back, error = result
+        if not back and error is None:
             self._tell(NOTHING_TO_PUT_BACK)
             return
-        rel = self._moved.pop() if self._moved else back
-        if self._ending:
+        placed: list[tuple[str, str]] = []  # (where it was, where it is now)
+        for now, day, mtime in back:
+            placed.append((self._moved.pop() if self._moved else now, now))
+            self._days[now] = (day, mtime)  # read again
+        if error is not None:
+            self._put_back_failed(error)
+        if self._ending or not placed:
             return
-        order = self._order.get(rel, float(len(self._order)))
-        if back != rel:
-            order += 0.5  # just after the place its name now has someone else in
-        self._index = self._reinsert(back, order)
+        for was, now in placed:
+            order = self._order.get(was, float(len(self._order)))
+            if now != was:
+                order += 0.5  # just after the place its name now has someone else in
+            self._reinsert(now, order)
+        last = placed[-1][1]
+        if self._view == "day":
+            if self._day_of(last) != self._day:
+                self._show_day(self._day_of(last), focus=last)
+            return
+        self._index = self.files.index(last)
         self._show_current()
 
     def _put_back_failed(self, error: object) -> None:
@@ -1002,8 +1447,9 @@ class PreviewPage(QWidget):
     # ----- ending -------------------------------------------------------------------------------
 
     def _show_in_folder(self) -> None:
-        """The file shown, selected in the file manager (nothing moves)."""
-        rel = self.current()
+        """The file shown (the grid's focused one), selected in the file
+        manager (nothing moves)."""
+        rel = self.day_grid.focused() if self._view == "day" else self.current()
         if rel is not None and self._active() and not self.overlay.isVisible():
             show_folder.show_in_folder(self.root / rel)
 
@@ -1020,6 +1466,7 @@ class PreviewPage(QWidget):
         self._last = last
         self.overlay.hide()
         self._release()
+        self.day_grid.clear()
         self._sync_keys()
         self._set_line(self.title_label, FINISHING)
         self._set_line(self.folder_label, "")

@@ -9,15 +9,21 @@ the window is resized; the cards stay in the same grid, so the focused one
 keeps the focus, and its GridNavigator (the arrow keys) follows the
 columns shown.
 
-Thumbnails are made on pool threads (see review_page.render_thumbnail),
-tagged with the generation of cards they were asked for; one for cards that
-are gone is ignored. A card's photo is shown big (a PhotoPreview) when its
-thumbnail is double-clicked, or by preview_current().
+Thumbnails are made on pool threads (see review_page.render_thumbnail; the
+global pool, or the one given), tagged with the generation of cards they
+were asked for and the card's number; one for cards that are gone is
+ignored. A card that has no thumbnail to make (has_thumbnail) keeps its
+text. A card's photo is shown big (a PhotoPreview) when its thumbnail is
+double-clicked (card_double_clicked), or by preview_current().
+
+insert_card() and remove_cards() change the cards in place: the others keep
+their thumbnails, and the focus stays on the current card (or the one now
+in its place).
 """
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QFrame, QGridLayout, QScrollArea, QVBoxLayout, QWidget
 
@@ -81,6 +87,10 @@ class GridCard(QFrame):
     def path(self) -> Path:
         return self.root / self.rel
 
+    def has_thumbnail(self) -> bool:
+        """Whether a thumbnail is made for the card (else its text stays)."""
+        return True
+
     def set_thumbnail(self, value: QImage | str) -> None:
         """Show the thumbnail, or a placeholder text such as "Can't show". GUI thread only."""
         if isinstance(value, QImage):
@@ -93,8 +103,10 @@ class CardGrid(QScrollArea):
     """The cards in columns that fill the width, scrolling down (see the
     module doc). key(card) is a card's identity across set_cards() calls."""
 
-    def __init__(self, key, parent: QWidget | None = None) -> None:
+    def __init__(self, key, parent: QWidget | None = None,
+                 pool: QThreadPool | None = None) -> None:
         super().__init__(parent)
+        self._pool = pool  # where thumbnails are made (None: the global pool)
         self.setWidgetResizable(True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # the cards take it
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # they fit
@@ -103,6 +115,8 @@ class CardGrid(QScrollArea):
         self._columns = 0
         self._generation = 0  # bumped whenever the cards are replaced
         self._thumb_tasks: dict[tuple[int, int], Task] = {}  # kept alive until they report
+        self._thumb_cards: dict[int, GridCard] = {}  # by number, waiting for a thumbnail
+        self._numbers = 0  # the next card's number
         self.preview: PhotoPreview | None = None  # while one is open
         self.navigator = GridNavigator([], self.columns, key=key, parent=self)
         self._new_grid()
@@ -120,12 +134,61 @@ class CardGrid(QScrollArea):
         self._columns = 0
         self._fit()
         self.setWidget(self._holder)  # the cards are in it already: they show at once
-        for n, card in enumerate(self.cards):
-            card.thumb_label.double_clicked.connect(
-                lambda path=card.path(): self.open_preview(path))
-            self._request_thumbnail(n, card.path())
+        self._thumb_cards = {}
+        self._numbers = 0
+        for card in self.cards:
+            self._wire(card)
         if self.isVisible():
             self.navigator.focus()
+
+    def _wire(self, card: GridCard) -> None:
+        card.thumb_label.double_clicked.connect(lambda card=card: self.card_double_clicked(card))
+        n, self._numbers = self._numbers, self._numbers + 1
+        if card.has_thumbnail():
+            self._thumb_cards[n] = card
+            self._request_thumbnail(n, card.path())
+
+    def card_double_clicked(self, card: GridCard) -> None:
+        """Its photo, big."""
+        self.open_preview(card.path())
+
+    def insert_card(self, place: int, card: GridCard) -> None:
+        """Add card at place among the cards; its thumbnail is asked for."""
+        place = max(0, min(place, len(self.cards)))
+        self.cards.insert(place, card)
+        self._wire(card)
+        self._changed()
+
+    def remove_cards(self, cards: list[GridCard]) -> None:
+        """Take cards out (they are deleted); a thumbnail still to come for
+        one is not made."""
+        gone = {id(card) for card in cards}
+        if not gone:
+            return
+        had_focus = any(card.hasFocus() for card in cards)
+        self.cards = [card for card in self.cards if id(card) not in gone]
+        for n, card in list(self._thumb_cards.items()):
+            if id(card) in gone:
+                del self._thumb_cards[n]
+                task = self._thumb_tasks.get((self._generation, n))
+                if task is not None:
+                    task.cancel_event.set()
+        self._changed(focus=had_focus)
+        for card in cards:
+            self._grid.removeWidget(card)
+            card.hide()
+            card.deleteLater()
+
+    def _changed(self, focus: bool = False) -> None:
+        """The cards changed in place: lay them out again; the current card
+        stays (by its key), or the one now in its place. With focus, the
+        current card takes the focus (the focused one has gone)."""
+        self.navigator.set_cards(self.cards)
+        self._columns = 0
+        self._fit()
+        if focus and self.isVisible():
+            self.navigator.focus()
+        self.navigator.reveal_soon()  # once laid out again
 
     def current(self) -> GridCard | None:
         return self.navigator.current()
@@ -214,14 +277,16 @@ class CardGrid(QScrollArea):
         task = Task(render_thumbnail, token, path)
         task.signals.result.connect(self._thumbnail_ready)
         self._thumb_tasks[token] = task
-        task.start()
+        task.start(self._pool)
 
     def _thumbnail_ready(self, result: tuple[int, int, QImage | str | None]) -> None:
         generation, n, value = result
         self._thumb_tasks.pop((generation, n), None)
         if generation != self._generation or value is None:
             return  # asked for cards that are gone
-        self.cards[n].set_thumbnail(value)
+        card = self._thumb_cards.pop(n, None)
+        if card is not None:
+            card.set_thumbnail(value)
 
     def stop_thumbnails(self) -> None:
         """Let the thumbnails still waiting for a pool thread finish without decoding."""
